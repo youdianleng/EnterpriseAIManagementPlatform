@@ -1,30 +1,6 @@
-feat(api): unified error envelope, structured logging and real probes
+fix(scripts): survive git writing progress to stderr
 
-Ticket 02. Every failure now returns one shape, and every request leaves one
-structured record.
-
-- Error catalogue: codes named ERR_<DOMAIN>_<NNN> defined in one place, each
-  carrying its HTTP status and i18n key. Handlers cover AppError, framework
-  validation errors (flattened to field paths the UI can attach to inputs),
-  Starlette HTTP errors and unhandled exceptions.
-- Bilingual catalogue in es/en; a test asserts the two cover the same keys and
-  that no code lacks wording. The envelope carries a message_key plus a Spanish
-  convenience message.
-- 5xx details are logged but withheld from the response body.
-- Logging: production processor chain exposed as build_processors() so tests
-  capture exactly what production emits, context vars included.
-- Readiness now opens real Postgres and Redis connections with a 2s timeout,
-  instead of only reporting the configured target.
-- Development-only probes under /api/v1/_debug/errors to exercise each failure
-  path over HTTP.
-
-Fixed while verifying:
-- Starlette's ServerErrorMiddleware sits outside all user middleware, so the
-  500 it produced bypassed the response wrapper and lost X-Request-ID. Replaced
-  with EnvelopeErrorMiddleware so the header survives on every response. Both
-  middlewares are now pure ASGI, since BaseHTTPMiddleware has the same blind
-  spot.
-- Uvicorn's plain-text access log duplicated every request; disabled with
-  --no-access-log now that the middleware logs a richer record.
-- CORS is registered before the request-context middleware so preflight
-  responses also carry a request id.
+PowerShell turns a native command's stderr into an error record, and
+$ErrorActionPreference='Stop' promoted it to a terminating error, so a
+successful push reported failure. The push result now comes from the exit code
+with the preference relaxed for that one call.

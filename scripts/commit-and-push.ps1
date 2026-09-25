@@ -53,10 +53,20 @@ try {
     Write-Host "Committed: $subject" -ForegroundColor Green
 
     # A push needs credentials; report rather than fail when they are missing.
-    # git writes progress to stderr, so the exit code decides, never the output.
+    # git writes progress to stderr, which PowerShell would otherwise turn into
+    # a terminating error, so the exit code decides — never the output.
     $env:GIT_TERMINAL_PROMPT = '0'
-    git push origin HEAD
-    if ($LASTEXITCODE -eq 0) {
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        git push origin HEAD 2>&1 | ForEach-Object { Write-Host $_ }
+        $pushed = ($LASTEXITCODE -eq 0)
+    }
+    finally {
+        $ErrorActionPreference = $previous
+    }
+
+    if ($pushed) {
         Write-Host 'Pushed to origin.' -ForegroundColor Green
     }
     else {
