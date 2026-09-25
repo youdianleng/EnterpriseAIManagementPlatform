@@ -36,6 +36,19 @@ MANIFEST
 pip-log.txt
 pip-delete-this-directory.txt
 
+# --- Project specific ---
+# Real secrets: only .env.example is tracked.
+.env
+.env.local
+.env.*.local
+# Next.js build output and generated types.
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+# uv local state.
+.uv/
+
 # Unit test / coverage reports
 htmlcov/
 .tox/

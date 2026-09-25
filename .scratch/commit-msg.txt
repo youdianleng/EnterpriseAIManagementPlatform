@@ -1,0 +1,22 @@
+feat(skeleton): monorepo, compose stack and end-to-end wiring
+
+Ticket 01. Establishes the running skeleton every later ticket builds on.
+
+- Compose stack: postgres (pgvector/pgvector:pg18), redis, api, web, all with
+  health checks; api waits for healthy dependencies, web waits for a healthy api.
+- Backend: FastAPI app factory, settings from env, structured logging
+  (console in dev, JSON elsewhere), request-id middleware that honours an
+  inbound X-Request-ID, CORS for the web origin, /health and /ready.
+- Frontend: Next.js App Router with [locale] routing, es/en dictionaries typed
+  against a shared shape, middleware that resolves the locale from a cookie
+  then Accept-Language then the es default, and a landing page that renders
+  facts served by /api/v1/info.
+- Design tokens per docs/architecture/frontend-design-system.md: 4px scale,
+  14px body, tabular numerals, semantic colour pairs, reduced-motion support.
+- Tooling: scripts/commit-and-push.ps1 for the per-ticket commit workflow,
+  .gitattributes to keep line endings LF on Windows checkouts.
+- Tests: 6 backend smoke tests; a locale middleware probe covering negotiation,
+  fallback and cookie precedence.
+
+Notes: postgres:18+ images keep data in a major-version subdirectory, so the
+volume mounts /var/lib/postgresql rather than /var/lib/postgresql/data.

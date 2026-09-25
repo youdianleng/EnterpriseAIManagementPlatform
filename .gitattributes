@@ -1,0 +1,16 @@
+# Store text as LF in the repository and check it out as LF everywhere.
+# Without this, Windows checkouts produce CRLF noise on every commit.
+* text=auto eol=lf
+
+# Binary assets must never be line-ending converted.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+
+# Keep diffs of generated lock files out of language statistics.
+package-lock.json linguist-generated=true

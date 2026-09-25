@@ -1,0 +1,123 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens — the single source of visual truth.
+ * Rules and rationale: docs/architecture/frontend-design-system.md
+ */
+
+:root {
+  /* Neutrals */
+  --eam-bg: #f7f8fa;
+  --eam-surface: #ffffff;
+  --eam-border: #dfe3e8;
+  --eam-fg: #14181f;
+  --eam-fg-muted: #5b6472;
+  --eam-fg-subtle: #6b7280;
+
+  /* Primary */
+  --eam-primary: #1d4ed8;
+  --eam-primary-fg: #ffffff;
+  --eam-primary-subtle: #e8eeff;
+
+  /* Semantic states: every pair is background + readable foreground. */
+  --eam-success: #0f7a3d;
+  --eam-success-bg: #e6f4ec;
+  --eam-warning: #9a5b00;
+  --eam-warning-bg: #fdf3e2;
+  --eam-danger: #b3261e;
+  --eam-danger-bg: #fdecea;
+  --eam-info: #0d5f9c;
+  --eam-info-bg: #e7f1fa;
+  --eam-neutral: #4b5563;
+  --eam-neutral-bg: #eef1f4;
+
+  /* 4px base scale */
+  --eam-space-1: 4px;
+  --eam-space-2: 8px;
+  --eam-space-3: 12px;
+  --eam-space-4: 16px;
+  --eam-space-6: 24px;
+  --eam-space-8: 32px;
+  --eam-space-12: 48px;
+  --eam-space-16: 64px;
+
+  --eam-radius-sm: 4px;
+  --eam-radius: 8px;
+  --eam-radius-lg: 12px;
+
+  --eam-font-sans:
+    system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --eam-text-sm: 0.8125rem; /* 13px — dense tables */
+  --eam-text-base: 0.875rem; /* 14px */
+  --eam-text-lg: 1rem; /* 16px */
+  --eam-text-xl: 1.25rem; /* 20px */
+  --eam-text-2xl: 1.5rem; /* 24px */
+
+  --eam-motion-fast: 150ms;
+  --eam-motion-base: 250ms;
+}
+
+@theme inline {
+  --color-bg: var(--eam-bg);
+  --color-surface: var(--eam-surface);
+  --color-border: var(--eam-border);
+  --color-fg: var(--eam-fg);
+  --color-fg-muted: var(--eam-fg-muted);
+  --color-fg-subtle: var(--eam-fg-subtle);
+
+  --color-primary: var(--eam-primary);
+  --color-primary-fg: var(--eam-primary-fg);
+  --color-primary-subtle: var(--eam-primary-subtle);
+
+  --color-success: var(--eam-success);
+  --color-success-bg: var(--eam-success-bg);
+  --color-warning: var(--eam-warning);
+  --color-warning-bg: var(--eam-warning-bg);
+  --color-danger: var(--eam-danger);
+  --color-danger-bg: var(--eam-danger-bg);
+  --color-info: var(--eam-info);
+  --color-info-bg: var(--eam-info-bg);
+  --color-neutral: var(--eam-neutral);
+  --color-neutral-bg: var(--eam-neutral-bg);
+
+  --font-sans: var(--eam-font-sans);
+  --radius-sm: var(--eam-radius-sm);
+  --radius-DEFAULT: var(--eam-radius);
+  --radius-lg: var(--eam-radius-lg);
+}
+
+@layer base {
+  html {
+    /* Never disable zoom (WCAG 1.4.4). */
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--eam-bg);
+    color: var(--eam-fg);
+    font-family: var(--eam-font-sans);
+    font-size: var(--eam-text-base);
+    line-height: 1.5;
+  }
+
+  /* Visible focus everywhere, never removed. */
+  :focus-visible {
+    outline: 2px solid var(--eam-primary);
+    outline-offset: 2px;
+  }
+
+  /* Numbers in tables and metrics must align by place value. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
