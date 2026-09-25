@@ -4,7 +4,17 @@
 
 **Blocked by:** 01 — Monorepo 与 Compose 骨架
 
-**Status:** ready-for-agent
+**Status:** done
+
+**Verification (2026-09-25):**
+- `pytest` → 31 passed; `ruff check app tests` → clean.
+- `probe_errors.py` → all checks passed: envelope has all six fields on 404/422/500, `message` rendered in Spanish, `fields[0].field` names the offending input, 5xx `detail` is withheld, and `X-Request-ID` is echoed as a header on every path including 500.
+- `probe_prod_logging.py` → in `APP_ENV=production` each request emits exactly one JSON object carrying `event`, `level`, `timestamp`, `request_id`, `method`, `path`, `status_code`, `duration_ms`.
+- `/ready` opens real connections to Postgres and Redis and reports each separately; `/health` touches nothing.
+
+**Two defects found and fixed while verifying:**
+1. Starlette's `ServerErrorMiddleware` sits *outside* all user middleware, so a 500 it generates never passed through the response wrapper and lost the `X-Request-ID` header. Replaced with `EnvelopeErrorMiddleware`, which handles the exception inside the wrapper. The same limitation applies to `BaseHTTPMiddleware`, which is why both middlewares are now pure ASGI.
+2. Uvicorn's access log duplicated every request as plain text alongside the structured record; disabled with `--no-access-log` on both dev and prod commands.
 
 - [ ] 错误信封字段固定为：错误码、HTTP 状态、双语消息键、request_id、时间戳
 - [ ] 错误码按 `ERR_<DOMAIN>_<NNN>` 命名并集中登记，禁止在业务代码里散落字符串

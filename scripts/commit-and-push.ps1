@@ -53,8 +53,9 @@ try {
     Write-Host "Committed: $subject" -ForegroundColor Green
 
     # A push needs credentials; report rather than fail when they are missing.
+    # git writes progress to stderr, so the exit code decides, never the output.
     $env:GIT_TERMINAL_PROMPT = '0'
-    git push origin HEAD 2>&1 | Out-String | Write-Host
+    git push origin HEAD
     if ($LASTEXITCODE -eq 0) {
         Write-Host 'Pushed to origin.' -ForegroundColor Green
     }

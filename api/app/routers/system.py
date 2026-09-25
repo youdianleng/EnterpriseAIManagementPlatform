@@ -6,6 +6,7 @@ otherwise a database blip would make the container look dead and get restarted.
 dependencies, reporting each one individually.
 """
 
+import asyncio
 from typing import Literal
 from urllib.parse import urlparse
 
@@ -18,6 +19,9 @@ from app.config import get_settings
 router = APIRouter(tags=["system"])
 
 CheckStatus = Literal["ok", "error"]
+
+# A probe must answer quickly; a slow dependency is a failed dependency.
+PROBE_TIMEOUT_SECONDS = 2.0
 
 
 class DependencyCheck(BaseModel):
@@ -45,36 +49,61 @@ async def health() -> HealthResponse:
 
 @router.get("/ready", response_model=ReadyResponse, summary="Readiness probe")
 async def ready(response: Response) -> ReadyResponse:
-    checks = [_check_postgres(), _check_redis()]
+    checks = list(await asyncio.gather(_check_postgres(), _check_redis()))
     healthy = all(check.status == "ok" for check in checks)
     if not healthy:
         response.status_code = 503
     return ReadyResponse(status="ok" if healthy else "degraded", checks=checks)
 
 
-def _check_postgres() -> DependencyCheck:
-    """Validate the configured target without opening a connection.
+async def _check_postgres() -> DependencyCheck:
+    """Open a throwaway connection; a configured DSN is not a healthy database."""
+    import psycopg
 
-    Ticket 04 adds the real engine and turns this into an actual ping; a live
-    probe here would make `/ready` fail for reasons unrelated to this ticket.
-    """
-    dsn = get_settings().database_url
-    parsed = urlparse(dsn)
-    if not parsed.scheme.startswith("postgresql"):
-        return DependencyCheck(name="postgres", status="error", detail="not a postgresql DSN")
+    dsn = _to_libpq_dsn(get_settings().database_url)
+    try:
+        async with await asyncio.wait_for(
+            psycopg.AsyncConnection.connect(dsn), timeout=PROBE_TIMEOUT_SECONDS
+        ) as connection:
+            async with connection.cursor() as cursor:
+                await cursor.execute("SELECT 1")
+                await cursor.fetchone()
+    except Exception as exc:
+        return DependencyCheck(name="postgres", status="error", detail=_short(exc))
+
+    parsed = urlparse(get_settings().database_url)
     return DependencyCheck(
         name="postgres",
         status="ok",
-        detail=f"configured {parsed.hostname}:{parsed.port or 5432}{parsed.path}",
+        detail=f"connected {parsed.hostname}:{parsed.port or 5432}{parsed.path}",
     )
 
 
-def _check_redis() -> DependencyCheck:
+async def _check_redis() -> DependencyCheck:
+    import redis.asyncio as redis
+
+    client = redis.from_url(get_settings().redis_url, socket_connect_timeout=PROBE_TIMEOUT_SECONDS)
+    try:
+        await asyncio.wait_for(client.ping(), timeout=PROBE_TIMEOUT_SECONDS)
+    except Exception as exc:
+        return DependencyCheck(name="redis", status="error", detail=_short(exc))
+    finally:
+        await client.aclose()
+
     parsed = urlparse(get_settings().redis_url)
-    if not parsed.scheme.startswith("redis"):
-        return DependencyCheck(name="redis", status="error", detail="not a redis DSN")
     return DependencyCheck(
         name="redis",
         status="ok",
-        detail=f"configured {parsed.hostname}:{parsed.port or 6379}",
+        detail=f"connected {parsed.hostname}:{parsed.port or 6379}",
     )
+
+
+def _to_libpq_dsn(sqlalchemy_url: str) -> str:
+    """Strip the SQLAlchemy driver suffix so libpq accepts the DSN."""
+    return sqlalchemy_url.replace("postgresql+psycopg://", "postgresql://", 1)
+
+
+def _short(exc: Exception) -> str:
+    """First line only: readiness details must stay one line in JSON."""
+    text = str(exc).strip().splitlines()
+    return text[0][:200] if text else type(exc).__name__
