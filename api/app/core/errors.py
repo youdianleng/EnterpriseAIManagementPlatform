@@ -98,6 +98,30 @@ class ErrorCode(StrEnum):
     #: A rejection is final for the entity: it may not be submitted again.
     APPROVAL_PREVIOUSLY_REJECTED = "ERR_APR_009"
 
+    # Notifications. One code, not two: "there is no such notification" and "that
+    # notification is somebody else's" are the same answer to the caller, and
+    # saying which one it was would turn the endpoint into an existence oracle.
+    NOTIFICATION_NOT_YOURS = "ERR_NTF_001"
+
+    # Personnel changes: one document for 入转调离, five change types (ticket 17).
+    PERSONNEL_CHANGE_NOT_FOUND = "ERR_PCH_001"
+    #: The payload is missing, empty, names a field its change type does not
+    #: carry, omits a required one, or carries a value of the wrong kind.
+    PERSONNEL_CHANGE_INVALID_PAYLOAD = "ERR_PCH_002"
+    #: Every change type but a join is about somebody who already works here.
+    PERSONNEL_CHANGE_EMPLOYEE_REQUIRED = "ERR_PCH_003"
+    #: Only a draft is the caller's to correct or to file.
+    PERSONNEL_CHANGE_NOT_DRAFT = "ERR_PCH_004"
+    #: Applied is final. The way back is a counter-change, and the message says so
+    #: rather than leaving the caller to guess.
+    PERSONNEL_CHANGE_ALREADY_APPLIED = "ERR_PCH_005"
+    #: Cancelled already, or rejected by the engine: nothing left to cancel.
+    PERSONNEL_CHANGE_NOT_CANCELLABLE = "ERR_PCH_006"
+    #: The record the change was written against moved between approval and its
+    #: effective date. Reported by the job; whatever the change had already
+    #: written is rolled back, so it leaves no half-applied state.
+    PERSONNEL_CHANGE_APPLY_FAILED = "ERR_PCH_007"
+
     # Cross-cutting.
     INTERNAL_ERROR = "ERR_INTERNAL_001"
     SERVICE_UNAVAILABLE = "ERR_INTERNAL_002"
@@ -202,6 +226,28 @@ ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
     ErrorCode.APPROVAL_NOT_PENDING: ErrorDefinition(409, "errors.approval_not_pending"),
     ErrorCode.APPROVAL_PREVIOUSLY_REJECTED: ErrorDefinition(
         409, "errors.approval_previously_rejected"
+    ),
+    ErrorCode.NOTIFICATION_NOT_YOURS: ErrorDefinition(403, "errors.notification_not_yours"),
+    ErrorCode.PERSONNEL_CHANGE_NOT_FOUND: ErrorDefinition(
+        404, "errors.personnel_change_not_found"
+    ),
+    ErrorCode.PERSONNEL_CHANGE_INVALID_PAYLOAD: ErrorDefinition(
+        422, "errors.personnel_change_invalid_payload"
+    ),
+    ErrorCode.PERSONNEL_CHANGE_EMPLOYEE_REQUIRED: ErrorDefinition(
+        422, "errors.personnel_change_employee_required"
+    ),
+    ErrorCode.PERSONNEL_CHANGE_NOT_DRAFT: ErrorDefinition(
+        409, "errors.personnel_change_not_draft"
+    ),
+    ErrorCode.PERSONNEL_CHANGE_ALREADY_APPLIED: ErrorDefinition(
+        409, "errors.personnel_change_already_applied"
+    ),
+    ErrorCode.PERSONNEL_CHANGE_NOT_CANCELLABLE: ErrorDefinition(
+        409, "errors.personnel_change_not_cancellable"
+    ),
+    ErrorCode.PERSONNEL_CHANGE_APPLY_FAILED: ErrorDefinition(
+        409, "errors.personnel_change_apply_failed"
     ),
     # 403 with its own code so the client can route to the change-password screen
     # instead of showing a permission error.

@@ -35,15 +35,21 @@ API_ROOT = Path(__file__).resolve().parents[1]
 # development database, so a default never applies and the application's own
 # engine would read and write `eam` during a test run. That is not hypothetical —
 # it left 181 audit rows in the development database before being caught.
+#
+# The name comes from `TEST_DATABASE_NAME`, defaulting to `eam_test`. Both
+# connections below have to name the same database, and the suite wipes it between
+# tests, so a run that sets this variable owns a database of its own instead of
+# fighting one beside it for the same rows.
+TEST_DATABASE_NAME = os.environ.get("TEST_DATABASE_NAME", "eam_test")
 os.environ["DATABASE_URL"] = (
-    "postgresql+psycopg://eam:eam_dev_password@postgres:5432/eam_test"
+    f"postgresql+psycopg://eam:eam_dev_password@postgres:5432/{TEST_DATABASE_NAME}"
 )
 # The application must serve requests from the *restricted* role, in tests as
 # well as in production: the row-level policies ticket 13 installs are skipped
 # for a table's owner, so a suite that connected as the owner would exercise
 # none of them and still look green.
 os.environ["APP_DATABASE_URL"] = (
-    "postgresql+psycopg://eam_app:eam_app_dev_password@postgres:5432/eam_test"
+    f"postgresql+psycopg://eam_app:eam_app_dev_password@postgres:5432/{TEST_DATABASE_NAME}"
 )
 os.environ.setdefault("APP_ENV", "test")
 

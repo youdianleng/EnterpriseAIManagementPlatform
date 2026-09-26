@@ -88,12 +88,23 @@ class AuditAction(StrEnum):
     PAYSLIP_UPLOADED = "payslip.uploaded"  # 44
     PAYSLIP_DOWNLOADED = "payslip.downloaded"  # 45
     PAYSLIP_WITHDRAWN = "payslip.withdrawn"  # 46
+    #: A second attempt at an event that was already raised. Recorded rather than
+    #: dropped silently: "the notifier ran twice" and "the notifier never ran" look
+    #: identical from a notification that is simply absent.
+    NOTIFICATION_DUPLICATE_SUPPRESSED = "notification.duplicate_suppressed"  # 19
     APPROVAL_DECIDED = "approval.decided"  # 16
     #: Filed and taken back. A withdrawal is a state change somebody made, and the
     #: request row would otherwise be the only trace of it — with no record of who
     #: did it, which is the question an incident review asks first.
     APPROVAL_SUBMITTED = "approval.submitted"  # 16
     APPROVAL_WITHDRAWN = "approval.withdrawn"  # 16
+    #: A personnel change taking effect, which is not the moment it was approved.
+    #: The record carries the before/after pair each field change was applied with,
+    #: because the payload states what was agreed and this states what was written.
+    PERSONNEL_CHANGE_APPLIED = "personnel_change.applied"  # 17
+    #: Cancelling an approved-but-unapplied change: a state change somebody made,
+    #: with a reason, and the row's own columns are not the trail for it.
+    PERSONNEL_CHANGE_CANCELLED = "personnel_change.cancelled"  # 17
     AGENT_ACTION_PROPOSED = "agent.action_proposed"  # 40
     AGENT_ACTION_CONFIRMED = "agent.action_confirmed"  # 41
     DATA_EXPORTED = "data.exported"  # 26, 47

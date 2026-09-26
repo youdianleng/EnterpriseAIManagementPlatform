@@ -47,6 +47,15 @@ class Settings(BaseSettings):
     db_max_overflow: int = 10
     db_pool_recycle_seconds: int = 1800
 
+    # Personnel changes take effect on their effective date, and something has to
+    # notice. The supported way is the command
+    # (`python -m app.jobs.apply_personnel_changes`) from cron or a systemd timer.
+    # This flag adds an in-process runner for a deployment that has no scheduler
+    # yet — a thin loop over the same function, and **off by default**, because a
+    # scheduler nobody can turn off is worse than a command somebody runs.
+    personnel_apply_runner_enabled: bool = False
+    personnel_apply_interval_seconds: int = 900
+
     # The browser talks to the API directly, so origins must be host-facing.
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
 

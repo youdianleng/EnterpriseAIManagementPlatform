@@ -45,17 +45,33 @@ def _private_fields(private: EmployeePrivate) -> set[str]:
 
 
 class EmployeeService:
+    """The employee rules.
+
+    `transactional` is for the one caller that has to own the transaction itself:
+    applying an approved personnel change writes an employee, an assignment and a
+    termination in one unit, and a service that commits per operation would leave
+    half of that behind when the second half failed. Every other caller keeps the
+    default — one operation, one transaction.
+    """
+
     def __init__(
         self,
         repository: EmployeeRepository,
         departments: DepartmentLookup,
         session: AsyncSession | None = None,
+        *,
+        transactional: bool = True,
     ) -> None:
         self._repository = repository
         self._departments = departments
         # Optional for unit tests of the profile rules; every write path in the
         # application passes one, because every write is audited.
         self._session = session
+        self._transactional = transactional
+
+    async def _commit(self) -> None:
+        if self._transactional:
+            await self._repository.commit()
 
     async def _audit(
         self,
@@ -130,7 +146,7 @@ class EmployeeService:
                 "status": str(employee.status),
             },
         )
-        await self._repository.commit()
+        await self._commit()
         return await self.get_record(employee.id)
 
     async def update(self, employee_id: UUID, patch: EmployeePatch) -> EmployeeRecord:
@@ -163,7 +179,7 @@ class EmployeeService:
             before={name: getattr(current.employee, name) for name in changes},
             after=dict(changes),
         )
-        await self._repository.commit()
+        await self._commit()
         return await self.get_record(employee_id)
 
     async def update_private(
@@ -190,7 +206,7 @@ class EmployeeService:
             # should be able to point at without becoming a second copy of.
             after={"fields": sorted(_private_fields(private))},
         )
-        await self._repository.commit()
+        await self._commit()
         return await self.get_record(employee_id)
 
     # --- assignments -------------------------------------------------------
@@ -226,10 +242,19 @@ class EmployeeService:
                 "start_date": str(data.start_date),
             },
         )
-        await self._repository.commit()
+        await self._commit()
         return await self.get_record(employee_id)
 
-    async def end_assignment(self, employee_id: UUID, assignment_id: UUID) -> EmployeeRecord:
+    async def end_assignment(
+        self, employee_id: UUID, assignment_id: UUID, *, on_date: date | None = None
+    ) -> EmployeeRecord:
+        """End a position, today unless the caller says when.
+
+        `on_date` exists for the applier of a personnel change: a transfer
+        approved a week before it takes effect ends the old assignment on the day
+        the move is effective, not on the day the job happened to run. Everything
+        else ends a position now.
+        """
         assignments = await self._repository.list_assignments(employee_id)
         target = next((item for item in assignments if item.id == assignment_id), None)
         if target is None:
@@ -247,7 +272,7 @@ class EmployeeService:
                 detail="an employee must keep at least one active position",
             )
 
-        await self._repository.end_assignment(assignment_id)
+        await self._repository.end_assignment(assignment_id, on_date=on_date)
 
         if target.is_primary:
             # Promote a remaining position, so "the primary one" always resolves.
@@ -265,9 +290,10 @@ class EmployeeService:
                 "department_id": str(target.department_id),
                 "job_position_id": str(target.job_position_id),
                 "is_primary": target.is_primary,
+                "end_date": str(on_date or date.today()),
             },
         )
-        await self._repository.commit()
+        await self._commit()
         return await self.get_record(employee_id)
 
     async def set_primary(self, employee_id: UUID, assignment_id: UUID) -> EmployeeRecord:
@@ -301,7 +327,7 @@ class EmployeeService:
             },
             after={"primary_department_id": str(target.department_id)},
         )
-        await self._repository.commit()
+        await self._commit()
         return await self.get_record(employee_id)
 
     # --- internals ---------------------------------------------------------

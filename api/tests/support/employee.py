@@ -245,10 +245,17 @@ class InMemoryEmployeeRepository:
         self.assignments[assignment.id] = assignment
         return assignment
 
-    async def end_assignment(self, assignment_id: UUID) -> None:
+    async def end_assignment(self, assignment_id: UUID, *, on_date: date | None = None) -> None:
+        """`on_date` is the day the position ended; the double has its own today.
+
+        It exists because the personnel-change applier ends an assignment on the
+        day the move is effective rather than on the day the job ran, so a
+        substitute that could not be told when would answer a different question
+        from the one the service asks.
+        """
         current = self.assignments[assignment_id]
         self.assignments[assignment_id] = Assignment(
-            **{**self._as_dict(current), "end_date": date(2026, 1, 1)}
+            **{**self._as_dict(current), "end_date": on_date or date(2026, 1, 1)}
         )
 
     async def set_primary(self, employee_id: UUID, assignment_id: UUID) -> None:

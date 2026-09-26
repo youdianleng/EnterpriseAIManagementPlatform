@@ -82,6 +82,31 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.approval_not_pending": "La solicitud ya no está pendiente de decisión.",
         "errors.approval_previously_rejected":
             "La solicitud fue rechazada y no se puede volver a presentar.",
+        "errors.notification_not_yours": (
+            "Esa notificación no está dirigida a ti."
+        ),
+        "errors.personnel_change_not_found": "No se encontró la solicitud de cambio.",
+        "errors.personnel_change_invalid_payload": (
+            "El detalle del cambio no es válido: indica los campos y sus valores "
+            "anteriores y nuevos, sin texto libre."
+        ),
+        "errors.personnel_change_employee_required": (
+            "Indica la persona a la que se refiere el cambio; solo el alta crea una "
+            "persona nueva."
+        ),
+        "errors.personnel_change_not_draft": (
+            "Este cambio ya no es un borrador: no se puede modificar ni presentar."
+        ),
+        "errors.personnel_change_already_applied": (
+            "El cambio ya está aplicado y no se puede anular. Crea un cambio inverso."
+        ),
+        "errors.personnel_change_not_cancellable": (
+            "El cambio ya está cerrado y no se puede anular."
+        ),
+        "errors.personnel_change_apply_failed": (
+            "El cambio no se pudo aplicar: el registro al que se refiere ya no existe "
+            "o ya no admite este cambio. No se aplicó ninguna de sus partes."
+        ),
         "errors.internal_error": "Se produjo un error interno. Inténtalo de nuevo más tarde.",
         "errors.service_unavailable": "El servicio no está disponible en este momento.",
     },
@@ -156,6 +181,29 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.approval_not_pending": "The request is no longer awaiting a decision.",
         "errors.approval_previously_rejected":
             "The request was rejected and cannot be submitted again.",
+        "errors.notification_not_yours": "That notification is not addressed to you.",
+        "errors.personnel_change_not_found": "The personnel change was not found.",
+        "errors.personnel_change_invalid_payload": (
+            "The change detail is not valid: name the fields with their previous and "
+            "new values, not free text."
+        ),
+        "errors.personnel_change_employee_required": (
+            "Name the person this change is about; only a join creates a new person."
+        ),
+        "errors.personnel_change_not_draft": (
+            "This change is no longer a draft, so it cannot be edited or filed."
+        ),
+        "errors.personnel_change_already_applied": (
+            "This change has already taken effect and cannot be cancelled. "
+            "Raise a counter-change instead."
+        ),
+        "errors.personnel_change_not_cancellable": (
+            "This change is already closed and cannot be cancelled."
+        ),
+        "errors.personnel_change_apply_failed": (
+            "The change could not be applied: the record it refers to no longer exists "
+            "or no longer accepts it. None of its parts were applied."
+        ),
         "errors.internal_error": "An internal error occurred. Please try again later.",
         "errors.service_unavailable": "The service is unavailable right now.",
     },

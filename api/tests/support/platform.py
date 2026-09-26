@@ -28,11 +28,18 @@ from app.main import app
 #: RESTRICT, so referencing rows go first.
 CLEANUP_ORDER = (
     "DELETE FROM audit_log",
+    # A personnel change references its employee with ON DELETE RESTRICT, so it
+    # has to go before them. Its approval request is a plain column, not a foreign
+    # key, so the order against the engine's tables does not matter.
+    "DELETE FROM personnel_changes",
     # Decisions first: they reference their request with ON DELETE RESTRICT, so
     # the request cannot go until they have.
     "DELETE FROM approval_decisions",
     "DELETE FROM approval_steps",
     "DELETE FROM approval_requests",
+    # Deliveries reference their notification, which references nothing else.
+    "DELETE FROM notification_deliveries",
+    "DELETE FROM notifications",
     "DELETE FROM users",
     # After users, before the rest: published catalogue rows reference each other.
     "DELETE FROM role_permissions",

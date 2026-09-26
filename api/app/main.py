@@ -1,7 +1,8 @@
 """FastAPI application factory."""
 
+import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,6 +14,8 @@ from app.api.v1 import audit as audit_v1
 from app.api.v1 import auth as auth_v1
 from app.api.v1 import departments as departments_v1
 from app.api.v1 import employees as employees_v1
+from app.api.v1 import notifications as notifications_v1
+from app.api.v1 import personnel as personnel_v1
 from app.api.v1 import positions as positions_v1
 from app.api.v1 import roles as roles_v1
 from app.cache import close_redis
@@ -37,14 +40,34 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     logger = get_logger(__name__)
     logger.info("app_started", environment=settings.app_env, version=__version__)
     await _publish_role_catalogue(logger)
+    runner = _start_personnel_runner(settings)
     try:
         yield
     finally:
+        if runner is not None:
+            runner.cancel()
+            with suppress(asyncio.CancelledError):
+                await runner
         # Release pooled connections so a restart never leaves the database
         # holding sockets for a process that is gone.
         await dispose_engine()
         await close_redis()
         logger.info("app_stopped")
+
+
+def _start_personnel_runner(settings) -> "asyncio.Task[None] | None":  # noqa: ANN001 - Settings
+    """The optional in-process applier, off unless the setting turns it on.
+
+    Two servers running it is safe — each change is taken with `FOR UPDATE SKIP
+    LOCKED` — but the command remains the supported way to run it, because a loop
+    that lives inside the API dies whenever the API does, and the API is the thing
+    that gets redeployed.
+    """
+    if not settings.personnel_apply_runner_enabled:
+        return None
+    from app.jobs.apply_personnel_changes import run_forever
+
+    return asyncio.create_task(run_forever(settings.personnel_apply_interval_seconds))
 
 
 async def _publish_role_catalogue(logger) -> None:  # noqa: ANN001 - structlog logger
@@ -116,6 +139,8 @@ def create_app() -> FastAPI:
     app.include_router(auth_v1.router, prefix=API_PREFIX)
     app.include_router(audit_v1.router, prefix=API_PREFIX)
     app.include_router(roles_v1.router, prefix=API_PREFIX)
+    app.include_router(notifications_v1.router, prefix=API_PREFIX)
+    app.include_router(personnel_v1.router, prefix=API_PREFIX)
     if settings.is_development:
         app.include_router(debug.router, prefix=API_PREFIX)
 

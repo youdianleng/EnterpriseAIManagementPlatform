@@ -332,10 +332,13 @@ class PostgresEmployeeRepository:
         ).one()
         return _to_assignment(*row)
 
-    async def end_assignment(self, assignment_id: UUID) -> None:
+    async def end_assignment(self, assignment_id: UUID, *, on_date: date | None = None) -> None:
         row = await self._session.get(AssignmentRow, assignment_id)
         assert row is not None
-        row.end_date = date.today()
+        # A personnel change states the day it takes effect; everything else ends a
+        # position now. Clamped to the start date because the table refuses an
+        # assignment that ends before it began, and a same-day move is legitimate.
+        row.end_date = max(row.start_date, on_date) if on_date else date.today()
         await self._session.flush()
 
     async def set_primary(self, employee_id: UUID, assignment_id: UUID) -> None:
