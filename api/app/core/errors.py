@@ -47,6 +47,12 @@ class ErrorCode(StrEnum):
     EMPLOYEE_ASSIGNMENT_ENDED = "ERR_EMP_009"
     EMPLOYEE_LAST_ASSIGNMENT = "ERR_EMP_010"
 
+    # Job position catalogue.
+    POSITION_NOT_FOUND = "ERR_POS_001"
+    POSITION_CODE_TAKEN = "ERR_POS_002"
+    POSITION_DEPARTMENT_INVALID = "ERR_POS_003"
+    POSITION_IN_USE = "ERR_POS_004"
+
     # Cross-cutting.
     INTERNAL_ERROR = "ERR_INTERNAL_001"
     SERVICE_UNAVAILABLE = "ERR_INTERNAL_002"
@@ -106,6 +112,12 @@ ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
         409, "errors.employee_assignment_ended"
     ),
     ErrorCode.EMPLOYEE_LAST_ASSIGNMENT: ErrorDefinition(409, "errors.employee_last_assignment"),
+    ErrorCode.POSITION_NOT_FOUND: ErrorDefinition(404, "errors.position_not_found"),
+    ErrorCode.POSITION_CODE_TAKEN: ErrorDefinition(409, "errors.position_code_taken"),
+    ErrorCode.POSITION_DEPARTMENT_INVALID: ErrorDefinition(
+        422, "errors.position_department_invalid"
+    ),
+    ErrorCode.POSITION_IN_USE: ErrorDefinition(409, "errors.position_in_use"),
     ErrorCode.INTERNAL_ERROR: ErrorDefinition(500, "errors.internal_error", expose_detail=False),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorDefinition(
         503, "errors.service_unavailable", expose_detail=False

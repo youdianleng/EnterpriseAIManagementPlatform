@@ -42,6 +42,12 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.employee_assignment_ended": "Esa asignación de puesto ya ha finalizado.",
         "errors.employee_last_assignment":
             "La persona debe conservar al menos un puesto activo.",
+        "errors.position_not_found": "No se encontró el puesto.",
+        "errors.position_code_taken": "Ya existe un puesto con ese código en el departamento.",
+        "errors.position_department_invalid":
+            "El departamento indicado no existe o está desactivado.",
+        "errors.position_in_use":
+            "El puesto tiene personal asignado; desactívalo en lugar de eliminarlo.",
         "errors.internal_error": "Se produjo un error interno. Inténtalo de nuevo más tarde.",
         "errors.service_unavailable": "El servicio no está disponible en este momento.",
     },
@@ -76,6 +82,12 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.employee_assignment_ended": "That position assignment has already ended.",
         "errors.employee_last_assignment":
             "A person must keep at least one active position.",
+        "errors.position_not_found": "The position was not found.",
+        "errors.position_code_taken": "A position with that code already exists in the department.",
+        "errors.position_department_invalid":
+            "The chosen department does not exist or is deactivated.",
+        "errors.position_in_use":
+            "The position has staff assigned; deactivate it instead of deleting it.",
         "errors.internal_error": "An internal error occurred. Please try again later.",
         "errors.service_unavailable": "The service is unavailable right now.",
     },

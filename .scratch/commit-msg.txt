@@ -1,36 +1,27 @@
-feat(employee): records, private details, multi-position assignments
+feat(positions): job position catalogue
 
-Ticket 07. Adds the people the rest of the system is about, and puts the
-visibility line the ticket draws into a single testable rule.
+Ticket 08, first half. The role-assignment half needs a users table, which
+arrives with ticket 09, so it moves to 08b; the catalogue depends only on
+departments and assignments and is complete here.
 
-- Two tables for one person: `employees` holds what the directory may read,
-  `employee_private` holds what only the person, HR, finance and compliance may
-  read. Withholding the address becomes a property of the query rather than
-  something every call site must remember.
-- `employee_assignments` carries the position history that lets one person hold
-  several positions across departments, with the approver per position and a
-  fallback to the department manager resolved at the edge.
-- The first assignment becomes primary by construction; a client cannot ask for
-  the flag, and promoting another position is an administrative endpoint. A
-  partial unique index keeps at most one active primary per person.
-- Ending the last active position is refused: every later feature assumes an
-  employed person has somewhere to be.
-- `domain/employee/visibility.py` decides what a viewer receives, as a pure
-  function with an exhaustive viewer-by-field-group matrix test. The transport
-  layer never guesses which fields to serialise.
-- Withheld fields are absent from the payload, never null, so a client cannot
-  read "not allowed to know" as "not recorded".
-- `departments.manager_employee_id` finally gets its foreign key, deferred from
-  revision 0002 which had no employees table to point at.
+- Position CRUD under a department, with a managerial flag that later derives
+  the manager role.
+- A code is unique within its department, not globally: codes describe a role
+  inside a team, so `manager` legitimately exists under several departments. A
+  partial unique index enforces it in the database as well.
+- A position is never hard-deleted while anything references it. Deactivation is
+  the supported way to retire a role: existing assignments keep resolving, new
+  ones are refused (the employee path already rejects an inactive position).
+- The catalogue list reports both counts in one query rather than an N+1 loop:
+  live assignments, which is what an operator looks for, and total references,
+  which is what blocks deletion.
 
-The ticket requires that ID numbers, bank details, health data and biometrics
-are not stored. A CHECK constraint cannot express that (PostgreSQL rejects
-subqueries inside CHECK), so migration 0003 installs a DDL event trigger that
-refuses any ALTER TABLE adding such a column, and a test drives the trigger to
-prove it fires. Request schemas use extra="forbid" so a client sending a
-national_id gets 422 instead of a 201 and a silent drop.
+Also fixed: deletion was decided on active assignments alone, but
+`employee_assignments.job_position_id` is RESTRICT. A position referenced only
+by history passed the check and then failed inside the database, turning a clear
+409 into a 500. It now counts every reference.
 
-Also fixed while verifying: withheld fields reappearing as null because the
-response model serialised its own defaults; the directory projection emitting
-"email": null for withheld rows; and an in-memory substitute missing the patch
-helper the service had started to use.
+Probes: probe_positions covers 20 checks over real HTTP, and every probe now
+asserts it left no rows behind — an earlier version of probe_employees leaked
+department rows because it deleted employees before the departments that
+reference them.

@@ -297,8 +297,32 @@ def main() -> None:
     )
 
     # --- cleanup -----------------------------------------------------------
-    for employee in (ana, colleague, boss, outsider):
-        sql("DELETE FROM employees WHERE id = :id", {"id": UUID(employee["id"])})
+    # Order matters: every foreign key here is RESTRICT, so the referencing rows
+    # go first. Assignments before employees, employees before departments.
+    # Cleanup uses SQL because the API deliberately has no "delete an employee"
+    # endpoint, and a probe that leaves rows behind makes the next run's
+    # expectations depend on the previous one.
+    ids = [UUID(employee["id"]) for employee in (ana, colleague, boss, outsider)]
+    sql("DELETE FROM employee_assignments WHERE employee_id = ANY(:ids)", {"ids": ids})
+    sql(
+        "UPDATE departments SET manager_employee_id = NULL WHERE id = ANY(:ids)",
+        {"ids": [first_department["id"], second_department["id"]]},
+    )
+    sql("DELETE FROM employees WHERE id = ANY(:ids)", {"ids": ids})
+    sql(
+        "DELETE FROM job_positions WHERE department_id = ANY(:ids)",
+        {"ids": [first_department["id"], second_department["id"]]},
+    )
+    for department_row in (first_department, second_department):
+        status, body = call("DELETE", f"/departments/{department_row['id']}")
+        check(
+            f"department {department_row['code']} is removed",
+            status == 204,
+            f"{status} {body if status != 204 else ''}",
+        )
+
+    leftover = call("GET", "/employees/directory")[1]
+    check("no employees are left behind", leftover == [], len(leftover or []))
     for department in (first_department, second_department):
         call("DELETE", f"/departments/{department['id']}")
 
