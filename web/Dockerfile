@@ -20,7 +20,9 @@ FROM node:22-alpine AS prod
 WORKDIR /app
 
 COPY package.json ./
-RUN npm install
+# Playwright and the other dev dependencies are E2E tooling; they must not ship
+# in the runtime image.
+RUN npm install --omit=dev
 
 COPY . .
 RUN npm run build

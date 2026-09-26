@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 
 import { DEFAULT_LOCALE, isLocale, type Locale } from "@/lib/i18n/config";
 import { getDictionary } from "@/lib/i18n";
@@ -30,16 +31,36 @@ export default async function LocaleLayout({
     <html lang={locale}>
       <body className="min-h-dvh antialiased">
         <div className="mx-auto flex min-h-dvh w-full max-w-5xl flex-col px-4 py-8 sm:px-6 lg:px-8">
-          <header className="mb-8 border-b border-border pb-6">
-            <p className="text-xs font-semibold tracking-[0.08em] text-primary uppercase">
+          {/*
+            The shell owns no heading: each page supplies its own h1, which keeps
+            exactly one level-1 heading per document.
+          */}
+          <header className="mb-8 flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
+            <Link
+              href={`/${locale}`}
+              className="text-sm font-semibold tracking-[0.08em] text-primary uppercase"
+            >
               {dict.app.name}
-            </p>
-            {/*
-              The shell owns the single h1 and the page has no visible page title
-              in this milestone, so this is the visible-in-AT heading. When real
-              screens land, move this level-1 heading into them.
-            */}
-            <h1 className="sr-only">{dict.app.name}</h1>
+            </Link>
+            <div className="flex items-center gap-4">
+              <nav aria-label={dict.app.name}>
+                <ul className="flex items-center gap-3 text-sm">
+                  <li>
+                    <Link href={`/${locale}`} className="text-fg-muted hover:text-fg">
+                      {dict.nav.home}
+                    </Link>
+                  </li>
+                  <li>
+                    <Link
+                      href={`/${locale}/style-guide`}
+                      className="text-fg-muted hover:text-fg"
+                    >
+                      {dict.nav.styleGuide}
+                    </Link>
+                  </li>
+                </ul>
+              </nav>
+            </div>
           </header>
           <main className="flex flex-1 flex-col">{children}</main>
         </div>

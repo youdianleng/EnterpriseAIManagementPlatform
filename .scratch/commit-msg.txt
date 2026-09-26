@@ -1,6 +1,33 @@
-fix(scripts): survive git writing progress to stderr
+feat(web): design system, style guide and locale-aware formatting
 
-PowerShell turns a native command's stderr into an error record, and
-$ErrorActionPreference='Stop' promoted it to a terminating error, so a
-successful push reported failure. The push result now comes from the exit code
-with the preference relaxed for that one call.
+Ticket 03. Establishes the component library every later screen composes from,
+plus the automated visual regression that keeps it honest.
+
+- Components under web/lib/ui: Button, TextField, SelectField, Card, DataTable,
+  Alert, Dialog. Every field wires its own label/aria-describedby/aria-invalid,
+  because a caller that forgets htmlFor produces a field screen readers
+  announce as blank. Dialog wraps the native <dialog> element so focus
+  trapping and Escape-to-close come from the browser.
+- Design tokens applied from docs/architecture/frontend-design-system.md: 4px
+  spacing scale, 14px body, tabular numerals, semantic colour pairs, and
+  reduced-motion support. Buttons are sized by padding, never fixed width, so
+  longer Spanish labels cannot clip.
+- Style guide page in both languages: colours (foreground paired with its own
+  background, since the pair is what must be readable), typography, spacing,
+  buttons, alerts, forms, table, dialog. Adding a component means adding a
+  section here.
+- App shell: no heading of its own, so each page owns exactly one h1.
+- web/lib/format: locale-aware number, decimal, percent, date and duration
+  formatting. This exists because toLocaleString() without a locale follows the
+  browser, which made one page render "37,5" in a table and "1.5" in prose.
+  For hours and money an inconsistent decimal separator is a data-reading
+  hazard, so formatting now always takes the interface locale explicitly.
+- web/scripts/visual-check.mjs: Playwright checks across 320/768/1280 x es/en,
+  asserting one h1 per page, no skipped heading levels, no page-level
+  horizontal overflow, every control having an accessible name, decimal
+  separators being correct and internally consistent per language, and Spanish
+  text expansion staying within 25%. Writes screenshots for human review.
+
+Also fixed: the inherited .gitignore covered Python but not Node, so
+web/node_modules and build output were untracked-but-visible. The prod image
+now installs with --omit=dev so Playwright never ships.
