@@ -29,6 +29,19 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.department_move_into_descendant":
             "No se puede mover un departamento dentro de sí mismo.",
         "errors.department_depth_exceeded": "Se superaría el número máximo de niveles.",
+        "errors.employee_not_found": "No se encontró la persona.",
+        "errors.employee_email_taken": "Ya existe una persona con ese correo.",
+        "errors.employee_number_taken": "Ya existe una persona con ese número de empleado.",
+        "errors.employee_dates_invalid":
+            "La fecha de baja no puede ser anterior a la de alta.",
+        "errors.employee_position_not_found": "El puesto indicado no existe.",
+        "errors.employee_position_inactive": "El puesto indicado está desactivado.",
+        "errors.employee_manager_not_found":
+            "La persona responsable indicada no existe o no es válida.",
+        "errors.employee_assignment_not_found": "No se encontró esa asignación de puesto.",
+        "errors.employee_assignment_ended": "Esa asignación de puesto ya ha finalizado.",
+        "errors.employee_last_assignment":
+            "La persona debe conservar al menos un puesto activo.",
         "errors.internal_error": "Se produjo un error interno. Inténtalo de nuevo más tarde.",
         "errors.service_unavailable": "El servicio no está disponible en este momento.",
     },
@@ -51,6 +64,18 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.department_move_into_descendant":
             "A department cannot be moved inside itself.",
         "errors.department_depth_exceeded": "The maximum number of levels would be exceeded.",
+        "errors.employee_not_found": "The person was not found.",
+        "errors.employee_email_taken": "A person with that email already exists.",
+        "errors.employee_number_taken": "A person with that staff number already exists.",
+        "errors.employee_dates_invalid": "The end date cannot precede the start date.",
+        "errors.employee_position_not_found": "The chosen position does not exist.",
+        "errors.employee_position_inactive": "The chosen position is deactivated.",
+        "errors.employee_manager_not_found":
+            "The chosen approver does not exist or is not valid.",
+        "errors.employee_assignment_not_found": "That position assignment was not found.",
+        "errors.employee_assignment_ended": "That position assignment has already ended.",
+        "errors.employee_last_assignment":
+            "A person must keep at least one active position.",
         "errors.internal_error": "An internal error occurred. Please try again later.",
         "errors.service_unavailable": "The service is unavailable right now.",
     },

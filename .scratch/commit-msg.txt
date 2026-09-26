@@ -1,34 +1,36 @@
-feat(org): department tree with ltree ancestry and depth rules
+feat(employee): records, private details, multi-position assignments
 
-Ticket 06. First domain module, and it sets the layering the rest follow:
-domain/ holds the rules and depends on a Protocol, repositories/ holds the SQL,
-api/v1/ holds the transport.
+Ticket 07. Adds the people the rest of the system is about, and puts the
+visibility line the ticket draws into a single testable rule.
 
-- departments table with an ltree materialised path and a denormalised depth.
-  "This department and all its descendants" is one indexed `<@` comparison
-  instead of a recursive walk, which matters because the permission kernel asks
-  it on nearly every request.
-- Paths are derived, never client-supplied. Codes are sanitised into ltree
-  labels by doubling underscores and mapping anything else to `_`, which keeps
-  `r-d` and `r_d` distinct.
-- Code uniqueness is a partial unique index on (parent_id, code) WHERE
-  is_active: a code belongs to a position in the tree, and a deactivated
-  department should not reserve it forever.
-- A move rewrites the moved node and every descendant in a single UPDATE using
-  subpath(), rather than one statement per row.
-- Rules enforced in the domain: code taken, parent missing or inactive, depth
-  limit, move into own descendant, delete with children, delete with staff.
-  Errors carry a code; deciding that a code becomes a 409 is the edge's job.
-- Structure cache invalidates by bumping an org:tree:version stamp in Redis
-  rather than waiting for a TTL.
-- Writes require a structure role and deny by default; reads stay open until
-  authentication lands in ticket 11.
+- Two tables for one person: `employees` holds what the directory may read,
+  `employee_private` holds what only the person, HR, finance and compliance may
+  read. Withholding the address becomes a property of the query rather than
+  something every call site must remember.
+- `employee_assignments` carries the position history that lets one person hold
+  several positions across departments, with the approver per position and a
+  fallback to the department manager resolved at the edge.
+- The first assignment becomes primary by construction; a client cannot ask for
+  the flag, and promoting another position is an administrative endpoint. A
+  partial unique index keeps at most one active primary per person.
+- Ending the last active position is refused: every later feature assumes an
+  employed person has somewhere to be.
+- `domain/employee/visibility.py` decides what a viewer receives, as a pure
+  function with an exhaustive viewer-by-field-group matrix test. The transport
+  layer never guesses which fields to serialise.
+- Withheld fields are absent from the payload, never null, so a client cannot
+  read "not allowed to know" as "not recorded".
+- `departments.manager_employee_id` finally gets its foreign key, deferred from
+  revision 0002 which had no employees table to point at.
 
-Depth limit: MAX_DEPTH = 4 (depths 0..4) follows the "4 层嵌套" wording in
-tickets 22 and 43. Ticket 03's "部门 4 层" is a scale baseline, not tree depth.
+The ticket requires that ID numbers, bank details, health data and biometrics
+are not stored. A CHECK constraint cannot express that (PostgreSQL rejects
+subqueries inside CHECK), so migration 0003 installs a DDL event trigger that
+refuses any ALTER TABLE adding such a column, and a test drives the trigger to
+prove it fires. Request schemas use extra="forbid" so a client sending a
+national_id gets 422 instead of a 201 and a silent drop.
 
-Five defects found while verifying: a lookaround regex that matched inside its
-own replacement; an in-memory substitute that dropped a path separator the SQL
-kept; subtree_height counting from the root rather than the node; a `>=` where
-`>` was meant; and the lru_cached engine/Redis clients being bound to the first
-test's event loop, which turned /ready into a 503 in later tests.
+Also fixed while verifying: withheld fields reappearing as null because the
+response model serialised its own defaults; the directory projection emitting
+"email": null for withheld rows; and an in-memory substitute missing the patch
+helper the service had started to use.

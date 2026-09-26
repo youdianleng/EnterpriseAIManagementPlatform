@@ -5,6 +5,7 @@ so the rules can be tested without a database and the calling layer can decide
 what a domain error becomes over HTTP.
 """
 
+from app.domain.org.errors import OrgErrorCode
 from app.domain.org.models import (
     ClearanceLevel,
     Department,
@@ -23,4 +24,5 @@ __all__ = [
     "DepartmentRepository",
     "DepartmentService",
     "DepartmentTree",
+    "OrgErrorCode",
 ]

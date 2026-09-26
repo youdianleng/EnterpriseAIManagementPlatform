@@ -9,6 +9,12 @@
     If no git credentials are configured the commit still lands locally and the
     script reports the push as pending instead of failing the whole run.
 
+    Every git call goes through Invoke-Git. Git writes ordinary progress and
+    line-ending notices to stderr, and PowerShell turns a native command's stderr
+    into an error record, which $ErrorActionPreference='Stop' then promotes to a
+    terminating error — so a successful command would report failure. Status is
+    taken from the exit code alone.
+
 .PARAMETER MessageFile
     Path to a file containing the commit message.
 
@@ -23,7 +29,32 @@ param(
     [switch]$DryRun
 )
 
-$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Continue'
+
+function Invoke-Git {
+    <#
+    Run git, stream its output, and return $true when it succeeded.
+
+    Arguments are passed as one array. PowerShell would otherwise treat a flag
+    like `-A` as a parameter name for this function rather than as a git
+    argument. The caller decides what a failure means; this never throws, because
+    "did it work" here is the exit code and nothing else.
+    #>
+    param([string[]]$Arguments)
+
+    $output = & git @Arguments 2>&1
+    $succeeded = ($LASTEXITCODE -eq 0)
+    foreach ($line in $output) {
+        if ($line -is [System.Management.Automation.ErrorRecord]) {
+            Write-Host $line.ToString()
+        }
+        else {
+            Write-Host $line
+        }
+    }
+    return $succeeded
+}
 
 if (-not (Test-Path $MessageFile)) {
     throw "Commit message file not found: $MessageFile"
@@ -31,10 +62,11 @@ if (-not (Test-Path $MessageFile)) {
 
 Push-Location (Join-Path $PSScriptRoot '..')
 try {
-    git add -A
-    if ($LASTEXITCODE -ne 0) { throw 'git add failed' }
+    if (-not (Invoke-Git -Arguments @('add', '-A'))) {
+        throw 'git add failed'
+    }
 
-    $staged = git diff --cached --name-only
+    $staged = & git diff --cached --name-only
     if (-not $staged) {
         Write-Host 'Nothing staged; skipping commit.' -ForegroundColor Yellow
         return
@@ -46,31 +78,19 @@ try {
         return
     }
 
-    git commit -q -F $MessageFile
-    if ($LASTEXITCODE -ne 0) { throw 'git commit failed' }
+    if (-not (Invoke-Git -Arguments @('commit', '-q', '-F', $MessageFile))) {
+        throw 'git commit failed'
+    }
 
-    $subject = (Get-Content $MessageFile -TotalCount 1)
-    Write-Host "Committed: $subject" -ForegroundColor Green
+    Write-Host "Committed: $(Get-Content $MessageFile -TotalCount 1)" -ForegroundColor Green
 
-    # A push needs credentials; report rather than fail when they are missing.
-    # git writes progress to stderr, which PowerShell would otherwise turn into
-    # a terminating error, so the exit code decides — never the output.
+    # Credentials may be absent; a missing push is reported, not fatal.
     $env:GIT_TERMINAL_PROMPT = '0'
-    $previous = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        git push origin HEAD 2>&1 | ForEach-Object { Write-Host $_ }
-        $pushed = ($LASTEXITCODE -eq 0)
-    }
-    finally {
-        $ErrorActionPreference = $previous
-    }
-
-    if ($pushed) {
+    if (Invoke-Git -Arguments @('push', 'origin', 'HEAD')) {
         Write-Host 'Pushed to origin.' -ForegroundColor Green
     }
     else {
-        Write-Host 'PUSH PENDING: commit is local only. Configure credentials, then run: git push origin HEAD' -ForegroundColor Yellow
+        Write-Host 'PUSH PENDING: the commit is local. Run: git push origin HEAD' -ForegroundColor Yellow
     }
 }
 finally {

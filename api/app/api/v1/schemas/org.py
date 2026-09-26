@@ -8,10 +8,11 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.api.v1.schemas.base import StrictModel
 from app.domain.org.models import ClearanceLevel
 
 
-class DepartmentCreate(BaseModel):
+class DepartmentCreate(StrictModel):
     code: str = Field(min_length=1, max_length=64)
     name_es: str = Field(min_length=1, max_length=160)
     name_en: str = Field(min_length=1, max_length=160)
@@ -22,7 +23,7 @@ class DepartmentCreate(BaseModel):
     description_en: str | None = None
 
 
-class DepartmentUpdate(BaseModel):
+class DepartmentUpdate(StrictModel):
     """Every field optional; absent means "leave unchanged"."""
 
     name_es: str | None = Field(default=None, min_length=1, max_length=160)
@@ -34,7 +35,7 @@ class DepartmentUpdate(BaseModel):
     is_active: bool | None = None
 
 
-class DepartmentMove(BaseModel):
+class DepartmentMove(StrictModel):
     # Explicitly nullable: moving a department to the root is a real operation.
     parent_id: UUID | None = None
 

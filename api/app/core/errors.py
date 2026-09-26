@@ -35,6 +35,18 @@ class ErrorCode(StrEnum):
     ORG_DEPARTMENT_MOVE_INTO_DESCENDANT = "ERR_ORG_006"
     ORG_DEPARTMENT_DEPTH_EXCEEDED = "ERR_ORG_007"
 
+    # Employees and their position assignments.
+    EMPLOYEE_NOT_FOUND = "ERR_EMP_001"
+    EMPLOYEE_EMAIL_TAKEN = "ERR_EMP_002"
+    EMPLOYEE_NUMBER_TAKEN = "ERR_EMP_003"
+    EMPLOYEE_DATES_INVALID = "ERR_EMP_004"
+    EMPLOYEE_POSITION_NOT_FOUND = "ERR_EMP_005"
+    EMPLOYEE_POSITION_INACTIVE = "ERR_EMP_006"
+    EMPLOYEE_MANAGER_NOT_FOUND = "ERR_EMP_007"
+    EMPLOYEE_ASSIGNMENT_NOT_FOUND = "ERR_EMP_008"
+    EMPLOYEE_ASSIGNMENT_ENDED = "ERR_EMP_009"
+    EMPLOYEE_LAST_ASSIGNMENT = "ERR_EMP_010"
+
     # Cross-cutting.
     INTERNAL_ERROR = "ERR_INTERNAL_001"
     SERVICE_UNAVAILABLE = "ERR_INTERNAL_002"
@@ -74,6 +86,26 @@ ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
     ErrorCode.ORG_DEPARTMENT_DEPTH_EXCEEDED: ErrorDefinition(
         422, "errors.department_depth_exceeded"
     ),
+    ErrorCode.EMPLOYEE_NOT_FOUND: ErrorDefinition(404, "errors.employee_not_found"),
+    ErrorCode.EMPLOYEE_EMAIL_TAKEN: ErrorDefinition(409, "errors.employee_email_taken"),
+    ErrorCode.EMPLOYEE_NUMBER_TAKEN: ErrorDefinition(409, "errors.employee_number_taken"),
+    ErrorCode.EMPLOYEE_DATES_INVALID: ErrorDefinition(422, "errors.employee_dates_invalid"),
+    ErrorCode.EMPLOYEE_POSITION_NOT_FOUND: ErrorDefinition(
+        422, "errors.employee_position_not_found"
+    ),
+    ErrorCode.EMPLOYEE_POSITION_INACTIVE: ErrorDefinition(
+        422, "errors.employee_position_inactive"
+    ),
+    ErrorCode.EMPLOYEE_MANAGER_NOT_FOUND: ErrorDefinition(
+        422, "errors.employee_manager_not_found"
+    ),
+    ErrorCode.EMPLOYEE_ASSIGNMENT_NOT_FOUND: ErrorDefinition(
+        404, "errors.employee_assignment_not_found"
+    ),
+    ErrorCode.EMPLOYEE_ASSIGNMENT_ENDED: ErrorDefinition(
+        409, "errors.employee_assignment_ended"
+    ),
+    ErrorCode.EMPLOYEE_LAST_ASSIGNMENT: ErrorDefinition(409, "errors.employee_last_assignment"),
     ErrorCode.INTERNAL_ERROR: ErrorDefinition(500, "errors.internal_error", expose_detail=False),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorDefinition(
         503, "errors.service_unavailable", expose_detail=False

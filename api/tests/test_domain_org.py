@@ -7,7 +7,8 @@ deleted. No fixtures, no containers.
 
 import pytest
 
-from app.domain.errors import DomainError, DomainErrorCode
+from app.domain.errors import DomainError
+from app.domain.org.errors import OrgErrorCode
 from app.domain.org.models import ClearanceLevel, DepartmentPatch
 from app.domain.org.paths import child_path, depth_of, is_descendant_path, to_label
 from app.domain.org.service import MAX_DEPTH, DepartmentService, build_tree
@@ -93,7 +94,7 @@ async def test_duplicate_code_is_rejected(repository) -> None:
     with pytest.raises(DomainError) as excinfo:
         await svc.create(make_input("company"))
 
-    assert excinfo.value.code is DomainErrorCode.DEPARTMENT_CODE_TAKEN
+    assert excinfo.value.code is OrgErrorCode.DEPARTMENT_CODE_TAKEN
     assert excinfo.value.http_status == 409
 
 
@@ -103,7 +104,7 @@ async def test_unknown_parent_is_rejected(repository) -> None:
     with pytest.raises(DomainError) as excinfo:
         await service(repository).create(make_input("orphan", uuid4()))
 
-    assert excinfo.value.code is DomainErrorCode.DEPARTMENT_PARENT_INVALID
+    assert excinfo.value.code is OrgErrorCode.DEPARTMENT_PARENT_INVALID
 
 
 async def test_inactive_parent_is_rejected(repository) -> None:
@@ -114,7 +115,7 @@ async def test_inactive_parent_is_rejected(repository) -> None:
     with pytest.raises(DomainError) as excinfo:
         await svc.create(make_input("engineering", root.id))
 
-    assert excinfo.value.code is DomainErrorCode.DEPARTMENT_PARENT_INVALID
+    assert excinfo.value.code is OrgErrorCode.DEPARTMENT_PARENT_INVALID
 
 
 async def test_depth_limit_is_enforced(repository) -> None:
@@ -128,7 +129,7 @@ async def test_depth_limit_is_enforced(repository) -> None:
     with pytest.raises(DomainError) as excinfo:
         await svc.create(make_input("too-deep", parent.id))
 
-    assert excinfo.value.code is DomainErrorCode.DEPARTMENT_DEPTH_EXCEEDED
+    assert excinfo.value.code is OrgErrorCode.DEPARTMENT_DEPTH_EXCEEDED
 
 
 # --- tree ------------------------------------------------------------------
@@ -250,7 +251,7 @@ async def test_move_into_own_descendant_is_rejected(repository) -> None:
     with pytest.raises(DomainError) as excinfo:
         await svc.move(engineering.id, backend.id)
 
-    assert excinfo.value.code is DomainErrorCode.DEPARTMENT_MOVE_INTO_DESCENDANT
+    assert excinfo.value.code is OrgErrorCode.DEPARTMENT_MOVE_INTO_DESCENDANT
 
 
 async def test_move_into_itself_is_rejected(repository) -> None:
@@ -260,7 +261,7 @@ async def test_move_into_itself_is_rejected(repository) -> None:
     with pytest.raises(DomainError) as excinfo:
         await svc.move(company.id, company.id)
 
-    assert excinfo.value.code is DomainErrorCode.DEPARTMENT_MOVE_INTO_DESCENDANT
+    assert excinfo.value.code is OrgErrorCode.DEPARTMENT_MOVE_INTO_DESCENDANT
 
 
 async def test_move_that_would_exceed_the_depth_limit_is_rejected(repository) -> None:
@@ -277,7 +278,7 @@ async def test_move_that_would_exceed_the_depth_limit_is_rejected(repository) ->
     with pytest.raises(DomainError) as excinfo:
         await svc.move(engineering.id, parent.id)
 
-    assert excinfo.value.code is DomainErrorCode.DEPARTMENT_DEPTH_EXCEEDED
+    assert excinfo.value.code is OrgErrorCode.DEPARTMENT_DEPTH_EXCEEDED
 
 
 # --- delete ----------------------------------------------------------------
@@ -302,7 +303,7 @@ async def test_delete_with_children_is_rejected(repository) -> None:
     with pytest.raises(DomainError) as excinfo:
         await svc.delete(company.id)
 
-    assert excinfo.value.code is DomainErrorCode.DEPARTMENT_HAS_CHILDREN
+    assert excinfo.value.code is OrgErrorCode.DEPARTMENT_HAS_CHILDREN
 
 
 async def test_delete_with_staff_is_rejected_before_the_children_check(repository) -> None:
@@ -315,7 +316,7 @@ async def test_delete_with_staff_is_rejected_before_the_children_check(repositor
     with pytest.raises(DomainError) as excinfo:
         await svc.delete(company.id)
 
-    assert excinfo.value.code is DomainErrorCode.DEPARTMENT_NOT_EMPTY
+    assert excinfo.value.code is OrgErrorCode.DEPARTMENT_NOT_EMPTY
     assert excinfo.value.http_status == 409
 
 
@@ -325,5 +326,5 @@ async def test_unknown_department_lookups_are_reported(repository) -> None:
     with pytest.raises(DomainError) as excinfo:
         await service(repository).get(uuid4())
 
-    assert excinfo.value.code is DomainErrorCode.DEPARTMENT_NOT_FOUND
+    assert excinfo.value.code is OrgErrorCode.DEPARTMENT_NOT_FOUND
     assert excinfo.value.http_status == 404

@@ -12,7 +12,8 @@ point of change, instead of relying on a TTL somewhere else.
 from collections.abc import Awaitable, Callable
 from uuid import UUID
 
-from app.domain.errors import DomainError, DomainErrorCode
+from app.domain.errors import DomainError
+from app.domain.org.errors import OrgErrorCode
 from app.domain.org.models import (
     Department,
     DepartmentInput,
@@ -84,7 +85,7 @@ class DepartmentService:
         department = await self._repository.get(department_id)
         if department is None:
             raise DomainError(
-                DomainErrorCode.DEPARTMENT_NOT_FOUND, detail=f"unknown department {department_id}"
+                OrgErrorCode.DEPARTMENT_NOT_FOUND, detail=f"unknown department {department_id}"
             )
         return department
 
@@ -97,7 +98,7 @@ class DepartmentService:
         existing = await self._repository.get_by_code(data.code)
         if existing is not None:
             raise DomainError(
-                DomainErrorCode.DEPARTMENT_CODE_TAKEN, detail=f"code {data.code} already exists"
+                OrgErrorCode.DEPARTMENT_CODE_TAKEN, detail=f"code {data.code} already exists"
             )
 
         parent = await self._require_parent(data.parent_id)
@@ -105,7 +106,7 @@ class DepartmentService:
         depth = depth_of(child_path(parent_path, data.code))
         if depth > MAX_DEPTH:
             raise DomainError(
-                DomainErrorCode.DEPARTMENT_DEPTH_EXCEEDED,
+                OrgErrorCode.DEPARTMENT_DEPTH_EXCEEDED,
                 detail=f"depth {depth} would exceed the limit of {MAX_DEPTH}",
             )
 
@@ -128,7 +129,7 @@ class DepartmentService:
 
         if new_parent_id == department.id:
             raise DomainError(
-                DomainErrorCode.DEPARTMENT_MOVE_INTO_DESCENDANT,
+                OrgErrorCode.DEPARTMENT_MOVE_INTO_DESCENDANT,
                 detail="a department cannot be its own parent",
             )
 
@@ -139,7 +140,7 @@ class DepartmentService:
             # The guard mirrors the SQL `<@` operator used by the update below.
             if is_descendant_path(new_parent.path, department.path):
                 raise DomainError(
-                    DomainErrorCode.DEPARTMENT_MOVE_INTO_DESCENDANT,
+                    OrgErrorCode.DEPARTMENT_MOVE_INTO_DESCENDANT,
                     detail=f"{new_parent.path} is inside {department.path}",
                 )
             # Moving the subtree shifts everything beneath it by the same amount,
@@ -148,7 +149,7 @@ class DepartmentService:
             resulting_depth = depth_of(f"{new_parent.path}.{department.code}") + subtree_height
             if resulting_depth > MAX_DEPTH:
                 raise DomainError(
-                    DomainErrorCode.DEPARTMENT_DEPTH_EXCEEDED,
+                    OrgErrorCode.DEPARTMENT_DEPTH_EXCEEDED,
                     detail=f"move would reach depth {resulting_depth}, limit is {MAX_DEPTH}",
                 )
 
@@ -178,14 +179,14 @@ class DepartmentService:
         employees = await self._repository.count_employees(department_id)
         if employees:
             raise DomainError(
-                DomainErrorCode.DEPARTMENT_NOT_EMPTY,
+                OrgErrorCode.DEPARTMENT_NOT_EMPTY,
                 detail=f"{employees} active employees are assigned to {department.code}",
             )
 
         children = await self._repository.count_children(department_id)
         if children:
             raise DomainError(
-                DomainErrorCode.DEPARTMENT_HAS_CHILDREN,
+                OrgErrorCode.DEPARTMENT_HAS_CHILDREN,
                 detail=f"{children} sub-departments hang off {department.code}",
             )
 
@@ -201,12 +202,12 @@ class DepartmentService:
         parent = await self._repository.get(parent_id)
         if parent is None:
             raise DomainError(
-                DomainErrorCode.DEPARTMENT_PARENT_INVALID,
+                OrgErrorCode.DEPARTMENT_PARENT_INVALID,
                 detail=f"parent {parent_id} does not exist",
             )
         if not parent.is_active:
             raise DomainError(
-                DomainErrorCode.DEPARTMENT_PARENT_INVALID,
+                OrgErrorCode.DEPARTMENT_PARENT_INVALID,
                 detail=f"parent {parent.code} is inactive",
             )
         return parent
