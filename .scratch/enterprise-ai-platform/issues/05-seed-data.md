@@ -2,7 +2,12 @@
 
 **What to build:** 一条命令把一套可信的演示数据灌进空库：一棵四层深的部门树、一批职位、约一百名员工（含多职位与兼职案例）、以及一个系统管理员账号。数据规模足以让权限过滤、分页和列表页在真实体量下被验证，而不是在三个人的假数据上"看起来能跑"。
 
-**Blocked by:** 04 — 数据库迁移、pgvector 与 Redis 接入
+**Blocked by:** 06 — 部门树与组织架构管理；07 — 员工档案与一人多职位；09 — 用户账号与临时密码
+
+> **Dependency corrected during ticket 06.** This ticket was originally blocked only by 04, but its
+> acceptance criteria require departments, employees and a login account, whose tables arrive with
+> tickets 06, 07 and 09. Sequencing it first would have meant writing a seed script against tables
+> that do not exist yet, so 06 was done before it and this edge was added.
 
 **Status:** ready-for-agent
 

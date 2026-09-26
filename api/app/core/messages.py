@@ -20,6 +20,15 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.not_found": "No se encontró el recurso solicitado.",
         "errors.conflict": "La operación entra en conflicto con el estado actual.",
         "errors.resource_gone": "El recurso ya no está disponible.",
+        "errors.department_not_found": "No se encontró el departamento.",
+        "errors.department_code_taken": "Ya existe un departamento con ese código.",
+        "errors.department_not_empty": "El departamento todavía tiene personal asignado.",
+        "errors.department_has_children": "El departamento todavía tiene subdepartamentos.",
+        "errors.department_parent_invalid":
+            "El departamento superior indicado no existe o está desactivado.",
+        "errors.department_move_into_descendant":
+            "No se puede mover un departamento dentro de sí mismo.",
+        "errors.department_depth_exceeded": "Se superaría el número máximo de niveles.",
         "errors.internal_error": "Se produjo un error interno. Inténtalo de nuevo más tarde.",
         "errors.service_unavailable": "El servicio no está disponible en este momento.",
     },
@@ -33,6 +42,15 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.not_found": "The requested resource was not found.",
         "errors.conflict": "The operation conflicts with the current state.",
         "errors.resource_gone": "The resource is no longer available.",
+        "errors.department_not_found": "The department was not found.",
+        "errors.department_code_taken": "A department with that code already exists.",
+        "errors.department_not_empty": "The department still has staff assigned to it.",
+        "errors.department_has_children": "The department still has sub-departments.",
+        "errors.department_parent_invalid":
+            "The chosen parent department does not exist or is deactivated.",
+        "errors.department_move_into_descendant":
+            "A department cannot be moved inside itself.",
+        "errors.department_depth_exceeded": "The maximum number of levels would be exceeded.",
         "errors.internal_error": "An internal error occurred. Please try again later.",
         "errors.service_unavailable": "The service is unavailable right now.",
     },

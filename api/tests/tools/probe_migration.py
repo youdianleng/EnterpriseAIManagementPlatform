@@ -15,6 +15,7 @@ from pathlib import Path
 import psycopg
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -50,12 +51,15 @@ def main() -> None:
         admin.execute(f'CREATE DATABASE "{SCRATCH_DB}"')
 
     config = alembic_config(scratch_url)
+    # Read the head from the migration directory rather than pinning a revision:
+    # a probe that has to be edited whenever a migration is added stops being run.
+    head = ScriptDirectory.from_config(config).get_current_head()
 
     # --- upgrade ---
     command.upgrade(config, "head")
     with psycopg.connect(scratch_url) as connection:
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-        check("upgrade lands on the expected revision", revision == "0001", revision)
+        check("upgrade lands on head", revision == head, f"{revision} (head {head})")
 
         extensions = {
             row[0]
@@ -112,7 +116,7 @@ def main() -> None:
     command.upgrade(config, "head")
     with psycopg.connect(scratch_url) as connection:
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-        check("re-upgrade returns to head", revision == "0001", revision)
+        check("re-upgrade returns to head", revision == head, revision)
 
     with psycopg.connect(settings.sync_admin_database_url, autocommit=True) as admin:
         admin.execute(f'DROP DATABASE IF EXISTS "{SCRATCH_DB}"')

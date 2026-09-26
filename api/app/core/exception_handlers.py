@@ -19,6 +19,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.errors import AppError, ErrorCode, definition_of
 from app.core.messages import message_for
+from app.domain.errors import DomainError
 from app.logging import get_logger
 
 logger = get_logger(__name__)
@@ -77,6 +78,17 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def handle_app_error(_: Request, exc: AppError) -> JSONResponse:
         logger.info("app_error", error_code=exc.code.value, detail=exc.detail)
         return _json(exc.code, detail=exc.detail)
+
+    @app.exception_handler(DomainError)
+    async def handle_domain_error(_: Request, exc: DomainError) -> JSONResponse:
+        """Translate a rule violation into the shared envelope.
+
+        The domain raised a code; deciding that this becomes a 409 is the edge's
+        job, which is why `DomainError` carries no status of its own.
+        """
+        code = ErrorCode(exc.code.value)
+        logger.info("domain_error", error_code=code.value, detail=exc.detail)
+        return _json(code, detail=exc.detail)
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:

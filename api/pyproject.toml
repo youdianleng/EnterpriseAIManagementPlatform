@@ -29,6 +29,9 @@ target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+# B008 flags `Depends(...)` in argument defaults, which is FastAPI's documented
+# dependency-injection form rather than the mutable-default bug the rule targets.
+ignore = ["B008"]
 
 [tool.ruff.lint.isort]
 # `api/alembic/` is this project's migration directory, but `alembic` is also a

@@ -1,31 +1,34 @@
-feat(db): migrations, pgvector schema and real Redis wiring
+feat(org): department tree with ltree ancestry and depth rules
 
-Ticket 04. Establishes the migration channel every later table goes through,
-and pins the two schema decisions that are expensive to reverse.
+Ticket 06. First domain module, and it sets the layering the rest follow:
+domain/ holds the rules and depends on a Protocol, repositories/ holds the SQL,
+api/v1/ holds the transport.
 
-- Alembic wired to application settings rather than alembic.ini, so a migration
-  run can never target a different database than the app. ALEMBIC_DATABASE_URL
-  overrides it, which is how tests migrate eam_test without touching config.
-- Migration 0001 creates the vector and ltree extensions and a throwaway
-  _vector_smoke table carrying the locked 1536-dimension column and its HNSW
-  cosine index. It creates no business tables on purpose: those arrive with the
-  tickets that build their behaviour.
-- app/core/constants.py holds EMBEDDING_DIMENSIONS. The migration keeps a
-  literal so it always describes what it applied, and a test asserts the two
-  agree — a pgvector column's dimension is schema, so drift would only surface
-  as a runtime insert failure.
-- app/db.py: lazy engine and session factory, get_session as the single place
-  the connect/rollback/close lifecycle lives. That is what later makes the RLS
-  context a one-line insertion rather than something every call site remembers.
-- app/cache.py and a lifespan that disposes the engine and closes Redis.
-- /ready now executes SELECT 1 against the pooled engine and pings Redis,
-  instead of reporting a configured DSN.
-- Tests run against a real PostgreSQL (eam_test, separate from development) with
-  an outer transaction rolled back per test, plus a real Redis flushed per test.
+- departments table with an ltree materialised path and a denormalised depth.
+  "This department and all its descendants" is one indexed `<@` comparison
+  instead of a recursive walk, which matters because the permission kernel asks
+  it on nearly every request.
+- Paths are derived, never client-supplied. Codes are sanitised into ltree
+  labels by doubling underscores and mapping anything else to `_`, which keeps
+  `r-d` and `r_d` distinct.
+- Code uniqueness is a partial unique index on (parent_id, code) WHERE
+  is_active: a code belongs to a position in the tree, and a deactivated
+  department should not reserve it forever.
+- A move rewrites the moved node and every descendant in a single UPDATE using
+  subpath(), rather than one statement per row.
+- Rules enforced in the domain: code taken, parent missing or inactive, depth
+  limit, move into own descendant, delete with children, delete with staff.
+  Errors carry a code; deciding that a code becomes a 409 is the edge's job.
+- Structure cache invalidates by bumping an org:tree:version stamp in Redis
+  rather than waiting for a TTL.
+- Writes require a structure role and deny by default; reads stay open until
+  authentication lands in ticket 11.
 
-Measurement corrected a design decision: the doc claimed 3072 dimensions only
-cost index memory. In fact pgvector caps HNSW at 2000 dimensions for `vector`
-and 4000 for `halfvec`, so `vector(3072)` cannot be indexed at all. Measured on
-10k chunks, vector(1536) costs 95.5 MB / 0.9s index / 0.27ms query versus
-halfvec(3072) at 152.6 MB / 1.8s / 0.31ms. Chose vector(1536) and rewrote
-docs/DESIGN.md section 10.3; the probe stays in the repo to be re-run.
+Depth limit: MAX_DEPTH = 4 (depths 0..4) follows the "4 层嵌套" wording in
+tickets 22 and 43. Ticket 03's "部门 4 层" is a scale baseline, not tree depth.
+
+Five defects found while verifying: a lookaround regex that matched inside its
+own replacement; an in-memory substitute that dropped a path separator the SQL
+kept; subtree_height counting from the root rather than the node; a `>=` where
+`>` was meant; and the lru_cached engine/Redis clients being bound to the first
+test's event loop, which turned /ready into a 503 in later tests.

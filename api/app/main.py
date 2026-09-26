@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
+from app.api.v1 import departments as departments_v1
 from app.cache import close_redis
 from app.config import get_settings
 from app.core.exception_handlers import register_exception_handlers
@@ -71,6 +72,7 @@ def create_app() -> FastAPI:
 
     app.include_router(system.router)
     app.include_router(app_info.router, prefix=API_PREFIX)
+    app.include_router(departments_v1.router, prefix=API_PREFIX)
     if settings.is_development:
         app.include_router(debug.router, prefix=API_PREFIX)
 

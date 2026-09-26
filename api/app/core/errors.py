@@ -26,6 +26,15 @@ class ErrorCode(StrEnum):
     CONFLICT = "ERR_RESOURCE_002"
     RESOURCE_GONE = "ERR_RESOURCE_003"
 
+    # Organisation (departments, positions).
+    ORG_DEPARTMENT_NOT_FOUND = "ERR_ORG_001"
+    ORG_DEPARTMENT_CODE_TAKEN = "ERR_ORG_002"
+    ORG_DEPARTMENT_NOT_EMPTY = "ERR_ORG_003"
+    ORG_DEPARTMENT_HAS_CHILDREN = "ERR_ORG_004"
+    ORG_DEPARTMENT_PARENT_INVALID = "ERR_ORG_005"
+    ORG_DEPARTMENT_MOVE_INTO_DESCENDANT = "ERR_ORG_006"
+    ORG_DEPARTMENT_DEPTH_EXCEEDED = "ERR_ORG_007"
+
     # Cross-cutting.
     INTERNAL_ERROR = "ERR_INTERNAL_001"
     SERVICE_UNAVAILABLE = "ERR_INTERNAL_002"
@@ -50,6 +59,21 @@ ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
     ErrorCode.NOT_FOUND: ErrorDefinition(404, "errors.not_found"),
     ErrorCode.CONFLICT: ErrorDefinition(409, "errors.conflict"),
     ErrorCode.RESOURCE_GONE: ErrorDefinition(410, "errors.resource_gone"),
+    ErrorCode.ORG_DEPARTMENT_NOT_FOUND: ErrorDefinition(404, "errors.department_not_found"),
+    ErrorCode.ORG_DEPARTMENT_CODE_TAKEN: ErrorDefinition(409, "errors.department_code_taken"),
+    ErrorCode.ORG_DEPARTMENT_NOT_EMPTY: ErrorDefinition(409, "errors.department_not_empty"),
+    ErrorCode.ORG_DEPARTMENT_HAS_CHILDREN: ErrorDefinition(
+        409, "errors.department_has_children"
+    ),
+    ErrorCode.ORG_DEPARTMENT_PARENT_INVALID: ErrorDefinition(
+        422, "errors.department_parent_invalid"
+    ),
+    ErrorCode.ORG_DEPARTMENT_MOVE_INTO_DESCENDANT: ErrorDefinition(
+        409, "errors.department_move_into_descendant"
+    ),
+    ErrorCode.ORG_DEPARTMENT_DEPTH_EXCEEDED: ErrorDefinition(
+        422, "errors.department_depth_exceeded"
+    ),
     ErrorCode.INTERNAL_ERROR: ErrorDefinition(500, "errors.internal_error", expose_detail=False),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorDefinition(
         503, "errors.service_unavailable", expose_detail=False

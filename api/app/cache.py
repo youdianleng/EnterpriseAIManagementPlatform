@@ -38,3 +38,35 @@ async def ping() -> bool:
         return bool(await get_redis().ping())
     except Exception:
         return False
+
+
+# --- cache invalidation ----------------------------------------------------
+
+ORG_TREE_VERSION_KEY = "org:tree:version"
+
+
+async def current_org_tree_version() -> int:
+    """Version stamp for organisation-structure caches.
+
+    Structure is read on nearly every request, so it is cached; a version stamp
+    lets a write invalidate every derived entry at once without scanning keys,
+    and without waiting for a TTL to expire. The permission kernel in ticket 11
+    reuses this pattern.
+    """
+    try:
+        value = await get_redis().get(ORG_TREE_VERSION_KEY)
+    except Exception:
+        # Cache unavailable: report a version that is never cached, so callers
+        # fall back to reading the database rather than serving stale structure.
+        return -1
+    return int(value or 0)
+
+
+async def invalidate_org_tree() -> None:
+    """Called by every write that changes the department structure."""
+    try:
+        await get_redis().incr(ORG_TREE_VERSION_KEY)
+    except Exception:
+        # Losing one invalidation is survivable because reads fall back to the
+        # database when the stamp cannot be read; failing the write is not.
+        return

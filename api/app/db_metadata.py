@@ -13,6 +13,7 @@ class Base(DeclarativeBase):
 
 
 # Import model modules here as they are added so autogenerate can see them.
-MODEL_MODULES: tuple[str, ...] = ()
+# Importing the package is enough: app/models/__init__ pulls in each module.
+from app import models  # noqa: F401,E402
 
 metadata = Base.metadata

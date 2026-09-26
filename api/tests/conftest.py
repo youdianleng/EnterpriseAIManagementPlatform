@@ -33,6 +33,32 @@ os.environ.setdefault("APP_ENV", "test")
 from app.config import Settings, get_settings, to_libpq_dsn  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def fresh_loop_bound_singletons() -> Iterator[None]:
+    """Drop cached engine/Redis around every test.
+
+    `get_engine()` and `get_redis()` are lru_cached, so the first test to use one
+    binds it to that test's event loop; the next test runs in a different loop and
+    fails with "attached to a different loop". Clearing the caches keeps the
+    per-test isolation the suite relies on, without weakening the application's
+    one-engine-per-process rule.
+
+    `flushdb()` is part of the same problem: a Redis connection pool is also
+    loop-bound, so a client cached before a loop change is unusable even though
+    the server is healthy.
+    """
+    import app.cache as cache
+    import app.db as db
+
+    db.get_engine.cache_clear()
+    db.get_session_factory.cache_clear()
+    cache.get_redis.cache_clear()
+    yield
+    cache.get_redis.cache_clear()
+    db.get_session_factory.cache_clear()
+    db.get_engine.cache_clear()
+
+
 @pytest.fixture(scope="session")
 def settings() -> Settings:
     return get_settings()

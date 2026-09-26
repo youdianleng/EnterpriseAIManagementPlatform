@@ -4,7 +4,24 @@
 
 **Blocked by:** 05 — seed 数据脚本：组织与员工
 
-**Status:** ready-for-agent
+**Status:** done
+
+**Verification (2026-09-26):**
+- `pytest` → 93 passed (48 new). `ruff check app tests` clean.
+- `tools/probe_departments.py` → all 16 checks passed over real HTTP: a four-level nested tree is accepted and a fifth level refused with `ERR_ORG_007`; the materialised path is built from the parent chain; a subtree query returns only that branch; a move rewrites the moved node *and* its grandchildren in one statement with depths recomputed; moving into a descendant returns `ERR_ORG_006`; deleting a parent returns `ERR_ORG_004` while deleting a leaf returns 204.
+- Ancestry uses ltree `<@`, so "this department and all descendants" is one indexed comparison. `ix_departments_path` backs it.
+- Writes require a structure role and deny by default; a request without roles gets `ERR_AUTH_002`.
+- Code uniqueness is a partial unique index on `(parent_id, code) WHERE is_active`, so a code belongs to a position in the tree rather than being globally reserved.
+- Writes bump the `org:tree:version` stamp in Redis instead of waiting for a TTL.
+
+**Five defects found and fixed while verifying:**
+1. `to_label` used a lookaround regex that kept matching inside its own replacement, so `r_and_d` grew an underscore on every pass. Replaced with a character scan.
+2. The in-memory substitute rebuilt descendant paths as `f"{new_path}{suffix}"`, dropping the separator, while the SQL uses `subpath()` correctly. A substitute diverging from the real implementation is exactly what a substitute can do wrong.
+3. `subtree_height` counted from the root instead of from the node, so every move looked one level deeper than it was and legitimate moves were rejected.
+4. The depth guard used `>=` where it had to be `>`.
+5. The engine and Redis clients cached by `lru_cache` are bound to the event loop of the first test that used them, so a later test in a different loop failed `/ready` with 503. Fixed by clearing those caches around each test — the same loop-affinity bug found in ticket 04, this time inside the application.
+
+**Depth limit reconciled with the source.** `MAX_DEPTH = 4` (depths 0..4) follows the "4 层嵌套" wording in tickets 22 and 43. Ticket 03's "部门 4 层" records the scale baseline, not the tree depth. An earlier pass conflated the two and used 3, which the probe caught by accepting a fifth level.
 
 - [ ] 部门有唯一编码、西/英双语文名、上级部门、层级深度、默认密级与成本中心字段
 - [ ] 支持四层以上嵌套的创建与展示，界面能展开/收起
