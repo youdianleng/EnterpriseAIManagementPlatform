@@ -36,7 +36,10 @@ def check(label: str, condition: bool, observed: object = "") -> None:
 
 
 async def _run(statement: str, params: dict):
-    engine = build_engine(get_settings())
+    """The owner connection: a probe inspects what the application stored, and
+    ticket 13's restricted role deliberately cannot delete audit rows."""
+    settings = get_settings()
+    engine = build_engine(settings, settings.database_url)
     try:
         factory = async_sessionmaker(bind=engine, expire_on_commit=False)
         async with factory() as session:

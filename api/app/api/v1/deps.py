@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
 from app.db import get_session
-from app.domain.access.kernel import Action, ResourceKind, can
+from app.domain.access.kernel import Action, ResourceKind, apply_rls_context, can
 from app.domain.access.principal import Principal
 from app.domain.access.snapshot import invalidate_user, resolve_principal
 
@@ -47,6 +47,12 @@ async def current_principal(
     principal = await resolve_principal(session, resolved.account.id)
     if principal is None:
         raise AppError(ErrorCode.SESSION_INVALID, detail="no permission snapshot")
+
+    # Published before the route runs, and in the same transaction, so the
+    # database's own policies can decide on the same facts the kernel just used.
+    # A request that forgets this is not silently unrestricted: with no context
+    # the policies return no rows at all.
+    await apply_rls_context(session, principal)
     return principal
 
 

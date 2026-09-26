@@ -25,9 +25,15 @@ from app.config import Settings, get_settings
 
 
 def build_engine(settings: Settings, url: str | None = None) -> AsyncEngine:
-    """Create an engine for `url`, or the configured database when omitted."""
+    """Create an engine for `url`, or the configured runtime connection.
+
+    The default is `runtime_database_url` — the restricted role — not the owner.
+    Anything that needs owner rights (migrations, fixtures that set up state)
+    passes its URL explicitly, so the privileged connection is always a visible
+    choice at the call site rather than something a helper does quietly.
+    """
     return create_async_engine(
-        url or settings.database_url,
+        url or settings.runtime_database_url,
         pool_size=settings.db_pool_size,
         max_overflow=settings.db_max_overflow,
         pool_recycle=settings.db_pool_recycle_seconds,
@@ -64,7 +70,6 @@ async def get_session() -> AsyncIterator[AsyncSession]:
         except Exception:
             await session.rollback()
             raise
-
 
 async def dispose_engine() -> None:
     """Close pooled connections; called on application shutdown."""

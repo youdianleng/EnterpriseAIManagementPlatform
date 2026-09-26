@@ -38,6 +38,13 @@ API_ROOT = Path(__file__).resolve().parents[1]
 os.environ["DATABASE_URL"] = (
     "postgresql+psycopg://eam:eam_dev_password@postgres:5432/eam_test"
 )
+# The application must serve requests from the *restricted* role, in tests as
+# well as in production: the row-level policies ticket 13 installs are skipped
+# for a table's owner, so a suite that connected as the owner would exercise
+# none of them and still look green.
+os.environ["APP_DATABASE_URL"] = (
+    "postgresql+psycopg://eam_app:eam_app_dev_password@postgres:5432/eam_test"
+)
 os.environ.setdefault("APP_ENV", "test")
 
 from app.config import Settings, get_settings, to_libpq_dsn  # noqa: E402

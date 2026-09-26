@@ -19,6 +19,15 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://eam:eam_dev_password@postgres:5432/eam"
     redis_url: str = "redis://redis:6379/0"
 
+    # What the application connects as. A different role from the one that owns
+    # the tables, because that is what makes the database's own defences real:
+    # the owner may rewrite the audit trail, and Postgres exempts a table's owner
+    # from its row-level policies. Migrations and fixtures use `database_url`;
+    # requests use this. Left unset, both are the same connection — which is how
+    # a developer runs it without the extra role, and why `enforces_database_
+    # security` exists to say which mode is in force.
+    app_database_url: str | None = None
+
     # Integration tests run against this database on the same server. Keeping it
     # separate means a test run can never truncate development data.
     test_database_name: str = "eam_test"
@@ -45,6 +54,27 @@ class Settings(BaseSettings):
         """The configured database URL pointed at the test database."""
         base, _, _ = self.database_url.rpartition("/")
         return f"{base}/{self.test_database_name}"
+
+    @property
+    def runtime_database_url(self) -> str:
+        """The connection the application serves requests with."""
+        return self.app_database_url or self.database_url
+
+    @property
+    def runtime_test_database_url(self) -> str:
+        """The runtime connection pointed at the test database.
+
+        The same swap as `test_database_url`, applied to the application's role:
+        a test run has to exercise the role production uses, or the row-level
+        policies it relies on are never executed.
+        """
+        base, _, _ = self.runtime_database_url.rpartition("/")
+        return f"{base}/{self.test_database_name}"
+
+    @property
+    def enforces_database_security(self) -> bool:
+        """True when requests connect as a role other than the table owner."""
+        return self.runtime_database_url != self.database_url
 
     @property
     def admin_database_url(self) -> str:

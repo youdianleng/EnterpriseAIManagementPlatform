@@ -587,7 +587,11 @@ def _json_array(values: tuple[str, ...]) -> str:
 
 
 async def load() -> None:
-    engine = build_engine(get_settings())
+    # The owner connection, like a migration: loading a dataset is an
+    # administrative act, not a request. The restricted role would refuse it
+    # anyway — writing withheld details needs a personnel context, which is the
+    # point of ticket 13's policies.
+    engine = build_engine(get_settings(), get_settings().database_url)
     factory = async_sessionmaker(bind=engine, expire_on_commit=False)
     try:
         async with factory() as session:
@@ -618,7 +622,7 @@ async def verify() -> int:
     Exits non-zero when something the seed promises is missing, so this is usable
     as a check rather than only as a report.
     """
-    engine = build_engine(get_settings())
+    engine = build_engine(get_settings(), get_settings().database_url)
     factory = async_sessionmaker(bind=engine, expire_on_commit=False)
     problems: list[str] = []
     try:

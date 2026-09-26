@@ -86,15 +86,20 @@ class Browser:
 
 
 def run_sql(statement: str, params: dict | None = None):
-    """One committed statement, on its own connection.
+    """One committed statement, on the owner connection.
 
-    A separate connection on purpose: a claim like "the password is not stored"
-    is a claim about storage, and reading it through the application's own
-    session would be answered from its identity map.
+    Two deliberate choices. It uses its own connection because a claim like "the
+    password is not stored" is a claim about storage, and reading it through the
+    application's session would be answered from its identity map. And it uses
+    the *owner* connection because a probe is not a request: the restricted role
+    exists so that requests cannot rewrite the audit trail or read withheld rows
+    without context, and a probe that had to work around that would be testing
+    the workaround.
     """
 
     async def main():
-        engine = build_engine(get_settings())
+        settings = get_settings()
+        engine = build_engine(settings, settings.database_url)
         try:
             factory = async_sessionmaker(bind=engine, expire_on_commit=False)
             async with factory() as session:

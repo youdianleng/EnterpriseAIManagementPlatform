@@ -450,7 +450,7 @@ def filter_for(principal: Principal, kind: ResourceKind) -> FilterSpec:
     )
 
 
-def apply_rls_context(session, principal: Principal) -> None:  # noqa: ANN001 - AsyncSession
+async def apply_rls_context(session, principal: Principal) -> None:  # noqa: ANN001 - AsyncSession
     """Publish the principal to the database for this transaction.
 
     Postgres policies read these settings, which is the second line of defence:
@@ -462,18 +462,30 @@ def apply_rls_context(session, principal: Principal) -> None:  # noqa: ANN001 - 
     settings cannot leak to another request that later borrows the same pooled
     connection.
 
-    Ticket 13 installs the policies these settings feed; this publishes them.
+    **Async, and awaited.** An earlier version called `session.execute` without
+    awaiting it: with an `AsyncSession` that returns a coroutine which never runs,
+    so the settings were never published. Nothing called it either, which is why
+    the mistake was invisible — a guarantee that is never exercised is not a
+    guarantee. Ticket 13 installs the policies these settings feed and calls this
+    from the request path.
+
+    The department and clearance *sets* are published as well as the identifiers:
+    a policy cannot call `Principal.covers_department`, and re-deriving the set
+    inside SQL would be a second implementation of the rule the kernel owns.
     """
     from sqlalchemy import text
 
     session.info["principal"] = principal
-    session.execute(
+    await session.execute(
         text(
             """
             SELECT set_config('app.current_user_id', :user_id, true),
                    set_config('app.current_employee_id', :employee_id, true),
                    set_config('app.current_clearance', :clearance, true),
-                   set_config('app.is_privileged', :privileged, true)
+                   set_config('app.is_privileged', :privileged, true),
+                   set_config('app.current_roles', :roles, true),
+                   set_config('app.department_ids', :departments, true),
+                   set_config('app.clearance_levels', :clearances, true)
             """
         ),
         {
@@ -481,8 +493,30 @@ def apply_rls_context(session, principal: Principal) -> None:  # noqa: ANN001 - 
             "employee_id": str(principal.employee_id),
             "clearance": principal.clearance_level,
             "privileged": "true" if principal.is_privileged else "false",
+            # Postgres array literals. The values are ids and role names from the
+            # snapshot, never text from a request.
+            "roles": _array_literal(sorted(principal.roles)),
+            "departments": _array_literal(
+                sorted(str(value) for value in principal.department_ids)
+            ),
+            "clearances": _array_literal(sorted(_clearances_up_to(principal.clearance_level))),
         },
     )
+
+
+def _array_literal(values: list[str]) -> str:
+    """A Postgres array literal, for `set_config` and for comparison in policies.
+
+    Quoted rather than interpolated, so a value containing a comma or a brace
+    cannot turn one element into two. An empty list is `{}`, which is an empty
+    array — the same as "this person reaches nothing", never "no restriction".
+    """
+    if not values:
+        return "{}"
+    quoted = (
+        '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"' for value in values
+    )
+    return "{" + ",".join(quoted) + "}"
 
 
 def department_scope_ids(spec: FilterSpec) -> frozenset[UUID] | None:

@@ -43,7 +43,13 @@ services:
       APP_ENV: ${APP_ENV:-development}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       # Host names come from the compose network, not from .env.
+      # DATABASE_URL owns the schema (migrations); APP_DATABASE_URL serves
+      # requests, as a role that cannot rewrite the audit trail. Keeping both
+      # here rather than deriving one from the other is the point: the two are
+      # different credentials, and only one of them belongs in a request.
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-eam}:${POSTGRES_PASSWORD:-eam_dev_password}@postgres:5432/${POSTGRES_DB:-eam}
+      APP_DATABASE_URL: postgresql+psycopg://${APP_DB_USER:-eam_app}:${APP_DB_PASSWORD:-eam_app_dev_password}@postgres:5432/${POSTGRES_DB:-eam}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-eam_app_dev_password}
       REDIS_URL: redis://redis:6379/0
       CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
     ports:

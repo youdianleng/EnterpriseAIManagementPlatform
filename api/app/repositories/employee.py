@@ -8,7 +8,8 @@ the query rather than of the serialiser.
 from datetime import date
 from uuid import UUID
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, select, text, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -271,17 +272,36 @@ class PostgresEmployeeRepository:
         return _to_employee(row)
 
     async def save_private(self, employee_id: UUID, private: EmployeePrivate) -> EmployeePrivate:
-        row = await self._session.get(PrivateRow, employee_id)
-        if row is None:
-            row = PrivateRow(employee_id=employee_id)
-            self._session.add(row)
-        row.address_line = private.address_line
-        row.postal_code = private.postal_code
-        row.employee_no = private.employee_no
-        row.birth_date = private.birth_date
-        row.emergency_contact = private.emergency_contact
-        await self._session.flush()
-        return _to_private(row)
+        """Write the withheld details without asking for the row back.
+
+        An update is attempted first and an insert is used when there was nothing
+        to update, rather than the upsert this started as. `INSERT ... ON CONFLICT
+        DO UPDATE` has to read the conflicting row to decide whether there is a
+        conflict, and `RETURNING` hands the new row to the select policy; both
+        make a write depend on a read. That dependency is avoidable here, and
+        avoiding it is what keeps this method's behaviour independent of how the
+        read policy is written.
+
+        What it returns is what it wrote, which is all the caller needed.
+        """
+        values: dict[str, object] = {
+            "address_line": private.address_line,
+            "postal_code": private.postal_code,
+            "employee_no": private.employee_no,
+            "birth_date": private.birth_date,
+            "emergency_contact": private.emergency_contact,
+        }
+        updated = await self._session.execute(
+            update(PrivateRow)
+            .where(PrivateRow.employee_id == employee_id)
+            .values(**values, updated_at=func.now())
+            .execution_options(synchronize_session=False)
+        )
+        if updated.rowcount == 0:
+            await self._session.execute(
+                pg_insert(PrivateRow).values(employee_id=employee_id, **values)
+            )
+        return private
 
     async def save_assignment(
         self, employee_id: UUID, data: AssignmentInput, *, is_primary: bool

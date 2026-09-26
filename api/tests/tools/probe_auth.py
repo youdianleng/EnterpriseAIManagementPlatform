@@ -38,8 +38,12 @@ def check(label: str, condition: bool, observed: object = "") -> None:
 
 
 def run_sql(statement: str, params: dict):
+    """The owner connection: a probe sets state up and inspects it, and the
+    restricted role requests use cannot delete audit rows or write withheld
+    details without a context."""
     async def main():
-        engine = build_engine(get_settings())
+        settings = get_settings()
+        engine = build_engine(settings, settings.database_url)
         try:
             factory = async_sessionmaker(bind=engine, expire_on_commit=False)
             async with factory() as session:

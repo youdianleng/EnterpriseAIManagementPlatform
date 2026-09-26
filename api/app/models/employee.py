@@ -97,6 +97,12 @@ class EmployeePrivate(Base):
             "address_line IS NULL OR length(btrim(address_line)) > 0",
             name="ck_employee_private_address_not_blank",
         ),
+        # Never ask for the row back. SQLAlchemy adds `RETURNING` to an insert so
+        # it can collect server defaults, and PostgreSQL hands the returned row to
+        # the table's *select* policy — so a write would fail whenever the writer
+        # may not read what it just wrote. The timestamps are not read on any path
+        # here, so not asking for them costs nothing.
+        {"implicit_returning": False},
     )
 
     employee_id: Mapped[UUID] = mapped_column(
