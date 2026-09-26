@@ -29,6 +29,11 @@ class SessionRead(BaseModel):
     user_id: UUID
     username: str
     employee_id: UUID
+    #: The name to greet somebody by. Carried here so the shell that renders the
+    #: signed-in header needs one request rather than two: the client already has
+    #: a session, and asking it for its own name should not be a second round trip
+    #: with its own failure mode.
+    employee_full_name: str = ""
     #: When true the client must route to the change-password screen; every other
     #: endpoint answers 403 with `errors.password_change_required` until it is done.
     must_change_password: bool

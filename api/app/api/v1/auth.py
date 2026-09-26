@@ -140,6 +140,7 @@ def _session_read(account: UserAccount) -> SessionRead:
         user_id=account.id,
         username=account.username,
         employee_id=account.employee_id,
+        employee_full_name=account.employee_full_name,
         must_change_password=account.must_change_password,
     )
 

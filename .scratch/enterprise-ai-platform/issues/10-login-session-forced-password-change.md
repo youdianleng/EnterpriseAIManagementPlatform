@@ -18,7 +18,20 @@
 - [x] 会话存于服务端（Redis）并以 httpOnly Cookie 承载，浏览器脚本无法读取凭证
 - [x] 连续 5 次登录失败后锁定 15 分钟，锁定期间即使密码正确也拒绝登录并提示剩余时间
 - [x] 登录成功、登录失败、登出、改密、被强制登出五类事件均写入审计日志（含 IP 与客户端信息）
-- [ ] 登录页与改密页支持西/英双语 → **前端，随票据 03 的里程碑交付**
+- [x] 登录页与改密页支持西/英双语 → **前端，随票据 03 的里程碑交付**
+
+**Delivered on the frontend (2026-09-26).** The two screens this ticket deferred now exist, and the
+line above is ticked: `/[locale]/login` and `/[locale]/change-password`, with the signed-in shell in
+`(app)/layout.tsx` enforcing both rules on the server — no session goes to the sign-in screen, and an
+account that owes a password change reaches nothing else. The password rule and the four character
+classes are rendered from `/auth/password-policy` rather than restated in the interface, and a refused
+change names every broken rule as its own message. `node scripts/auth-flow-check.mjs` drives the real
+flow: 24/24 assertions. Details and the two defects found are recorded in ticket 03's amendment.
+
+One consequence for this ticket's own contract: `SessionRead` had lost `employee_full_name` when it was
+split out of the account schema, which left the shell fetching the name from `/employees/me`. The field
+is back, so the shell needs one request rather than two.
+
 
 **Two design decisions worth recording:**
 1. **The gate is applied to every route, not per route.** It is an application-level dependency, so an endpoint added later cannot be accidentally exempt — which is the failure mode the requirement exists to prevent.

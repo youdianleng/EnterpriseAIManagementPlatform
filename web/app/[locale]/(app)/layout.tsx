@@ -1,10 +1,8 @@
 import { redirect } from "next/navigation";
 
-import { displayName } from "@/lib/api/auth";
 import {
   changePasswordPath,
   loginPath,
-  readServerProfile,
   readServerSession,
 } from "@/lib/api/session-server";
 import type { Locale } from "@/lib/i18n/config";
@@ -51,8 +49,6 @@ export default async function SignedInLayout({
   if (!session) redirect(loginPath(locale));
   if (session.must_change_password) redirect(changePasswordPath(locale));
 
-  const profile = await readServerProfile();
-
   return (
     <div className="flex flex-1 flex-col">
       <SiteHeader
@@ -60,7 +56,9 @@ export default async function SignedInLayout({
         dict={dict}
         pathWithoutLocale=""
         identity={{
-          name: profile ? displayName(profile) : session.username,
+          // The session carries the name, so the header costs no second request;
+          // an account whose employee has no name falls back to the username.
+          name: session.employee_full_name || session.username,
           username: session.username,
         }}
       />

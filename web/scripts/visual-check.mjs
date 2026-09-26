@@ -58,6 +58,27 @@ function expect(condition, message) {
   else fail(message);
 }
 
+/**
+ * Read an element's text once it has stopped changing.
+ *
+ * Sampling an alert the moment it appears is a race: React commits the first
+ * paint and the formatted detail can land in a later pass, so a single read
+ * reports a message the user never sees and a check that fails on a loaded
+ * machine. Polling until the text is stable measures what is rendered, not when
+ * the assertion happened to run.
+ */
+async function settledText(locator, timeoutMs = 4000) {
+  const deadline = Date.now() + timeoutMs;
+  let previous = "";
+  while (Date.now() < deadline) {
+    const current = await locator.innerText();
+    if (current && current === previous) return current;
+    previous = current;
+    await locator.page().waitForTimeout(100);
+  }
+  return previous;
+}
+
 async function checkPage(page, url, label) {
   await page.goto(url, { waitUntil: "networkidle" });
   await page.waitForTimeout(150);
@@ -454,7 +475,7 @@ async function checkRefusals(browser) {
     await page.getByRole("button", { name: /entrar|sign in/i }).click();
     await page.locator('[role="alert"]').first().waitFor({ timeout: 5000 });
 
-    const alert = await page.locator('[role="alert"]').first().innerText();
+    const alert = await settledText(page.locator('[role="alert"]').first());
     expect(scenario.expect.test(alert), `${scenario.name}: says "${scenario.expect}"`);
     expect(!scenario.expectNot.test(alert), `${scenario.name}: does not leak the API's wording`);
     expect(
