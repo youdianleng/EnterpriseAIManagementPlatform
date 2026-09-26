@@ -28,6 +28,11 @@ from app.main import app
 #: RESTRICT, so referencing rows go first.
 CLEANUP_ORDER = (
     "DELETE FROM audit_log",
+    # Decisions first: they reference their request with ON DELETE RESTRICT, so
+    # the request cannot go until they have.
+    "DELETE FROM approval_decisions",
+    "DELETE FROM approval_steps",
+    "DELETE FROM approval_requests",
     "DELETE FROM users",
     # After users, before the rest: published catalogue rows reference each other.
     "DELETE FROM role_permissions",

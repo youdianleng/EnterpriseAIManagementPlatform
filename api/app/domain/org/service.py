@@ -72,6 +72,11 @@ def build_tree(departments: list[Department]) -> DepartmentTree:
     return DepartmentTree(roots=roots, total=len(by_id))
 
 
+def _identifier(value: object) -> str | None:
+    """A UUID as text, or nothing. Snapshots go into JSONB."""
+    return str(value) if value is not None else None
+
+
 class DepartmentService:
     def __init__(
         self,
@@ -269,6 +274,38 @@ class DepartmentService:
         )
         await self._repository.commit()
         await self._invalidate()
+
+    async def set_manager(self, department_id: UUID, employee_id: UUID | None) -> Department:
+        """Point the department at whoever approves for it, or at nobody.
+
+        This is the fallback the approval engine uses when a position names no
+        approver of its own, so it is not decoration: without a way to set it, the
+        documented fallback would exist only in seed data and raw SQL.
+
+        The person must already work in the department. An approval route pointing
+        at somebody with no connection to it is worse than no route, which is the
+        same reasoning a position's own approver already follows.
+        """
+        department = await self.get(department_id)
+
+        if employee_id is not None:
+            here = await self._repository.employee_ids(department_id)
+            if employee_id not in here:
+                raise DomainError(
+                    OrgErrorCode.ORG_MANAGER_NOT_IN_DEPARTMENT,
+                    detail=f"{employee_id} has no active position in {department.code}",
+                )
+
+        updated = await self._repository.set_manager(department_id, employee_id)
+        await self._audit(
+            AuditAction.DEPARTMENT_UPDATED,
+            updated,
+            before={"manager_employee_id": _identifier(department.manager_employee_id)},
+            after={"manager_employee_id": _identifier(updated.manager_employee_id)},
+        )
+        await self._repository.commit()
+        await self._invalidate()
+        return updated
 
     # --- internals ---------------------------------------------------------
 

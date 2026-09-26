@@ -37,6 +37,8 @@ class ErrorCode(StrEnum):
     ORG_DEPARTMENT_PARENT_INVALID = "ERR_ORG_005"
     ORG_DEPARTMENT_MOVE_INTO_DESCENDANT = "ERR_ORG_006"
     ORG_DEPARTMENT_DEPTH_EXCEEDED = "ERR_ORG_007"
+    #: A department manager has to work in the department they approve for.
+    ORG_MANAGER_NOT_IN_DEPARTMENT = "ERR_ORG_008"
 
     # Employees and their position assignments.
     EMPLOYEE_NOT_FOUND = "ERR_EMP_001"
@@ -76,6 +78,26 @@ class ErrorCode(StrEnum):
     SESSION_INVALID = "ERR_SES_001"
     PASSWORD_CHANGE_REQUIRED = "ERR_SES_002"
 
+    # Approval engine, shared by every kind of request.
+    APPROVAL_NOT_FOUND = "ERR_APR_001"
+    #: One entity, one open request. The database enforces it as well; this code
+    #: is what makes the refusal readable.
+    APPROVAL_ALREADY_OPEN = "ERR_APR_002"
+    #: Nobody is configured to approve this person: neither the primary position
+    #: nor its department names one.
+    APPROVAL_APPROVER_UNRESOLVED = "ERR_APR_003"
+    #: The second level is HR, and no HR account exists other than the requester.
+    APPROVAL_HR_UNAVAILABLE = "ERR_APR_004"
+    #: Not the approver this level resolved to. Administrators are included: the
+    #: engine has no role bypass.
+    APPROVAL_NOT_APPROVER = "ERR_APR_005"
+    APPROVAL_NOT_REQUESTER = "ERR_APR_006"
+    APPROVAL_NOT_WITHDRAWABLE = "ERR_APR_007"
+    #: A decision was attempted on a request that is not awaiting one.
+    APPROVAL_NOT_PENDING = "ERR_APR_008"
+    #: A rejection is final for the entity: it may not be submitted again.
+    APPROVAL_PREVIOUSLY_REJECTED = "ERR_APR_009"
+
     # Cross-cutting.
     INTERNAL_ERROR = "ERR_INTERNAL_001"
     SERVICE_UNAVAILABLE = "ERR_INTERNAL_002"
@@ -114,6 +136,9 @@ ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
     ),
     ErrorCode.ORG_DEPARTMENT_DEPTH_EXCEEDED: ErrorDefinition(
         422, "errors.department_depth_exceeded"
+    ),
+    ErrorCode.ORG_MANAGER_NOT_IN_DEPARTMENT: ErrorDefinition(
+        422, "errors.org_manager_not_in_department"
     ),
     ErrorCode.EMPLOYEE_NOT_FOUND: ErrorDefinition(404, "errors.employee_not_found"),
     ErrorCode.EMPLOYEE_EMAIL_TAKEN: ErrorDefinition(409, "errors.employee_email_taken"),
@@ -163,6 +188,21 @@ ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
     # 401 rather than 403: the session is not merely unauthorised for this
     # resource, it is no longer a session at all, and the client should sign in.
     ErrorCode.SESSION_INVALID: ErrorDefinition(401, "errors.session_invalid"),
+    ErrorCode.APPROVAL_NOT_FOUND: ErrorDefinition(404, "errors.approval_not_found"),
+    ErrorCode.APPROVAL_ALREADY_OPEN: ErrorDefinition(409, "errors.approval_already_open"),
+    ErrorCode.APPROVAL_APPROVER_UNRESOLVED: ErrorDefinition(
+        422, "errors.approval_approver_unresolved"
+    ),
+    ErrorCode.APPROVAL_HR_UNAVAILABLE: ErrorDefinition(422, "errors.approval_hr_unavailable"),
+    ErrorCode.APPROVAL_NOT_APPROVER: ErrorDefinition(403, "errors.approval_not_approver"),
+    ErrorCode.APPROVAL_NOT_REQUESTER: ErrorDefinition(403, "errors.approval_not_requester"),
+    ErrorCode.APPROVAL_NOT_WITHDRAWABLE: ErrorDefinition(
+        409, "errors.approval_not_withdrawable"
+    ),
+    ErrorCode.APPROVAL_NOT_PENDING: ErrorDefinition(409, "errors.approval_not_pending"),
+    ErrorCode.APPROVAL_PREVIOUSLY_REJECTED: ErrorDefinition(
+        409, "errors.approval_previously_rejected"
+    ),
     # 403 with its own code so the client can route to the change-password screen
     # instead of showing a permission error.
     ErrorCode.PASSWORD_CHANGE_REQUIRED: ErrorDefinition(403, "errors.password_change_required"),

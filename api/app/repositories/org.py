@@ -88,6 +88,25 @@ class PostgresDepartmentRepository:
         )
         return int(deepest or 0)
 
+    async def employee_ids(self, department_id: UUID) -> frozenset[UUID]:
+        """Who currently works in this department, by active assignment.
+
+        Read here rather than through the employee module because the department
+        is the one asking, and it needs only the ids: whether a named person has a
+        connection to this department is a question about the department.
+        """
+        rows = await self._session.execute(
+            text(
+                """
+                SELECT DISTINCT a.employee_id
+                FROM employee_assignments a
+                WHERE a.department_id = :department_id AND a.end_date IS NULL
+                """
+            ),
+            {"department_id": department_id},
+        )
+        return frozenset(rows.scalars())
+
     async def count_children(self, department_id: UUID) -> int:
         return int(
             await self._session.scalar(
@@ -141,6 +160,23 @@ class PostgresDepartmentRepository:
         )
         self._session.add(row)
         await self._session.flush()
+        return _to_domain(row)
+
+    async def set_manager(self, department_id: UUID, employee_id: UUID | None) -> Department:
+        """Point the department at whoever approves for it, or at nobody.
+
+        Written directly rather than through `update`, because clearing the field
+        is a real operation and the patch convention reads an explicit `None` as
+        "leave alone".
+        """
+        await self._session.execute(
+            update(DepartmentRow)
+            .where(DepartmentRow.id == department_id)
+            .values(manager_employee_id=employee_id)
+        )
+        await self._session.flush()
+        row = await self._session.get(DepartmentRow, department_id)
+        assert row is not None
         return _to_domain(row)
 
     async def update(self, department_id: UUID, patch: DepartmentPatch) -> Department:

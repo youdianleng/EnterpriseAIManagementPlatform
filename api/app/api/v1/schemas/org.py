@@ -35,6 +35,13 @@ class DepartmentUpdate(StrictModel):
     is_active: bool | None = None
 
 
+class DepartmentManager(StrictModel):
+    """Who approves for the department. Explicitly nullable, because removing a
+    manager is a real operation and the patch convention cannot express it."""
+
+    employee_id: UUID | None = None
+
+
 class DepartmentMove(StrictModel):
     # Explicitly nullable: moving a department to the root is a real operation.
     parent_id: UUID | None = None

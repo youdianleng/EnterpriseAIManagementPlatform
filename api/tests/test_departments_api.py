@@ -249,3 +249,61 @@ async def test_writes_invalidate_the_cached_tree_version(platform: Platform) -> 
     after_second = await current_org_tree_version()
 
     assert after_second > after_first
+
+# --- the fallback approver --------------------------------------------------
+
+
+async def test_a_department_manager_can_be_appointed_and_removed(
+    platform: Platform,
+) -> None:
+    """The approval engine's fallback has to be reachable from the product.
+
+    It was readable and not writable before this endpoint, which would have left
+    the documented fallback existing only in seed data.
+    """
+    admin = await platform.account(roles=("admin",))
+    department = await platform.department("rrhh")
+    position = await platform.position(department, "tecnico")
+    head = await platform.employee()
+    await platform.assign(head, department, position)
+
+    appointed = await admin.put(
+        f"/api/v1/departments/{department}/manager", json={"employee_id": head}
+    )
+    assert appointed.status_code == 200, appointed.text
+    assert appointed.json()["manager_employee_id"] == head
+
+    removed = await admin.put(
+        f"/api/v1/departments/{department}/manager", json={"employee_id": None}
+    )
+    assert removed.status_code == 200
+    assert removed.json()["manager_employee_id"] is None
+
+
+async def test_a_department_manager_must_work_there(platform: Platform) -> None:
+    """An approval route pointing at an outsider is worse than no route."""
+    admin = await platform.account(roles=("admin",))
+    department = await platform.department("rrhh")
+    outsider = await platform.employee()
+
+    response = await admin.put(
+        f"/api/v1/departments/{department}/manager", json={"employee_id": outsider}
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "ERR_ORG_008"
+
+
+async def test_the_manager_change_is_audited(platform: Platform) -> None:
+    admin = await platform.account(roles=("admin",))
+    department = await platform.department("rrhh")
+    head = await platform.employee()
+    await platform.assign(head, department, await platform.position(department, "tecnico"))
+
+    await admin.put(f"/api/v1/departments/{department}/manager", json={"employee_id": head})
+
+    rows = await platform.sql(
+        "SELECT before, after FROM audit_log WHERE action = 'department.updated'"
+    )
+    assert rows[-1][0]["manager_employee_id"] is None
+    assert rows[-1][1]["manager_employee_id"] == head

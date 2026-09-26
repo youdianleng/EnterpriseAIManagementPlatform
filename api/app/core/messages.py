@@ -30,6 +30,9 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.department_move_into_descendant":
             "No se puede mover un departamento dentro de sí mismo.",
         "errors.department_depth_exceeded": "Se superaría el número máximo de niveles.",
+    "errors.org_manager_not_in_department": (
+        "Solo puede ser responsable alguien con un puesto activo en ese departamento."
+    ),
         "errors.employee_not_found": "No se encontró la persona.",
         "errors.employee_email_taken": "Ya existe una persona con ese correo.",
         "errors.employee_number_taken": "Ya existe una persona con ese número de empleado.",
@@ -64,6 +67,21 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
             "No se puede retirar el rol al último administrador activo."
         ),
         "errors.session_invalid": "Tu sesión ha caducado. Vuelve a iniciar sesión.",
+        "errors.approval_not_found": "No se encontró la solicitud de aprobación.",
+        "errors.approval_already_open":
+            "Ya hay una solicitud de aprobación abierta para este documento.",
+        "errors.approval_approver_unresolved":
+            "No se puede determinar quién debe aprobar: ni el puesto principal ni su "
+            "departamento tienen una persona responsable configurada.",
+        "errors.approval_hr_unavailable":
+            "No hay ninguna persona de recursos humanos disponible para la segunda aprobación.",
+        "errors.approval_not_approver": "No te corresponde decidir esta solicitud.",
+        "errors.approval_not_requester":
+            "Solo quien presentó la solicitud puede retirarla.",
+        "errors.approval_not_withdrawable": "La solicitud ya no se puede retirar.",
+        "errors.approval_not_pending": "La solicitud ya no está pendiente de decisión.",
+        "errors.approval_previously_rejected":
+            "La solicitud fue rechazada y no se puede volver a presentar.",
         "errors.internal_error": "Se produjo un error interno. Inténtalo de nuevo más tarde.",
         "errors.service_unavailable": "El servicio no está disponible en este momento.",
     },
@@ -87,6 +105,9 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.department_move_into_descendant":
             "A department cannot be moved inside itself.",
         "errors.department_depth_exceeded": "The maximum number of levels would be exceeded.",
+    "errors.org_manager_not_in_department": (
+        "Only somebody with an active position in that department can be its manager."
+    ),
         "errors.employee_not_found": "The person was not found.",
         "errors.employee_email_taken": "A person with that email already exists.",
         "errors.employee_number_taken": "A person with that staff number already exists.",
@@ -120,6 +141,21 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
             "The last active administrator cannot lose the role."
         ),
         "errors.session_invalid": "Your session has expired. Please sign in again.",
+        "errors.approval_not_found": "The approval request was not found.",
+        "errors.approval_already_open":
+            "This document already has an open approval request.",
+        "errors.approval_approver_unresolved":
+            "Cannot tell who should approve this: neither the primary position nor its "
+            "department has an approver configured.",
+        "errors.approval_hr_unavailable":
+            "No HR approver other than the requester is available for the second approval.",
+        "errors.approval_not_approver": "This request is not yours to decide.",
+        "errors.approval_not_requester":
+            "Only the person who submitted the request can withdraw it.",
+        "errors.approval_not_withdrawable": "The request can no longer be withdrawn.",
+        "errors.approval_not_pending": "The request is no longer awaiting a decision.",
+        "errors.approval_previously_rejected":
+            "The request was rejected and cannot be submitted again.",
         "errors.internal_error": "An internal error occurred. Please try again later.",
         "errors.service_unavailable": "The service is unavailable right now.",
     },

@@ -89,6 +89,11 @@ class AuditAction(StrEnum):
     PAYSLIP_DOWNLOADED = "payslip.downloaded"  # 45
     PAYSLIP_WITHDRAWN = "payslip.withdrawn"  # 46
     APPROVAL_DECIDED = "approval.decided"  # 16
+    #: Filed and taken back. A withdrawal is a state change somebody made, and the
+    #: request row would otherwise be the only trace of it — with no record of who
+    #: did it, which is the question an incident review asks first.
+    APPROVAL_SUBMITTED = "approval.submitted"  # 16
+    APPROVAL_WITHDRAWN = "approval.withdrawn"  # 16
     AGENT_ACTION_PROPOSED = "agent.action_proposed"  # 40
     AGENT_ACTION_CONFIRMED = "agent.action_confirmed"  # 41
     DATA_EXPORTED = "data.exported"  # 26, 47

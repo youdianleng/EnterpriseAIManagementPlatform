@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.deps import db_session, require
 from app.api.v1.schemas.org import (
     DepartmentCreate,
+    DepartmentManager,
     DepartmentMove,
     DepartmentNodeRead,
     DepartmentRead,
@@ -164,6 +165,26 @@ async def move_department(
     session: AsyncSession = Depends(db_session),
 ) -> DepartmentRead:
     return _read(await _service(session).move(department_id, payload.parent_id))
+
+
+@router.put(
+    "/{department_id}/manager",
+    response_model=DepartmentRead,
+    summary="Set who approves for this department",
+    dependencies=[Depends(manage_tree)],
+)
+async def set_department_manager(
+    department_id: UUID,
+    payload: DepartmentManager,
+    session: AsyncSession = Depends(db_session),
+) -> DepartmentRead:
+    """The fallback approver for positions that name none.
+
+    Its own endpoint rather than a field on the department patch, because clearing
+    it is a real operation: the patch convention reads an explicit `null` as "leave
+    alone", so a manager could be appointed but never removed.
+    """
+    return _read(await _service(session).set_manager(department_id, payload.employee_id))
 
 
 @router.delete(
