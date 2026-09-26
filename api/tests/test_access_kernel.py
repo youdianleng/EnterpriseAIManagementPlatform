@@ -29,7 +29,12 @@ from app.domain.access.kernel import (
     department_scope_ids,
     filter_for,
 )
-from app.domain.access.permissions import RULES, Action, roles_may
+from app.domain.access.permissions import (
+    DOCUMENT_CROSS_DEPARTMENT_ROLES,
+    RULES,
+    Action,
+    roles_may,
+)
 from app.domain.access.principal import PRIVILEGED_ROLES, Principal
 
 OTHER_DEPARTMENT = uuid4()
@@ -243,6 +248,7 @@ def test_a_manager_does_not_reach_someone_who_is_not_their_report() -> None:
 def test_clearance_is_an_upper_bound(
     clearance: str, document_clearance: str, allowed: bool
 ) -> None:
+    """A company document in the principal's own department: clearance decides."""
     decision = can(
         principal(clearance=clearance),
         Action.DOCUMENT_READ,
@@ -250,22 +256,85 @@ def test_clearance_is_an_upper_bound(
             ResourceKind.DOCUMENT,
             department_id=MY_DEPARTMENT,
             clearance=document_clearance,
+            is_company_kb=True,
         ),
     )
 
-    assert decision.allowed is allowed
+    assert decision.allowed is allowed, decision.detail
 
 
-@pytest.mark.parametrize("role", sorted(PRIVILEGED_ROLES))
-def test_a_privileged_role_reaches_every_clearance(role: str) -> None:
+@pytest.mark.parametrize("role", sorted(DOCUMENT_CROSS_DEPARTMENT_ROLES))
+def test_the_exception_roles_reach_another_department(role: str) -> None:
+    """HR and compliance read company documents outside their own departments."""
     decision = can(
-        principal(roles=(role,), clearance="low"),
+        principal(roles=(role,), clearance="medium"),
         Action.DOCUMENT_READ,
-        Resource(ResourceKind.DOCUMENT, department_id=OTHER_DEPARTMENT, clearance="high"),
+        Resource(
+            ResourceKind.DOCUMENT,
+            department_id=OTHER_DEPARTMENT,
+            clearance="low",
+            is_company_kb=True,
+        ),
     )
 
     assert decision.allowed
-    assert Reason.IS_PRIVILEGED in decision.reasons
+    assert Reason.DOCUMENT_EXCEPTION_ROLE in decision.reasons
+
+
+@pytest.mark.parametrize("role", sorted(DOCUMENT_CROSS_DEPARTMENT_ROLES))
+def test_the_exception_roles_are_still_under_the_ceiling(role: str) -> None:
+    """The exception is about departments. Nothing lifts the ceiling.
+
+    The design's last clause is unconditional, so this is the interpretation the
+    ticket states explicitly: the exception is cross-department, not
+    cross-clearance.
+    """
+    decision = can(
+        principal(roles=(role,), clearance="low"),
+        Action.DOCUMENT_READ,
+        Resource(
+            ResourceKind.DOCUMENT,
+            department_id=OTHER_DEPARTMENT,
+            clearance="high",
+            is_company_kb=True,
+        ),
+    )
+
+    assert decision.denied
+    assert Reason.CLEARANCE_TOO_LOW in decision.reasons
+
+
+def test_finance_is_not_a_document_exception_role() -> None:
+    """Finance is privileged for payroll. The two sets are not the same."""
+    decision = can(
+        principal(roles=("finance",), clearance="medium"),
+        Action.DOCUMENT_READ,
+        Resource(
+            ResourceKind.DOCUMENT,
+            department_id=OTHER_DEPARTMENT,
+            clearance="low",
+            is_company_kb=True,
+        ),
+    )
+
+    assert decision.denied
+    assert Reason.DEPARTMENT_NOT_REACHABLE in decision.reasons
+
+
+def test_the_exception_does_not_reach_someone_elses_personal_document() -> None:
+    """§4.2 says "company documents only", so a personal upload stays private."""
+    decision = can(
+        principal(roles=("compliance",), clearance="high"),
+        Action.DOCUMENT_READ,
+        Resource(
+            ResourceKind.DOCUMENT,
+            owner_employee_id=OTHER_EMPLOYEE,
+            clearance="low",
+        ),
+    )
+
+    assert decision.denied
+    assert Reason.NOT_SHARED in decision.reasons
 
 
 def test_read_withheld_is_decided_by_role_alone() -> None:
@@ -362,11 +431,24 @@ def test_an_ordinary_principal_gets_their_departments_and_clearance() -> None:
     assert spec.own_employee_id == MY_EMPLOYEE
 
 
-def test_a_privileged_principal_gets_an_unrestricted_filter() -> None:
+def test_a_privileged_principal_gets_a_cross_department_document_filter() -> None:
+    """Privileged for documents means every department, not every clearance.
+
+    `allow_all` would be the wrong shape: it reads as "every row", and every row
+    includes other people's personal uploads.
+    """
     spec = filter_for(principal(roles=("hr",), clearance="low"), ResourceKind.DOCUMENT)
 
-    assert spec.allow_all is True
-    assert spec.clearance_levels == frozenset(CLEARANCE_RANK)
+    assert spec.allow_all is False
+    assert spec.company_kb_cross_department is True
+    assert spec.clearance_levels == frozenset({"low"})
+    assert spec.explicit_grant_employee_id == MY_EMPLOYEE
+
+
+def test_finance_gets_no_cross_department_document_filter() -> None:
+    spec = filter_for(principal(roles=("finance",)), ResourceKind.DOCUMENT)
+
+    assert spec.company_kb_cross_department is False
 
 
 def test_the_document_filter_keeps_personal_uploads_out_of_the_company_pool() -> None:
@@ -381,7 +463,12 @@ def test_the_document_filter_keeps_personal_uploads_out_of_the_company_pool() ->
 def test_department_scope_distinguishes_open_from_empty() -> None:
     """"No predicate" and "match nothing" are different answers, and a bare empty
     set would be read the wrong way round."""
-    assert department_scope_ids(filter_for(principal(roles=("hr",)), ResourceKind.DOCUMENT)) is None
+    # Documents never get `allow_all` — the cross-department roles are recorded
+    # separately — so this uses a kind that does, and a principal with no
+    # departments at all, which is the case the empty set exists for.
+    assert department_scope_ids(
+        filter_for(principal(roles=("admin",)), ResourceKind.ACCOUNT)
+    ) is None
     assert department_scope_ids(
         filter_for(principal(departments=set()), ResourceKind.DOCUMENT)
     ) == frozenset()

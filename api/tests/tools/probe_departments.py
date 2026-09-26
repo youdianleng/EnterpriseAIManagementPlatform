@@ -4,42 +4,20 @@ Drives the department API over real HTTP against the running stack: the seed
 hierarchy shape (4 levels), ltree subtree scoping, the single-statement subtree
 rewrite on a move, the depth limit, and the catalogued errors.
 
+Structure changes are a signed-in administrator's work now that the actor headers
+are gone, so the probe bootstraps one through `support` and never fakes a caller.
+
 Run inside the compose network:
     docker compose exec -T api python /app/tests/tools/probe_departments.py
 """
 
-import json
-import sys
-import urllib.error
-import urllib.request
 from uuid import uuid4
 
-BASE = "http://localhost:8000/api/v1"
-HEADERS = {"X-Actor-Roles": "hr", "Content-Type": "application/json"}
-
-failures: list[str] = []
+from support import Browser, administrator, check, finish, wipe
 
 
-def check(label: str, condition: bool, observed: object = "") -> None:
-    print(f"[{'ok  ' if condition else 'FAIL'}] {label}: {observed}")
-    if not condition:
-        failures.append(label)
-
-
-def call(method: str, path: str, body: dict | None = None) -> tuple[int, object]:
-    data = json.dumps(body).encode() if body is not None else None
-    request = urllib.request.Request(BASE + path, data=data, method=method, headers=HEADERS)
-    try:
-        response = urllib.request.urlopen(request, timeout=10)
-        payload = response.read()
-        return response.status, json.loads(payload) if payload else None
-    except urllib.error.HTTPError as exc:
-        payload = exc.read()
-        return exc.code, json.loads(payload) if payload else None
-
-
-def create(code: str, parent_id: str | None = None, **extra: object) -> dict:
-    status, body = call(
+def create(browser: Browser, code: str, parent_id: str | None = None, **extra: object) -> dict:
+    status, body = browser.call(
         "POST",
         "/departments",
         {"code": code, "name_es": code, "name_en": code, "parent_id": parent_id, **extra},
@@ -49,15 +27,16 @@ def create(code: str, parent_id: str | None = None, **extra: object) -> dict:
 
 
 def main() -> None:
+    admin = administrator()
     suffix = uuid4().hex[:6]
     root_code = f"probe{suffix}"
 
     # A four-level *nested* tree below a root: depths 0..4.
-    root = create(root_code)
-    level1 = create(f"a{suffix}", root["id"])
-    level2 = create(f"b{suffix}", level1["id"])
-    level3 = create(f"c{suffix}", level2["id"])
-    level4 = create(f"d{suffix}", level3["id"])
+    root = create(admin, root_code)
+    level1 = create(admin, f"a{suffix}", root["id"])
+    level2 = create(admin, f"b{suffix}", level1["id"])
+    level3 = create(admin, f"c{suffix}", level2["id"])
+    level4 = create(admin, f"d{suffix}", level3["id"])
 
     check("root sits at depth 0", root["depth"] == 0, root["depth"])
     check("four nested levels are allowed", level4["depth"] == 4, level4["depth"])
@@ -68,7 +47,7 @@ def main() -> None:
     )
 
     # One more level must be refused.
-    status, body = call(
+    status, body = admin.call(
         "POST",
         "/departments",
         {"code": f"e{suffix}", "name_es": "e", "name_en": "e", "parent_id": level4["id"]},
@@ -81,7 +60,7 @@ def main() -> None:
     )
 
     # Ancestry is scoped to the branch.
-    status, subtree = call("GET", f"/departments/{level1['id']}/subtree")
+    status, subtree = admin.call("GET", f"/departments/{level1['id']}/subtree")
     check("subtree returns the branch only", status == 200 and len(subtree) == 4, len(subtree))
     check(
         "subtree excludes the sibling branch",
@@ -91,15 +70,17 @@ def main() -> None:
 
     # A move rewrites the whole subtree. `level2` carries two levels beneath it,
     # so relocating it under a sibling still fits inside the depth limit.
-    sibling = create(f"z{suffix}", root["id"])
-    status, moved = call("POST", f"/departments/{level2['id']}/move", {"parent_id": sibling["id"]})
+    sibling = create(admin, f"z{suffix}", root["id"])
+    status, moved = admin.call(
+        "POST", f"/departments/{level2['id']}/move", {"parent_id": sibling["id"]}
+    )
     check("move succeeds", status == 200, status)
     check(
         "moved node path is rebuilt",
         moved["path"] == f"{root_code}.z{suffix}.b{suffix}",
         moved.get("path"),
     )
-    _, deep = call("GET", f"/departments/{level4['id']}")
+    _, deep = admin.call("GET", f"/departments/{level4['id']}")
     check(
         "grandchild moved with it",
         deep["path"] == f"{root_code}.z{suffix}.b{suffix}.c{suffix}.d{suffix}",
@@ -108,7 +89,9 @@ def main() -> None:
     check("grandchild depth recalculated", deep["depth"] == 4, deep["depth"])
 
     # Moving into its own descendant is refused.
-    status, body = call("POST", f"/departments/{level2['id']}/move", {"parent_id": level4["id"]})
+    status, body = admin.call(
+        "POST", f"/departments/{level2['id']}/move", {"parent_id": level4["id"]}
+    )
     check("moving into a descendant is refused", status == 409, status)
     check(
         "and the refusal is catalogued",
@@ -117,23 +100,25 @@ def main() -> None:
     )
 
     # Deletion rules.
-    status, body = call("DELETE", f"/departments/{level2['id']}")
+    status, body = admin.call("DELETE", f"/departments/{level2['id']}")
     check("deleting a department with children is refused", status == 409, status)
     check(
         "and the refusal is catalogued",
         body.get("error", {}).get("code") == "ERR_ORG_004",
         body.get("error", {}).get("code"),
     )
-    status, _ = call("DELETE", f"/departments/{level4['id']}")
+    status, _ = admin.call("DELETE", f"/departments/{level4['id']}")
     check("deleting a leaf succeeds", status == 204, status)
 
-    # Cleanup: delete bottom-up so the probe leaves nothing behind.
+    # Cleanup: delete bottom-up so the probe leaves nothing behind, then drop the
+    # rows its own administrator occupies — a signed-in caller is a real employee,
+    # a real user and an audit trail, and the tree delete above does not reach
+    # them.
     for node in (level3, level2, level1, sibling, root):
-        call("DELETE", f"/departments/{node['id']}")
+        admin.call("DELETE", f"/departments/{node['id']}")
+    wipe()
 
-    print()
-    print("FAIL" if failures else "ALL CHECKS PASSED")
-    sys.exit(1 if failures else 0)
+    finish()
 
 
 if __name__ == "__main__":

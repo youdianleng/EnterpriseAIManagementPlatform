@@ -150,6 +150,16 @@ def rule_for(action: Action) -> ActionRule:
     return RULES[action]
 
 
+#: Roles that may read *company* documents outside their own departments
+#: (`docs/DESIGN.md` §4.2, last clause).
+#:
+#: Listed explicitly rather than derived from "is privileged", because the two
+#: sets are not the same: finance is privileged for payroll and is not part of
+#: this exception. The exception is about departments only — it does not lift the
+#: clearance ceiling, which is the one condition no role escapes for documents.
+DOCUMENT_CROSS_DEPARTMENT_ROLES = frozenset({"hr", "compliance"})
+
+
 def roles_may(action: Action, roles: frozenset[str]) -> bool:
     """Role-level check, before any resource nuance.
 

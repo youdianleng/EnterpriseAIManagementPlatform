@@ -21,6 +21,10 @@ class UserAccount:
     #: Denormalised for display so a list does not need a second query per row.
     employee_full_name: str = ""
     employee_email: str = ""
+    #: The stored clearance, inherited from the primary position's department when
+    #: the account was created. The *effective* clearance the kernel uses is the
+    #: higher of this and what the person's departments grant.
+    clearance_level: str = "low"
 
 
 @dataclass(slots=True, frozen=True)

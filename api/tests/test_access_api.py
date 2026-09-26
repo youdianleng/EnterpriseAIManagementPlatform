@@ -247,6 +247,37 @@ async def test_a_clearance_change_takes_effect_at_once(platform: Platform) -> No
     )
 
 
+async def test_a_stored_clearance_raises_the_effective_one(platform: Platform) -> None:
+    """The kernel uses the higher of the stored value and what the departments grant.
+
+    Driven by a direct write because nothing offers an endpoint to raise one
+    person's clearance yet; the mechanism is the same either way, and it also
+    proves the stored value is part of the cache key rather than something a
+    later invalidation has to remember.
+    """
+    actor = await platform.account(roles=("employee",))
+    assert (await principal_of(platform, actor.user_id)).clearance_level == "low"
+
+    await platform.sql(
+        "UPDATE users SET clearance_level = 'medium' WHERE id = :id",
+        {"id": actor.user_id},
+    )
+
+    assert (await principal_of(platform, actor.user_id)).clearance_level == "medium"
+
+
+async def test_a_department_grants_above_a_lower_stored_clearance(platform: Platform) -> None:
+    """The stored value is not a ceiling: work in a high-clearance department
+    clears you for that department's material without anybody editing your row."""
+    department = await platform.department("i+d", clearance_level="high")
+    actor = await platform.account(roles=("employee",))
+    await platform.assign(
+        actor.employee_id, department, await platform.position(department, "tech")
+    )
+
+    assert (await principal_of(platform, actor.user_id)).clearance_level == "high"
+
+
 async def test_a_second_request_reuses_the_cached_snapshot(platform: Platform) -> None:
     """The cache is real, not decorative: one entry appears for the caller."""
     actor = await platform.account(roles=("employee",))

@@ -35,6 +35,7 @@ def _to_domain(row: UserRow, employee: EmployeeRow | None = None) -> UserAccount
         created_at=row.created_at,
         employee_full_name=full_name,
         employee_email=email,
+        clearance_level=row.clearance_level,
     )
 
 
@@ -85,18 +86,46 @@ class PostgresAccountRepository:
         rows = (await self._session.execute(statement.order_by(UserRow.username))).all()
         return [_to_domain(*row) for row in rows]
 
-    async def save(self, data: UserAccountInput, *, password_hash: str) -> UserAccount:
+    async def save(
+        self, data: UserAccountInput, *, password_hash: str, clearance_level: str = "low"
+    ) -> UserAccount:
         row = UserRow(
             employee_id=data.employee_id,
             username=data.username,
             password_hash=password_hash,
             must_change_password=True,
             is_active=True,
+            clearance_level=clearance_level,
         )
         self._session.add(row)
         await self._session.flush()
         employee = await self._session.get(EmployeeRow, data.employee_id)
         return _to_domain(row, employee)
+
+    async def primary_department_clearance(self, employee_id: UUID) -> str | None:
+        """The clearance of the department the primary assignment sits in.
+
+        `docs/DESIGN.md` §10.5: a new account starts from the primary position's
+        department, so HR configures clearance once per department instead of
+        once per person. The primary assignment wins; with none flagged, the
+        earliest active one is used, because "no primary" is a data-entry state
+        rather than a reason to leave somebody at the floor.
+        """
+        value = await self._session.scalar(
+            text(
+                """
+                SELECT d.clearance_level
+                FROM employee_assignments a
+                JOIN departments d ON d.id = a.department_id
+                WHERE a.employee_id = :employee_id
+                  AND a.end_date IS NULL
+                ORDER BY a.is_primary DESC, a.start_date
+                LIMIT 1
+                """
+            ),
+            {"employee_id": employee_id},
+        )
+        return value
 
     async def set_active(self, user_id: UUID, *, is_active: bool) -> UserAccount:
         # synchronize_session="fetch": a bulk UPDATE does not refresh objects

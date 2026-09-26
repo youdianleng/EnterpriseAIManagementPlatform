@@ -105,8 +105,17 @@ class AccountService:
             )
 
         temporary_password = generate_temporary_password()
+        # Inherited from the primary position's department (DESIGN §10.5), so a new
+        # account starts at the level its department works at instead of at the
+        # floor. It is a starting value, not a ceiling: the kernel takes the higher
+        # of this and what the departments grant.
+        inherited_clearance = (
+            await self._repository.primary_department_clearance(data.employee_id) or "low"
+        )
         account = await self._repository.save(
-            data, password_hash=hash_password(temporary_password)
+            data,
+            password_hash=hash_password(temporary_password),
+            clearance_level=inherited_clearance,
         )
 
         await record(
@@ -120,6 +129,7 @@ class AccountService:
                 "username": account.username,
                 "employee_id": str(account.employee_id),
                 "must_change_password": True,
+                "clearance_level": inherited_clearance,
             },
         )
         await self._repository.commit()

@@ -4,84 +4,37 @@ Drives the employee API over real HTTP against the running stack: the closed
 field set, multi-position assignments, the effective approver, and the
 visibility line between a colleague, the person and HR.
 
-Positions are inserted straight into the database because the catalogue UI
-arrives in ticket 08; everything else goes through HTTP.
+Positions are inserted straight into the database: this probe is about people,
+and the catalogue has its own probe.
+
+The actor headers are gone, so every viewer these claims are about is a real
+sign-in — the administrator who does the managing, HR, the person themselves and
+a colleague. Managing and reading are separate roles in the kernel (an
+administrator may correct a record and is deliberately not privileged to read its
+withheld fields), which is why the profile claims are read by HR.
 
 Run inside the compose network:
     docker compose exec -T api python /app/tests/tools/probe_employees.py
 """
 
-import asyncio
 import json
-import sys
-import urllib.error
-import urllib.request
-from pathlib import Path
 from uuid import UUID, uuid4
 
-# Run as a script from /app/tests/tools, so the package root is not on the path.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-from sqlalchemy import text  # noqa: E402
-from sqlalchemy.ext.asyncio import async_sessionmaker  # noqa: E402
-
-from app.config import get_settings  # noqa: E402
-from app.db import build_engine  # noqa: E402
-
-BASE = "http://localhost:8000/api/v1"
-
-failures: list[str] = []
-
-
-def check(label: str, condition: bool, observed: object = "") -> None:
-    print(f"[{'ok  ' if condition else 'FAIL'}] {label}: {observed}")
-    if not condition:
-        failures.append(label)
-
-
-def call(
-    method: str,
-    path: str,
-    body: dict | None = None,
-    *,
-    actor: str | None = None,
-    roles: str = "hr",
-) -> tuple[int, object]:
-    headers = {"X-Actor-Roles": roles, "Content-Type": "application/json"}
-    if actor:
-        headers["X-Actor-Employee"] = actor
-    data = json.dumps(body).encode() if body is not None else None
-    request = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
-    try:
-        response = urllib.request.urlopen(request, timeout=10)
-        payload = response.read()
-        return response.status, json.loads(payload) if payload else None
-    except urllib.error.HTTPError as exc:
-        payload = exc.read()
-        return exc.code, json.loads(payload) if payload else None
-
-
-async def with_session(callback):
-    engine = build_engine(get_settings())
-    try:
-        factory = async_sessionmaker(bind=engine, expire_on_commit=False)
-        async with factory() as session:
-            return await callback(session)
-    finally:
-        await engine.dispose()
-
-
-def sql(statement: str, params: dict) -> None:
-    async def run(session):
-        await session.execute(text(statement), params)
-        await session.commit()
-
-    asyncio.run(with_session(run))
+from support import (
+    Browser,
+    actor,
+    administrator,
+    check,
+    finish,
+    make_employee,
+    run_sql,
+    wipe,
+)
 
 
 def create_position(department_id: str, code: str) -> str:
     position_id = str(uuid4())
-    sql(
+    run_sql(
         "INSERT INTO job_positions (id, code, title_es, title_en, department_id,"
         " is_managerial, is_active) VALUES (:id, :code, :code, :code, :dept, false, true)",
         {"id": position_id, "code": code, "dept": department_id},
@@ -90,16 +43,16 @@ def create_position(department_id: str, code: str) -> str:
 
 
 def set_department_manager(department_id: str, employee_id: str) -> None:
-    sql(
+    run_sql(
         "UPDATE departments SET manager_employee_id = :e WHERE id = :d",
         {"e": employee_id, "d": department_id},
     )
 
 
 def create_employee(
-    email: str, first: str = "Ana", last: str = "Martín", **extra: object
+    admin: Browser, email: str, first: str = "Ana", last: str = "Martín", **extra: object
 ) -> dict:
-    status, body = call(
+    status, body = admin.call(
         "POST",
         "/employees",
         {
@@ -114,8 +67,10 @@ def create_employee(
     return body
 
 
-def attach(employee_id: str, department_id: str, position_id: str) -> tuple[int, object]:
-    return call(
+def attach(
+    admin: Browser, employee_id: str, department_id: str, position_id: str
+) -> tuple[int, object]:
+    return admin.call(
         "POST",
         f"/employees/{employee_id}/assignments",
         {
@@ -126,13 +81,29 @@ def attach(employee_id: str, department_id: str, position_id: str) -> tuple[int,
     )
 
 
+def signed_in_employee() -> tuple[str, str, Browser]:
+    """An employee holding a real account, signed in: (employee_id, email, caller).
+
+    The account is written rather than created through `/accounts`, which needs an
+    administrator and a forced password change; the session is a real one either
+    way, which is what the visibility claims below are about.
+    """
+    employee_id, username = make_employee(roles=("employee",))
+    browser = Browser()
+    assert browser.sign_in(username), f"{username} could not sign in"
+    email = run_sql("SELECT email FROM employees WHERE id = :id", {"id": UUID(employee_id)})[0][0]
+    return employee_id, email, browser
+
+
 def main() -> None:
     suffix = uuid4().hex[:6]
+    admin = administrator()
+    hr = actor("hr")
 
-    _, first_department = call(
+    _, first_department = admin.call(
         "POST", "/departments", {"code": f"p{suffix}", "name_es": "RRHH", "name_en": "HR"}
     )
-    _, second_department = call(
+    _, second_department = admin.call(
         "POST", "/departments", {"code": f"q{suffix}", "name_es": "Finanzas", "name_en": "Finance"}
     )
     check(
@@ -144,7 +115,7 @@ def main() -> None:
     position_two = create_position(second_department["id"], f"analyst{suffix}")
 
     # --- the closed field set ---------------------------------------------
-    status, body = call(
+    status, body = admin.call(
         "POST",
         "/employees",
         {
@@ -158,40 +129,48 @@ def main() -> None:
     check("a forbidden field is refused, not silently dropped", status == 422, status)
 
     # --- create ------------------------------------------------------------
-    ana = create_employee(f"ana{suffix}@empresa.es", city="Madrid")
-    status, _ = call(
+    ana_id, ana_email, ana = signed_in_employee()
+    status, _ = admin.call(
         "POST",
         "/employees",
         {
             "first_name": "Otra",
             "last_name": "Ana",
-            "email": f"ana{suffix}@empresa.es",
+            "email": ana_email,
             "hire_date": "2024-01-15",
         },
     )
     check("a duplicate email is refused", status == 409, status)
 
     # --- multi-position ----------------------------------------------------
-    status, ana = attach(ana["id"], first_department["id"], position_one)
+    # Attaching is the administrator's work; the assignment list it answers with
+    # is the administrator's own projection, so these claims are read back by HR.
+    status, _ = attach(admin, ana_id, first_department["id"], position_one)
     check("the first position is attached", status == 201, status)
+    _, ana_profile = hr.call("GET", f"/employees/{ana_id}")
     check(
         "the first position becomes primary",
-        ana["assignments"][0]["is_primary"] is True,
-        ana["assignments"][0]["is_primary"],
+        ana_profile["assignments"][0]["is_primary"] is True,
+        ana_profile["assignments"][0]["is_primary"],
     )
 
-    status, ana = attach(ana["id"], second_department["id"], position_two)
+    status, _ = attach(admin, ana_id, second_department["id"], position_two)
     check("a second position in another department is attached", status == 201, status)
-    check("the person holds two positions", len(ana["assignments"]) == 2, len(ana["assignments"]))
+    _, ana_profile = hr.call("GET", f"/employees/{ana_id}")
+    check(
+        "the person holds two positions",
+        len(ana_profile["assignments"]) == 2,
+        len(ana_profile["assignments"]),
+    )
     check(
         "still exactly one primary",
-        sum(1 for a in ana["assignments"] if a["is_primary"]) == 1,
+        sum(1 for a in ana_profile["assignments"] if a["is_primary"]) == 1,
     )
     check(
         "a client cannot ask for the primary flag",
-        call(
+        admin.call(
             "POST",
-            f"/employees/{ana['id']}/assignments",
+            f"/employees/{ana_id}/assignments",
             {
                 "department_id": first_department["id"],
                 "job_position_id": position_one,
@@ -203,11 +182,11 @@ def main() -> None:
     )
 
     # --- approver ----------------------------------------------------------
-    boss = create_employee(f"boss{suffix}@empresa.es", "Luis", "Jefe")
+    boss = create_employee(admin, f"boss{suffix}@empresa.es", "Luis", "Jefe")
     set_department_manager(first_department["id"], boss["id"])
 
-    _, ana = call("GET", f"/employees/{ana['id']}")
-    primary = next(a for a in ana["assignments"] if a["is_primary"])
+    _, ana_profile = hr.call("GET", f"/employees/{ana_id}")
+    primary = next(a for a in ana_profile["assignments"] if a["is_primary"])
     check(
         "the approver falls back to the department manager",
         primary["effective_approver_employee_id"] == boss["id"],
@@ -215,37 +194,35 @@ def main() -> None:
     )
 
     # --- visibility --------------------------------------------------------
-    status, _ = call(
+    status, _ = admin.call(
         "PUT",
-        f"/employees/{ana['id']}/private",
+        f"/employees/{ana_id}/private",
         {"address_line": "Calle Mayor 1", "employee_no": f"E-{suffix}"},
     )
     check("withheld details are stored", status == 200, status)
 
-    _, as_hr = call("GET", f"/employees/{ana['id']}")
+    _, as_hr = hr.call("GET", f"/employees/{ana_id}")
     check(
         "HR sees the withheld details",
         as_hr.get("private", {}).get("employee_no") == f"E-{suffix}",
         as_hr.get("private", {}).get("employee_no"),
     )
 
-    _, as_self = call("GET", "/employees/me", actor=ana["id"], roles="employee")
+    _, as_self = ana.call("GET", "/employees/me")
     check(
         "the person sees their own withheld details",
         as_self.get("private", {}).get("address_line") == "Calle Mayor 1",
         as_self.get("private", {}).get("address_line"),
     )
 
-    colleague = create_employee(f"marta{suffix}@empresa.es", "Marta", "Compañera")
-    attach(colleague["id"], first_department["id"], position_one)
+    colleague_id, colleague_email, colleague = signed_in_employee()
+    attach(admin, colleague_id, first_department["id"], position_one)
 
-    status, seen_by_colleague = call(
-        "GET", f"/employees/{ana['id']}", actor=colleague["id"], roles="employee"
-    )
+    status, seen_by_colleague = colleague.call("GET", f"/employees/{ana_id}")
     check("a colleague sees the record", status == 200, status)
     check(
         "a colleague sees the directory fields",
-        seen_by_colleague.get("email") == f"ana{suffix}@empresa.es",
+        seen_by_colleague.get("email") == ana_email,
         seen_by_colleague.get("email"),
     )
     check(
@@ -264,31 +241,27 @@ def main() -> None:
     # the contact list lists people who have somewhere to be.
     check(
         "someone with no position is not in the directory",
-        boss["id"] not in {row["employee_id"] for row in call("GET", "/employees/directory")[1]},
+        boss["id"] not in {row["employee_id"] for row in hr.call("GET", "/employees/directory")[1]},
     )
 
-    _, directory = call(
-        "GET", "/employees/directory", actor=colleague["id"], roles="employee"
-    )
+    _, directory = colleague.call("GET", "/employees/directory")
     by_id = {row["employee_id"]: row for row in directory}
     check(
         "the colleague's own row carries an email",
-        by_id.get(colleague["id"], {}).get("email") == f"marta{suffix}@empresa.es",
-        by_id.get(colleague["id"], {}).get("email"),
+        by_id.get(colleague_id, {}).get("email") == colleague_email,
+        by_id.get(colleague_id, {}).get("email"),
     )
     # `ana` shares the colleague's department, so her address is visible.
     check(
         "a row inside the viewer's department carries an email",
-        by_id.get(ana["id"], {}).get("email") == f"ana{suffix}@empresa.es",
-        by_id.get(ana["id"], {}).get("email"),
+        by_id.get(ana_id, {}).get("email") == ana_email,
+        by_id.get(ana_id, {}).get("email"),
     )
 
     # A person in another department: their row shows, their address does not.
-    outsider = create_employee(f"outsider{suffix}@empresa.es", "Otro", "Departamento")
-    attach(outsider["id"], second_department["id"], position_two)
-    _, directory = call(
-        "GET", "/employees/directory", actor=colleague["id"], roles="employee"
-    )
+    outsider = create_employee(admin, f"outsider{suffix}@empresa.es", "Otro", "Departamento")
+    attach(admin, outsider["id"], second_department["id"], position_two)
+    _, directory = colleague.call("GET", "/employees/directory")
     by_id = {row["employee_id"]: row for row in directory}
     check(
         "a row outside the viewer's department carries no email",
@@ -297,38 +270,38 @@ def main() -> None:
     )
 
     # --- cleanup -----------------------------------------------------------
-    # Order matters: every foreign key here is RESTRICT, so the referencing rows
+    # Order matters: the foreign keys here are RESTRICT, so the referencing rows
     # go first. Assignments before employees, employees before departments.
     # Cleanup uses SQL because the API deliberately has no "delete an employee"
     # endpoint, and a probe that leaves rows behind makes the next run's
     # expectations depend on the previous one.
-    ids = [UUID(employee["id"]) for employee in (ana, colleague, boss, outsider)]
-    sql("DELETE FROM employee_assignments WHERE employee_id = ANY(:ids)", {"ids": ids})
-    sql(
+    ids = [UUID(employee_id) for employee_id in (ana_id, colleague_id, boss["id"], outsider["id"])]
+    run_sql("DELETE FROM employee_assignments WHERE employee_id = ANY(:ids)", {"ids": ids})
+    run_sql(
         "UPDATE departments SET manager_employee_id = NULL WHERE id = ANY(:ids)",
-        {"ids": [first_department["id"], second_department["id"]]},
+        {"ids": [UUID(first_department["id"]), UUID(second_department["id"])]},
     )
-    sql("DELETE FROM employees WHERE id = ANY(:ids)", {"ids": ids})
-    sql(
+    run_sql("DELETE FROM employees WHERE id = ANY(:ids)", {"ids": ids})
+    run_sql(
         "DELETE FROM job_positions WHERE department_id = ANY(:ids)",
-        {"ids": [first_department["id"], second_department["id"]]},
+        {"ids": [UUID(first_department["id"]), UUID(second_department["id"])]},
     )
     for department_row in (first_department, second_department):
-        status, body = call("DELETE", f"/departments/{department_row['id']}")
+        status, body = admin.call("DELETE", f"/departments/{department_row['id']}")
         check(
             f"department {department_row['code']} is removed",
             status == 204,
             f"{status} {body if status != 204 else ''}",
         )
 
-    leftover = call("GET", "/employees/directory")[1]
+    leftover = hr.call("GET", "/employees/directory")[1]
     check("no employees are left behind", leftover == [], len(leftover or []))
-    for department in (first_department, second_department):
-        call("DELETE", f"/departments/{department['id']}")
 
-    print()
-    print("FAIL" if failures else "ALL CHECKS PASSED")
-    sys.exit(1 if failures else 0)
+    # The four signed-in callers are real employee and user rows that the
+    # statements above do not reach.
+    wipe()
+
+    finish()
 
 
 if __name__ == "__main__":

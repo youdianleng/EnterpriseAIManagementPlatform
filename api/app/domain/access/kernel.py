@@ -27,7 +27,12 @@ from dataclasses import dataclass
 from enum import StrEnum
 from uuid import UUID
 
-from app.domain.access.permissions import Action, roles_may, rule_for
+from app.domain.access.permissions import (
+    DOCUMENT_CROSS_DEPARTMENT_ROLES,
+    Action,
+    roles_may,
+    rule_for,
+)
 from app.domain.access.principal import Principal
 
 CLEARANCE_RANK = {"low": 0, "medium": 1, "high": 2}
@@ -63,6 +68,11 @@ class Resource:
     clearance: str | None = None
     owner_employee_id: UUID | None = None
     is_company_kb: bool = False
+    #: Whether `document_permissions` names this caller (directly, or through a
+    #: department or role grant the document module resolved). It is a fact the
+    #: document module looks up, never a request parameter: it grants reading, but
+    #: it does not lift the clearance ceiling.
+    explicit_grant: bool = False
 
 
 class Reason(StrEnum):
@@ -81,8 +91,12 @@ class Reason(StrEnum):
     UNKNOWN_ACTION = "unknown_action"
     ROLE_LACKS_PERMISSION = "role_lacks_permission"
     CLEARANCE_TOO_LOW = "clearance_too_low"
+    CLEARANCE_OK = "clearance_ok"
     DEPARTMENT_NOT_REACHABLE = "department_not_reachable"
     NOT_OWNER = "not_owner"
+    NOT_SHARED = "not_shared"
+    EXPLICIT_GRANT = "explicit_grant"
+    DOCUMENT_EXCEPTION_ROLE = "document_exception_role"
     PRIVILEGED_ROLE_REQUIRED = "privileged_role_required"
 
 
@@ -127,6 +141,8 @@ class FilterSpec:
         "department_ids",
         "clearance_levels",
         "own_employee_id",
+        "explicit_grant_employee_id",
+        "company_kb_cross_department",
         "include_company_kb",
     )
 
@@ -140,6 +156,8 @@ class FilterSpec:
         clearance_levels: frozenset[str],
         own_employee_id: UUID | None,
         include_company_kb: bool,
+        explicit_grant_employee_id: UUID | None = None,
+        company_kb_cross_department: bool = False,
     ) -> None:
         if _token is not _FILTER_TOKEN:
             raise TypeError(
@@ -151,13 +169,21 @@ class FilterSpec:
         self.clearance_levels = clearance_levels
         self.own_employee_id = own_employee_id
         self.include_company_kb = include_company_kb
+        #: The employee whose `document_permissions` rows count as an explicit
+        #: grant, so a store can express the share clause in the same query.
+        self.explicit_grant_employee_id = explicit_grant_employee_id
+        #: True when this caller's roles reach company documents in every
+        #: department. Company documents only: a personal upload stays bounded by
+        #: ownership and by the share clause whatever the role.
+        self.company_kb_cross_department = company_kb_cross_department
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         if self.allow_all:
             return f"<FilterSpec {self.kind} allow_all>"
         return (
             f"<FilterSpec {self.kind} departments={len(self.department_ids)} "
-            f"clearance<={sorted(self.clearance_levels)} own={self.own_employee_id is not None}>"
+            f"clearance<={sorted(self.clearance_levels)} own={self.own_employee_id is not None} "
+            f"cross_dept={self.company_kb_cross_department}>"
         )
 
 
@@ -214,27 +240,37 @@ def can(principal: Principal, action: Action, resource: Resource | None = None) 
 
 def _can_on_resource(principal: Principal, action: Action, resource: Resource) -> Decision:
     """Resource-level nuance, applied only after the role has permitted."""
+    # Documents have their own rule, stated once in `docs/DESIGN.md` §4.2 as four
+    # clauses. It is not expressed with the generic department/clearance path
+    # below, because that path *allows* a resource with no department and no
+    # clearance — which for a document is somebody else's private upload.
+    if resource.kind is ResourceKind.DOCUMENT:
+        return _can_read_document(principal, resource)
+
     reasons: list[Reason] = [Reason.ROLE_PERMITS]
 
     # Ownership always grants read access to one's own material, whatever the
-    # department or clearance rules say.
+    # department or clearance rules say. Documents are not in this set because
+    # they were decided above, where the design states ownership as its own clause.
     if (
-        action in {Action.EMPLOYEE_READ, Action.EMPLOYEE_READ_OWN, Action.DOCUMENT_READ}
+        action in {Action.EMPLOYEE_READ, Action.EMPLOYEE_READ_OWN}
         and resource.owner_employee_id is not None
         and resource.owner_employee_id == principal.employee_id
     ):
         return Decision(True, (Reason.IS_OWNER,), "the principal owns the resource")
 
-    # Clearance is an upper bound that no role lifts except the privileged ones.
-    if resource.clearance is not None and not principal.is_privileged:
-        allowed_levels = _clearances_up_to(principal.clearance_level)
-        if resource.clearance not in allowed_levels:
-            return Decision(
-                False,
-                (Reason.CLEARANCE_TOO_LOW,),
-                f"{resource.clearance} is above {principal.clearance_level}",
-            )
-        reasons.append(Reason.ROLE_PERMITS)
+    # Clearance is an upper bound. The privileged roles are above it for *employee*
+    # material — that is what makes withheld fields readable — and the exemption
+    # stops there: a document never reaches this branch, and its own rule has no
+    # exception to the ceiling.
+    if not principal.is_privileged and not _clearance_ok(principal, resource):
+        return Decision(
+            False,
+            (Reason.CLEARANCE_TOO_LOW,),
+            f"{resource.clearance} is above {principal.clearance_level}",
+        )
+    if resource.clearance is not None:
+        reasons.append(Reason.CLEARANCE_OK)
 
     if principal.is_privileged:
         return Decision(True, (Reason.IS_PRIVILEGED,), "privileged role reaches every department")
@@ -261,6 +297,104 @@ def _can_on_resource(principal: Principal, action: Action, resource: Resource) -
     return Decision(True, tuple(reasons), "role permits and nothing further restricts")
 
 
+def _clearance_ok(principal: Principal, resource: Resource) -> bool:
+    """The ceiling: `rank(document) <= rank(principal)`.
+
+    An unclassified resource is not treated as classified. Every write path sets
+    a level, and the column is `NOT NULL`, so `None` here means "this caller did
+    not tell the kernel", not "top secret".
+    """
+    if resource.clearance is None:
+        return True
+    return resource.clearance in _clearances_up_to(principal.clearance_level)
+
+
+def _department_ok(principal: Principal, resource: Resource) -> bool:
+    """`dept(document) ∈ departments(principal)`, descendants included.
+
+    A document with no department is reachable by nobody through this clause; it
+    is reached through ownership or an explicit grant instead.
+    """
+    if resource.department_id is None:
+        return False
+    return principal.covers_department(resource.department_id)
+
+
+def _can_read_document(principal: Principal, resource: Resource) -> Decision:
+    """The four clauses of `docs/DESIGN.md` §4.2, in the order the design lists
+    them.
+
+    Every clause is evaluated before answering, because they are alternatives: a
+    low-clearance HR member is refused by the share clause and allowed by the
+    exception clause, and short-circuiting on the first refusal would get that
+    backwards. A refusal names every condition that failed, so an incident review
+    does not have to re-derive them.
+    """
+    # 1. Your own document, whatever its classification. Hiding someone's own
+    #    upload from them is not a security property, and the design states this
+    #    clause without conditions.
+    if (
+        resource.owner_employee_id is not None
+        and resource.owner_employee_id == principal.employee_id
+    ):
+        return Decision(True, (Reason.IS_OWNER,), "the principal owns the document")
+
+    clearance_ok = _clearance_ok(principal, resource)
+    department_ok = _department_ok(principal, resource)
+    cross_department = bool(principal.roles & DOCUMENT_CROSS_DEPARTMENT_ROLES)
+
+    # 2. The company knowledge base, with both conditions satisfied.
+    if resource.is_company_kb and clearance_ok and department_ok:
+        return Decision(
+            True,
+            (Reason.CLEARANCE_OK, Reason.SHARES_DEPARTMENT),
+            "company document, clearance and department both satisfied",
+        )
+
+    # 3. An explicit grant — a personal document shared with this person, or a
+    #    company document shared outside their department. The ceiling still
+    #    applies: being named is not a reason to read above your clearance.
+    if resource.explicit_grant and clearance_ok:
+        return Decision(True, (Reason.EXPLICIT_GRANT,), "the document is shared with them")
+
+    # 4. The exception roles, for company documents only, and only within their
+    #    own clearance. This is the one clause that ignores departments, and it is
+    #    deliberately not "is privileged": finance is privileged for payroll and
+    #    has no business here. The ceiling is re-stated rather than inherited from
+    #    clause 2, because a clause that forgot it would be the whole rule's undoing.
+    if resource.is_company_kb and cross_department and clearance_ok:
+        return Decision(
+            True,
+            (Reason.CLEARANCE_OK, Reason.DOCUMENT_EXCEPTION_ROLE),
+            f"{sorted(principal.roles & DOCUMENT_CROSS_DEPARTMENT_ROLES)} reaches every department",
+        )
+
+    reasons: list[Reason] = []
+    if not clearance_ok:
+        reasons.append(Reason.CLEARANCE_TOO_LOW)
+    if resource.is_company_kb:
+        if not department_ok:
+            reasons.append(Reason.DEPARTMENT_NOT_REACHABLE)
+    elif not resource.explicit_grant:
+        reasons.extend((Reason.NOT_OWNER, Reason.NOT_SHARED))
+    # A personal document that *is* shared with them and is still refused leaves
+    # only the ceiling, which is already recorded above.
+    if not reasons:  # pragma: no cover - unreachable while the clauses above hold
+        reasons.append(Reason.NOT_SHARED)
+
+    return Decision(False, tuple(reasons), _document_refusal_detail(principal, resource))
+
+
+def _document_refusal_detail(principal: Principal, resource: Resource) -> str:
+    return (
+        f"document company_kb={resource.is_company_kb} "
+        f"clearance={resource.clearance or 'unset'} "
+        f"department={resource.department_id or 'none'} "
+        f"against clearance={principal.clearance_level} "
+        f"departments={len(principal.department_ids)} shared={resource.explicit_grant}"
+    )
+
+
 def filter_for(principal: Principal, kind: ResourceKind) -> FilterSpec:
     """Describe what this principal may reach for one kind of resource.
 
@@ -271,17 +405,21 @@ def filter_for(principal: Principal, kind: ResourceKind) -> FilterSpec:
     privileged = principal.is_privileged
 
     if kind is ResourceKind.DOCUMENT:
+        # `allow_all` is never true for documents. It would read as "every row",
+        # and every row includes other people's personal uploads, which the
+        # decision rule never allows. The exception roles are recorded as their
+        # own flag instead, because their reach is limited to company documents.
         return FilterSpec(
             _token=_FILTER_TOKEN,
             kind=kind,
-            allow_all=privileged,
-            department_ids=frozenset() if privileged else principal.department_ids,
-            clearance_levels=(
-                frozenset(CLEARANCE_RANK)
-                if privileged
-                else _clearances_up_to(principal.clearance_level)
-            ),
+            allow_all=False,
+            department_ids=principal.department_ids,
+            clearance_levels=_clearances_up_to(principal.clearance_level),
             own_employee_id=principal.employee_id,
+            explicit_grant_employee_id=principal.employee_id,
+            company_kb_cross_department=bool(
+                principal.roles & DOCUMENT_CROSS_DEPARTMENT_ROLES
+            ),
             # Personal uploads never enter the company pool; the document module
             # reads this flag to keep them out of shared retrieval.
             include_company_kb=True,

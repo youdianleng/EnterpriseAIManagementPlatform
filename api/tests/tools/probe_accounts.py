@@ -101,6 +101,48 @@ def make_employee(status: str = "active") -> str:
     return str(employee_id)
 
 
+def assign_to(employee_id: str, *, clearance_level: str) -> None:
+    """Put the employee in a department created at a given clearance.
+
+    Through the API rather than SQL, because the inheritance under test is
+    triggered by a real account creation reading real rows.
+    """
+    status, department = call(
+        "POST",
+        "/departments",
+        {
+            "code": f"clr{uuid4().hex[:6]}",
+            "name_es": "claridad",
+            "name_en": "clearance",
+            "clearance_level": clearance_level,
+        },
+    )
+    assert status == 201, f"could not create the department: {status} {department}"
+
+    status, position = call(
+        "POST",
+        "/positions",
+        {
+            "code": f"pos{uuid4().hex[:6]}",
+            "title_es": "puesto",
+            "title_en": "position",
+            "department_id": department["id"],
+        },
+    )
+    assert status == 201, f"could not create the position: {status} {position}"
+
+    status, assignment = call(
+        "POST",
+        f"/employees/{employee_id}/assignments",
+        {
+            "department_id": department["id"],
+            "job_position_id": position["id"],
+            "start_date": "2024-01-15",
+        },
+    )
+    assert status == 201, f"could not assign the employee: {status} {assignment}"
+
+
 def create_plain_account(username: str) -> str:
     """An employee account with no administrative role, ready to sign in.
 
@@ -190,7 +232,13 @@ def main() -> None:
 
     client = redis.Redis.from_url(get_settings().redis_url, decode_responses=True)
     try:
-        for name in (f"probe{suffix}", f"other{suffix}", f"gone{suffix}", f"nope{suffix}"):
+        for name in (
+            f"probe{suffix}",
+            f"other{suffix}",
+            f"gone{suffix}",
+            f"nope{suffix}",
+            f"inherits{suffix}",
+        ):
             client.delete(FAILED_ATTEMPTS_KEY.format(username=normalise(name)))
     finally:
         client.close()
@@ -217,6 +265,25 @@ def main() -> None:
     )
     plaintext = created["temporary_password"]
     account_id = created["id"]
+
+    # --- inherited clearance (DESIGN §10.5) --------------------------------
+    inherited_employee = make_employee()
+    assign_to(inherited_employee, clearance_level="high")
+    status, inherited = call(
+        "POST",
+        "/accounts",
+        {"employee_id": inherited_employee, "username": f"inherits{suffix}"},
+    )
+    check("an account is created for an assigned employee", status == 201, status)
+    check(
+        "and it starts at its department's clearance, not at the floor",
+        inherited.get("clearance_level") == "high",
+        inherited.get("clearance_level"),
+    )
+    stored = run_sql(
+        "SELECT clearance_level FROM users WHERE id = :id", {"id": UUID(inherited["id"])}
+    )
+    check("which is what the row stores", bool(stored) and stored[0][0] == "high", stored)
 
     # --- unrecoverable -----------------------------------------------------
     status, fetched = call("GET", f"/accounts/{account_id}")
@@ -358,9 +425,20 @@ def main() -> None:
     check("the database refuses a non-Argon2id hash", raised)
 
     # --- cleanup -----------------------------------------------------------
-    run_sql("DELETE FROM audit_log", {})
-    run_sql("DELETE FROM users", {})
-    run_sql("DELETE FROM employees", {})
+    # Order matters: every foreign key in this schema is RESTRICT, so referencing
+    # rows go first. Positions and departments are created by the clearance checks
+    # above and would otherwise accumulate one set per run.
+    for statement in (
+        "DELETE FROM audit_log",
+        "DELETE FROM users",
+        "DELETE FROM employee_assignments",
+        "DELETE FROM employee_private",
+        "DELETE FROM employees",
+        "DELETE FROM job_positions",
+        "UPDATE departments SET manager_employee_id = NULL",
+        "DELETE FROM departments",
+    ):
+        run_sql(statement, {})
     check("no rows are left behind", run_sql("SELECT count(*) FROM employees", {})[0][0] == 0)
 
     print()

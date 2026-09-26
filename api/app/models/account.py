@@ -36,6 +36,10 @@ class User(Base):
             name="ck_users_password_hash_is_argon2id",
         ),
         CheckConstraint("session_epoch >= 1", name="ck_users_session_epoch"),
+        CheckConstraint(
+            "clearance_level IN ('low', 'medium', 'high')",
+            name="ck_users_clearance_level",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
@@ -57,6 +61,15 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    #: Initialised from the primary position's department when the account is
+    #: created (DESIGN §10.5) and raisable by hand. The permission snapshot takes
+    #: the higher of this and what the person's departments grant: the department
+    #: is the authority on what its work may contain, and this is how one person
+    #: is raised above it for a specific reason.
+    clearance_level: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'low'")
+    )
 
     # Incremented whenever every existing session must stop being valid:
     # deactivation and password reset. Sessions carry the epoch they were issued

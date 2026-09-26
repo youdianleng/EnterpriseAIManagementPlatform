@@ -142,13 +142,15 @@ tests/             unit / integration（真实 Postgres）/ e2e（Playwright）
 | `job_positions` | `id`, `code`, `title_es`, `title_en`, `department_id`, `is_managerial`, `is_active` | 职位模板 |
 | `employees` | `id`, `employee_no`, `first_name`, `last_name`, `preferred_name`, `email`, `photo_path`, `address_line`, `city`, `postal_code`, `country`, `hire_date`, `termination_date`, `status`(active/leave/terminated), `birth_date`, `emergency_contact`(JSONB) | Q9 允许的字段**仅此**；无身份证/银行卡/健康字段 |
 | `employee_assignments` | `id`, `employee_id`, `department_id`, `job_position_id`, `is_primary`, `manager_employee_id`, `notification_override_employee_id`, `start_date`, `end_date` | **一人多职位的核心表**；`is_primary` 默认第一个，仅 admin 可改（Q43） |
-| `users` | `id`, `employee_id`(unique), `username`, `password_hash`, `must_change_password`, `is_admin`, `is_hr`, `is_finance`, `is_compliance`, `is_it`, `clearance_level`, `is_active`, `last_login_at` | 账号与员工**一对一**；临时密码 SHA-256（Q26） |
+| `users` | `id`, `employee_id`(unique), `username`, `password_hash`, `must_change_password`, `roles`(JSONB), `clearance_level`, `is_active`, `session_epoch`, `last_login_at`, `password_changed_at` | 账号与员工**一对一**。角色为 `roles` JSONB 数组（见下方实现注记），临时密码为 Argon2id（见 §10.2） |
 | `roles` / `user_roles` / `role_permissions` | — | 角色权限矩阵的可数据化部分 |
 | `work_schedules` | `id`, `department_id`(nullable), `name`, `weekly_hours`, `is_default` | 部门级作息（Q22） |
 | `work_schedule_days` | `schedule_id`, `weekday`, `expected_minutes`, `start_time`, `end_time`, `break_minutes` | 周一至周四 8h、周五 intensivo 6h 之类 |
 | `employee_schedule_overrides` | `employee_id`, `schedule_id`, `effective_from`, `effective_to`, `reason` | 员工级覆盖（含兼职 jornada parcial） |
 | `holidays` | `id`, `date`, `name_es`, `scope`(national/regional/local), `region_code`, `year` | **可导入的数据表，不硬编码**（Q22） |
 | `personnel_changes` | `id`, `employee_id`, `change_type`(join/transfer/promotion/termination/salary), `effective_date`, `payload`(JSONB 字段变更明细), `approval_request_id`, `status`(draft/pending/approved/applied/cancelled), `applied_at` | 入转调离统一单据（Q25） |
+
+**实现注记（2026-09-26）：** `users` 的角色由六个 `is_*` 布尔列改为 `roles` JSONB 数组，值域由数据库触发器约束在固定集合内（迁移 `0005`），`clearance_level` 与 `session_epoch` 同批落地（迁移 `0006`）。理由：角色集合固定且很小，但每加一个角色就要加一列、改一次判定；数组让"这个人有哪些角色"是一次读取，而不是六次。若角色将来获得属性或范围，这里改成关联表，判定内核只改一处。
 
 ### 3.2 考勤与请假（7 张表）
 

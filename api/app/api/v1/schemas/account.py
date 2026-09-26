@@ -27,6 +27,10 @@ class AccountRead(BaseModel):
     session_epoch: int
     last_login_at: datetime | None = None
     created_at: datetime
+    #: The stored clearance. Shown so an administrator can see what a person was
+    #: given at creation; the effective clearance may be higher, because the
+    #: departments someone works in also grant one.
+    clearance_level: str = "low"
     employee_full_name: str = ""
     employee_email: str = ""
     #: Present only in the response that issues a new one-time password. Shown

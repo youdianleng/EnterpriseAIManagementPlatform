@@ -44,6 +44,21 @@ SNAPSHOT_KEY = "perm:user:{user_id}:{version}"
 #: a person can see: `0 or 2` is 2 in Python, so a lookup that passed the rank
 #: through a truthiness test turned "high" into "low".
 _CLEARANCE_BY_RANK = ("high", "medium", "low")
+_CLEARANCE_RANK = {name: rank for rank, name in enumerate(reversed(_CLEARANCE_BY_RANK))}
+
+
+def highest_clearance(*levels: str) -> str:
+    """The most permissive of the levels given (D12: clearances take the highest).
+
+    Unknown values are ignored rather than treated as "low": a typo in a
+    department row must not silently clear somebody for everything, and it must
+    not silently revoke them either — the column is a CHECK constraint, so an
+    unknown value reaching here means the schema was bypassed.
+    """
+    known = [level for level in levels if level in _CLEARANCE_RANK]
+    if not known:
+        return "low"
+    return max(known, key=_CLEARANCE_RANK.__getitem__)
 
 
 @dataclass(slots=True, frozen=True)
@@ -58,6 +73,10 @@ class AccountFacts:
     session_epoch: int
     status: str
     roles: frozenset[str] = frozenset({"employee"})
+    #: The stored value from `users.clearance_level` — set when the person was
+    #: hired and raisable afterwards. The effective clearance takes the higher of
+    #: this and what the departments grant.
+    clearance_level: str = "low"
 
 
 class PrincipalBuilder:
@@ -76,7 +95,8 @@ class PrincipalBuilder:
                 text(
                     """
                     SELECT u.id, u.employee_id, u.username, u.is_active,
-                           u.must_change_password, u.session_epoch, e.status, u.roles
+                           u.must_change_password, u.session_epoch, e.status, u.roles,
+                           u.clearance_level
                     FROM users u
                     JOIN employees e ON e.id = u.employee_id
                     WHERE u.id = :user_id
@@ -96,6 +116,7 @@ class PrincipalBuilder:
             session_epoch=row[5],
             status=row[6],
             roles=frozenset(row[7] or ["employee"]),
+            clearance_level=row[8] or "low",
         )
 
     async def assignment_facts(
@@ -187,7 +208,16 @@ class PrincipalBuilder:
             # position is marked managerial — which is where the requirement says
             # the manager role is derived from.
             roles=self._effective_roles(account.roles, is_manager),
-            clearance_level=await self._clearance_for(account.employee_id, departments),
+            # Two sources, and the higher wins: the departments someone works in
+            # decide what their work may contain, and the stored value is how one
+            # person is raised above that for a specific reason. Taking the lower
+            # would make the stored value unable to raise anybody, and taking the
+            # stored value alone would make a department-wide change need a data
+            # migration to reach the people in it.
+            clearance_level=highest_clearance(
+                account.clearance_level,
+                await self._clearance_for(account.employee_id, departments),
+            ),
             department_ids=departments,
             primary_department_id=primary,
             is_manager=is_manager,
@@ -317,12 +347,13 @@ async def resolve_principal(session: AsyncSession, user_id: UUID) -> Principal |
     if account is None or not account.is_active:
         return None
 
-    # Roles are read from the row that was just loaded, so they are part of the
-    # key for free. Without them, granting a role would keep serving the old
-    # answer until the TTL expired — the failure this key exists to prevent.
+    # Roles and the stored clearance are read from the row that was just loaded,
+    # so they are part of the key for free. Without them, granting a role or
+    # raising somebody's clearance would keep serving the old answer until the TTL
+    # expired — the failure this key exists to prevent.
     roles_stamp = ".".join(sorted(account.roles))
     version = (
-        f"{account.session_epoch}.{roles_stamp}."
+        f"{account.session_epoch}.{roles_stamp}.{account.clearance_level}."
         f"{await builder.assignment_version(account.employee_id)}."
         f"{await builder.structure_version()}"
     )
@@ -447,6 +478,7 @@ __all__ = [
     "SNAPSHOT_TTL_SECONDS",
     "AccountFacts",
     "PrincipalBuilder",
+    "highest_clearance",
     "invalidate_user",
     "resolve_principal",
     "to_viewer_context",

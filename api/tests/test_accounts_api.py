@@ -33,6 +33,38 @@ async def create_account(admin: Actor, employee_id: str, username: str = "amarti
 # --- creation --------------------------------------------------------------
 
 
+async def test_a_new_account_starts_at_its_departments_clearance(
+    platform: Platform, admin: Actor
+) -> None:
+    """DESIGN §10.5: clearance is configured once per department, not per person.
+
+    An account created for somebody whose primary position sits in a
+    high-clearance department starts at `high` rather than at the floor.
+    """
+    department = await platform.department("direccion", clearance_level="high")
+    employee_id = await platform.employee()
+    await platform.assign(
+        employee_id, department, await platform.position(department, "lead")
+    )
+
+    response = await create_account(admin, employee_id)
+
+    assert response.status_code == 201, response.text
+    assert response.json()["clearance_level"] == "high"
+
+
+async def test_a_new_account_without_an_assignment_starts_at_the_floor(
+    platform: Platform, admin: Actor
+) -> None:
+    """No assignment means no department to inherit from, so nothing is assumed."""
+    employee_id = await platform.employee()
+
+    response = await create_account(admin, employee_id)
+
+    assert response.json()["clearance_level"] == "low"
+
+
+
 async def test_creating_an_account_returns_a_one_time_password(
     platform: Platform, admin: Actor
 ) -> None:
