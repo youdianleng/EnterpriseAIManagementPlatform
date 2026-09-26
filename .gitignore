@@ -14,7 +14,11 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+# Python build directories, anchored to the repository root. Unanchored, `lib/`
+# also matches `web/lib/` — which is how the entire frontend library (the API
+# clients, the bilingual dictionaries, the UI primitives) went uncommitted from
+# ticket 03 until ticket 19 noticed that `git ls-files web/lib` was empty.
+/lib/
 lib64/
 parts/
 sdist/

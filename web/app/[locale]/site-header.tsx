@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { loginPath } from "@/lib/api/session-server";
+import { formatNumber } from "@/lib/format";
 import type { Dictionary } from "@/lib/i18n/dictionaries";
 import type { Locale } from "@/lib/i18n/config";
 
@@ -26,12 +27,29 @@ export function SiteHeader({
   dict,
   identity,
   pathWithoutLocale,
+  unreadCount,
 }: {
   locale: Locale;
   dict: Dictionary;
   identity?: HeaderIdentity;
   pathWithoutLocale: string;
+  /**
+   * Unread notifications, or null when the number could not be read.
+   *
+   * Null and zero are different states and are drawn differently: no badge means
+   * "nobody asked", a hidden badge at zero means "there is nothing waiting".
+   */
+  unreadCount?: number | null;
 }) {
+  // A badge at zero is noise: the count is drawn only when there is something to
+  // read, and the accessible name carries the number for anyone who cannot see it.
+  const badgeCount =
+    unreadCount === null || unreadCount === undefined || unreadCount <= 0 ? null : unreadCount;
+  const badgeLabel =
+    badgeCount === null
+      ? null
+      : dict.notifications.unreadBadge.replace("{count}", formatNumber(badgeCount, locale));
+
   return (
     <header className="mb-8 flex flex-wrap items-center justify-between gap-x-4 gap-y-3 border-b border-border pb-4">
       <Link
@@ -48,6 +66,25 @@ export function SiteHeader({
               <li>
                 <Link href={`/${locale}`} className="text-fg-muted hover:text-fg">
                   {dict.nav.home}
+                </Link>
+              </li>
+              <li>
+                <Link
+                  href={`/${locale}/notifications`}
+                  className="inline-flex items-center gap-1.5 text-fg-muted hover:text-fg"
+                >
+                  {dict.nav.notifications}
+                  {badgeCount !== null && badgeLabel !== null && (
+                    // The number is visible and the accessible name says what it
+                    // counts: "3" on its own is a number nobody can place.
+                    <span
+                      role="status"
+                      aria-label={badgeLabel}
+                      className="tabular inline-flex min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-xs font-semibold text-primary-fg"
+                    >
+                      {formatNumber(badgeCount, locale)}
+                    </span>
+                  )}
                 </Link>
               </li>
               <li>

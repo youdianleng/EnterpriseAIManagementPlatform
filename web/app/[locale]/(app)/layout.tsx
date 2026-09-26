@@ -4,6 +4,7 @@ import {
   changePasswordPath,
   loginPath,
   readServerSession,
+  readServerUnreadCount,
 } from "@/lib/api/session-server";
 import type { Locale } from "@/lib/i18n/config";
 import { DEFAULT_LOCALE, isLocale } from "@/lib/i18n/config";
@@ -49,12 +50,18 @@ export default async function SignedInLayout({
   if (!session) redirect(loginPath(locale));
   if (session.must_change_password) redirect(changePasswordPath(locale));
 
+  // The badge is read with the shell because it sits in the shell: rendering it on
+  // the centre's own page would leave every other screen claiming you have
+  // nothing to read. Null means "could not be read", which draws no badge.
+  const unreadCount = await readServerUnreadCount();
+
   return (
     <div className="flex flex-1 flex-col">
       <SiteHeader
         locale={locale}
         dict={dict}
         pathWithoutLocale=""
+        unreadCount={unreadCount}
         identity={{
           // The session carries the name, so the header costs no second request;
           // an account whose employee has no name falls back to the username.

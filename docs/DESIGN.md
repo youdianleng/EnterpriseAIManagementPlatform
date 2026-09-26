@@ -229,6 +229,8 @@ draft ──submit──▶ pending(step1) ──approve──▶ pending(step2)
 | `data_export_jobs` | `id`, `employee_id`, `requested_by`, `status`, `file_path`, `expires_at`, `completed_at` | GDPR 数据导出（Q33） |
 | `retention_policies` | `id`, `data_category`, `retention_months`, `legal_basis`, `notes` | RoPA 的数据化表达（Q33） |
 
+> **实现注记（票据 19）：** 三处与上表不同，均为有意为之。**收件人是 `recipient_employee_id` 而非 `recipient_user_id`**：通知发给**人**，而人未必有账号（员工与账号一对一，但不是每个员工都有账号），且权限快照里携带的正是 `employee_id`。**已读落为 `read_at` 时间戳而非 `is_read` 布尔**：审查要问的是"什么时候看到的"，一列即可回答，而"未读"就是 `read_at IS NULL`；时间戳只写一次，重复标记不改写首次阅读时间。**新增 `dedupe_key`，`(recipient_employee_id, dedupe_key)` 唯一**：同一事件对同一收件人只落一条，幂等由数据库唯一索引保证——应用层"先查后写"正是并发下会漏的那种写法；被抑制的第二次尝试写入审计（`notification.duplicate_suppressed`），否则"通知器跑了两次"和"通知器根本没跑"从外部看完全一样。另外两条由数据库约束表达：`title_key` 必须匹配点分小写键、`payload` 必须是 JSON 对象，因此"在记录里存拼接好的句子"会被 PostgreSQL 拒绝而不是靠评审发现；`expires_at` 只是读取过滤，过期通知不出现在列表与未读数中，行保留。邮件投递行在 mailer 落地（票据 20）之前为 `pending`，并在 `error` 写明"未尝试"，以免与"尝试过但失败"混淆。
+
 **审计必须覆盖的动作**（Q32）：登录/登出/失败登录、权限与角色变更、密级变更、文档可见性变更、薪酬访问与工资单下载、审批决定、Agent 发起的操作、数据导出、工资单撤回、考勤/工时更正。
 
 > **实现注记（票据 14）：** 动作目录在 `api/app/audit.py` 的 `AuditAction`，已落地的动作写入数据库；尚未实现的模块（文档、薪酬、审批、Agent、导出）先把常量登记在此，避免各处在用到时才临场拼写、拼成不同名字。记录入口只有 `record()` 一个，调用方只描述"变了什么"——操作者、IP、客户端由 `bind_actor()` 在解析出 principal 时写入请求上下文，因此给一处新写入加审计是一行代码，而不是把 actor 参数穿过三层。

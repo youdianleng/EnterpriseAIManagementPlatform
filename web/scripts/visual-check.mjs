@@ -28,7 +28,7 @@ const OUT = join(HERE, "..", "..", ".scratch", "visual");
 const API = process.env.EAM_API_URL ?? "http://localhost:8000";
 
 const LOCALES = ["es", "en"];
-const PATHS = ["", "/style-guide", "/login"];
+const PATHS = ["", "/style-guide", "/notifications", "/login"];
 const VIEWPORTS = [
   { name: "320", width: 320, height: 720 },
   { name: "768", width: 768, height: 900 },
@@ -199,8 +199,12 @@ async function signIn(request, username, password) {
   return {
     name: "eam_session",
     value: cookie.value,
-    domain: new URL(BASE).hostname,
-    path: "/",
+    // `url`, not `domain`. A cookie stored with `domain: "localhost"` is in the
+    // jar and is never sent — the signed-in pages then rendered the sign-in
+    // screen while every check still passed, because a sign-in screen satisfies
+    // "one h1, no overflow, every control named". Host-only is what the API
+    // itself sets, so this is also the closer reproduction of a real browser.
+    url: BASE,
     httpOnly: true,
     sameSite: "Lax",
   };
@@ -247,6 +251,20 @@ async function main() {
         else await context.clearCookies();
 
         await checkPage(page, url, label);
+
+        // A signed-in page that quietly rendered the sign-in screen passes every
+        // check above — one h1, no overflow, every control named — so the session
+        // is asserted here rather than assumed. Without this, a cookie the browser
+        // refuses to send turns the whole signed-in half into a no-op that reports
+        // success.
+        if (sessionCookie && path !== "/login") {
+          const signedIn = await page.locator('header nav a[href$="/notifications"]').count();
+          expect(
+            signedIn > 0 && !page.url().includes("/login"),
+            `${label}: the shell rendered signed in (cookie accepted)`,
+          );
+        }
+
         // The sign-in screen gets its own screenshot once the form has been
         // exercised, in `checkLoginForm`.
         if (path !== "/login") {
@@ -294,6 +312,7 @@ async function main() {
   // signed-in shell like every other page of the product.
   if (sessionCookie) {
     await checkStyleGuide(browser, sessionCookie);
+    await checkNotifications(browser, sessionCookie);
   } else {
     console.log("[note] signed-in checks skipped (no usable credentials)");
   }
@@ -400,6 +419,109 @@ async function checkStyleGuide(browser, sessionCookie) {
     }
   }
   ok(`element crops written for ${details.length} sections`);
+  await context.close();
+}
+
+/**
+ * The notification centre.
+ *
+ * `PATHS` already covers its layout, headings, overflow and accessible names in
+ * both languages at all three widths. What is asserted here is what the screen is
+ * *for*: a badge whose accessible name carries the count, rows that are list
+ * items, and marking read being a real button whose effect is visible in words —
+ * plus the text-expansion ratio, because this screen's Spanish copy is longer than
+ * its English copy and a reflow would only show up in one of them.
+ */
+async function checkNotifications(browser, sessionCookie) {
+  // Narrow on purpose: this is where the longer Spanish copy wraps and the
+  // expansion rule has something to measure. At 1280 every row is one line in
+  // both languages and the ratio is 1.000 whatever the wording does.
+  const context = await browser.newContext({ viewport: { width: 320, height: 720 } });
+  await context.addCookies([sessionCookie]);
+  const page = await context.newPage();
+
+  const heights = {};
+  for (const locale of LOCALES) {
+    await page.goto(`${BASE}/${locale}/notifications`, { waitUntil: "networkidle" });
+    heights[locale] = await page.evaluate(() => document.documentElement.scrollHeight);
+  }
+  const growth = heights.es / heights.en;
+  console.log(
+    `notifications heights: es=${heights.es} en=${heights.en} ratio=${growth.toFixed(3)}`,
+  );
+  if (growth > 1.25) {
+    fail(`the notification centre is ${((growth - 1) * 100).toFixed(1)}% taller in Spanish (>25%)`);
+  } else {
+    ok(`notifications: text expansion within tolerance (${((growth - 1) * 100).toFixed(1)}% taller)`);
+  }
+
+  await page.goto(`${BASE}/es/notifications`, { waitUntil: "networkidle" });
+
+  const items = page.locator("main ul > li");
+  const rows = await items.count();
+  if (rows === 0) {
+    console.log("[note] nothing in the notification centre — row checks skipped");
+  } else {
+    ok(`notifications: ${rows} notification(s) rendered as list items`);
+  }
+
+  const badge = page.locator('header a[href$="/notifications"] [role="status"]');
+  const rowsWithButton = await items.evaluateAll((elements) =>
+    elements.findIndex((element) => element.querySelector("button") !== null),
+  );
+
+  if (rowsWithButton === -1) {
+    console.log("[note] nothing unread — the badge and the read action cannot be exercised");
+  } else {
+    const label = (await badge.first().getAttribute("aria-label")) ?? "";
+    const before = Number(/(\d+)/.exec(label)?.[1] ?? NaN);
+    expect(
+      Number.isFinite(before),
+      `notifications: the badge's accessible name carries the count ("${label}")`,
+    );
+
+    // By index, not "the first row that has a button": once this row is read it
+    // stops matching that filter and the locator would quietly move to the next
+    // unread row, so every assertion below would describe a different row than
+    // the one that was clicked.
+    const row = items.nth(rowsWithButton);
+    await row.getByRole("button", { name: /marcar como leída/i }).click();
+
+    // What the write has to be visible as: this row read, in words, with its
+    // action gone. Waiting on the DOM rather than on a timeout is what makes the
+    // check about the screen instead of about the machine's speed.
+    await page.waitForFunction(
+      (index) => {
+        const element = document.querySelectorAll("main ul > li")[index];
+        if (!element) return false;
+        const text = element.textContent ?? "";
+        return element.querySelector("button") === null && text.includes("Leída");
+      },
+      rowsWithButton,
+      { timeout: 10000 },
+    );
+
+    const text = (await row.innerText()).replace(/\s+/g, " ");
+    expect(/\bLeída\b/.test(text), `notifications: the row now says it is read (${text})`);
+    expect(!/Marcar como leída/.test(text), "notifications: the action is gone once it is read");
+
+    // The badge is rendered by the shell on the server, so this also proves the
+    // refresh landed. Reading it after the wait, not before.
+    await page.waitForFunction(
+      (expected) => {
+        const element = document.querySelector(
+          'header a[href$="/notifications"] [role="status"]',
+        );
+        const found = /(\d+)/.exec(element?.getAttribute("aria-label") ?? "");
+        return (found ? Number(found[1]) : 0) === expected;
+      },
+      before - 1,
+      { timeout: 10000 },
+    );
+    ok(`notifications: the badge drops from ${before} to ${before - 1} when one is read`);
+    await page.screenshot({ path: join(OUT, "notifications-read-one-es.png"), fullPage: true });
+  }
+
   await context.close();
 }
 

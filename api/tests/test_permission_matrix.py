@@ -174,6 +174,9 @@ DESIGN_GRANTS: dict[Action, frozenset[str]] = {
     # Classifying a company document: admin configures clearances, hr manages the
     # knowledge base.
     Action.DOCUMENT_SET_CLEARANCE: frozenset({"admin", "hr"}),
+    # "Their own data" again, for the notification centre: what the system told
+    # you is yours to read. Nobody reads anybody else's, which is the whole rule.
+    Action.NOTIFICATION_READ_OWN: EVERYONE,
 }
 
 #: The resource each action acts on. A document is decided by §4.2 whatever the
@@ -203,6 +206,9 @@ KIND_FOR_ACTION: dict[Action, ResourceKind] = {
     Action.DOCUMENT_UPLOAD: ResourceKind.DOCUMENT,
     Action.DOCUMENT_MANAGE: ResourceKind.DOCUMENT,
     Action.DOCUMENT_SET_CLEARANCE: ResourceKind.DOCUMENT,
+    # Notifications hang off the person they were sent to, which is the employee
+    # resource the router names when it asks the kernel.
+    Action.NOTIFICATION_READ_OWN: ResourceKind.EMPLOYEE,
 }
 
 ACTIONS = tuple(sorted(Action, key=str))
@@ -332,7 +338,10 @@ def test_the_generated_matrix_covers_every_dimension() -> None:
 
     assert len(RESOURCE_SHAPES) == 1 + len(RESOURCE_CLEARANCES) * len(RESOURCE_DEPARTMENTS)
     assert len(cases) == len(SYSTEM_ROLES) * len(ACTIONS) * len(RESOURCE_SHAPES)
-    assert len(cases) == 7 * 21 * 13
+    # Literal on purpose: `len(ACTIONS)` would agree with itself however many
+    # actions the catalogue grew, and the point is that adding one is a decision
+    # somebody makes here rather than something that happens.
+    assert len(cases) == 7 * 22 * 13
     assert 0 < permitted < len(cases), "the expectation answers the same way everywhere"
 
     discriminating = [

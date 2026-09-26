@@ -48,6 +48,12 @@ class Action(StrEnum):
     # reader who checks what they did must not be the same person.
     AUDIT_READ = "audit.read"
 
+    # Notifications. Your own centre, and only your own: there is no action for
+    # reading somebody else's, because there is no endpoint for it. Its own action
+    # rather than "employee.read_own", which says something about a personnel
+    # record and nothing about a notification.
+    NOTIFICATION_READ_OWN = "notification.read_own"
+
     # Documents and the knowledge base. Fleshed out in tickets 12 and 31; present
     # here so the document module has an action to ask about from the start.
     DOCUMENT_READ = "document.read"
@@ -152,6 +158,14 @@ RULES: dict[Action, ActionRule] = {
             "The audit trail is read by compliance alone. Not administration, "
             "which is the subject of half of it, and not HR, which reads "
             "personnel files rather than the record of who read them."
+        ),
+    ),
+    Action.NOTIFICATION_READ_OWN: ActionRule(
+        roles=frozenset({"employee"}),
+        description=(
+            "Your own notification centre. Every account holds `employee` — the "
+            "snapshot adds it — so this is the whole signed-in population, which "
+            "is exactly who a notification is addressed to."
         ),
     ),
     Action.DOCUMENT_READ: ActionRule(
