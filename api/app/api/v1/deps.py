@@ -11,6 +11,7 @@ from uuid import UUID
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.audit import bind_actor
 from app.core.errors import AppError, ErrorCode
 from app.db import get_session
 from app.domain.access.kernel import Action, ResourceKind, apply_rls_context, can
@@ -53,6 +54,16 @@ async def current_principal(
     # A request that forgets this is not silently unrestricted: with no context
     # the policies return no rows at all.
     await apply_rls_context(session, principal)
+
+    # Who is acting, for every audit record this request writes. Bound rather
+    # than passed, so auditing a new write is one line rather than a signature
+    # change through three layers.
+    bind_actor(
+        user_id=principal.user_id,
+        roles=principal.roles,
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    )
     return principal
 
 

@@ -12,6 +12,13 @@ one place and means ticket 11 only has to change where the context comes from.
 from datetime import date
 from uuid import UUID
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
+#: Aliased because `record` is this module's word for an employee record, and a
+#: function of the same name would be shadowed by the first local variable a
+#: reader meets.
+from app.audit import AuditAction
+from app.audit import record as audit_record
 from app.domain.employee.models import (
     Assignment,
     AssignmentInput,
@@ -27,14 +34,49 @@ from app.domain.errors import DomainError, DomainErrorCode
 from app.domain.org.errors import OrgErrorCode
 
 
+def _private_fields(private: EmployeePrivate) -> set[str]:
+    """Which withheld fields carry a value, without carrying the values."""
+    return {
+        name
+        for name in ("address_line", "postal_code", "employee_no", "birth_date",
+                     "emergency_contact")
+        if getattr(private, name) is not None
+    }
+
+
 class EmployeeService:
     def __init__(
         self,
         repository: EmployeeRepository,
         departments: DepartmentLookup,
+        session: AsyncSession | None = None,
     ) -> None:
         self._repository = repository
         self._departments = departments
+        # Optional for unit tests of the profile rules; every write path in the
+        # application passes one, because every write is audited.
+        self._session = session
+
+    async def _audit(
+        self,
+        action: AuditAction,
+        employee_id: UUID,
+        *,
+        before: dict[str, object] | None = None,
+        after: dict[str, object] | None = None,
+        reason: str | None = None,
+    ) -> None:
+        if self._session is None:
+            return
+        await audit_record(
+            self._session,
+            action=action,
+            entity_type="employee",
+            entity_id=employee_id,
+            before=before,
+            after=after,
+            reason=reason,
+        )
 
     # --- reads -------------------------------------------------------------
 
@@ -79,6 +121,15 @@ class EmployeeService:
 
         employee = await self._repository.save(data)
         await self._repository.save_private(employee.id, data.private)
+        await self._audit(
+            AuditAction.EMPLOYEE_CREATED,
+            employee.id,
+            after={
+                "email": employee.email,
+                "hire_date": str(employee.hire_date),
+                "status": str(employee.status),
+            },
+        )
         await self._repository.commit()
         return await self.get_record(employee.id)
 
@@ -103,6 +154,15 @@ class EmployeeService:
                 )
 
         await self._repository.update(employee_id, patch)
+        await self._audit(
+            AuditAction.EMPLOYEE_UPDATED,
+            employee_id,
+            # The patch is the statement of intent, so it and what it replaced are
+            # both kept: a record that only shows the new value cannot answer
+            # "what did this used to say".
+            before={name: getattr(current.employee, name) for name in changes},
+            after=dict(changes),
+        )
         await self._repository.commit()
         return await self.get_record(employee_id)
 
@@ -122,6 +182,14 @@ class EmployeeService:
                 )
 
         await self._repository.save_private(employee_id, private)
+        await self._audit(
+            AuditAction.EMPLOYEE_PRIVATE_UPDATED,
+            employee_id,
+            # Which fields were written, not their values: an emergency contact
+            # and a home address are exactly the kind of thing an audit trail
+            # should be able to point at without becoming a second copy of.
+            after={"fields": sorted(_private_fields(private))},
+        )
         await self._repository.commit()
         return await self.get_record(employee_id)
 
@@ -147,6 +215,17 @@ class EmployeeService:
         is_primary = not any(assignment.is_primary for assignment in existing_active)
 
         await self._repository.save_assignment(employee_id, data, is_primary=is_primary)
+        await self._audit(
+            AuditAction.ASSIGNMENT_ADDED,
+            employee_id,
+            after={
+                "department_id": str(data.department_id),
+                "job_position_id": str(data.job_position_id),
+                "is_primary": is_primary,
+                "is_part_time": data.is_part_time,
+                "start_date": str(data.start_date),
+            },
+        )
         await self._repository.commit()
         return await self.get_record(employee_id)
 
@@ -178,6 +257,16 @@ class EmployeeService:
             if remaining:
                 await self._repository.set_primary(employee_id, remaining[0].id)
 
+        await self._audit(
+            AuditAction.ASSIGNMENT_ENDED,
+            employee_id,
+            before={
+                "assignment_id": str(target.id),
+                "department_id": str(target.department_id),
+                "job_position_id": str(target.job_position_id),
+                "is_primary": target.is_primary,
+            },
+        )
         await self._repository.commit()
         return await self.get_record(employee_id)
 
@@ -197,6 +286,21 @@ class EmployeeService:
             )
 
         await self._repository.set_primary(employee_id, assignment_id)
+        await self._audit(
+            AuditAction.ASSIGNMENT_PRIMARY_CHANGED,
+            employee_id,
+            # The primary position decides the approval route, so which one it is
+            # before and after is the whole content of the change.
+            before={
+                "primary_department_id": str(
+                    next(
+                        (item.department_id for item in assignments if item.is_primary),
+                        "",
+                    )
+                )
+            },
+            after={"primary_department_id": str(target.department_id)},
+        )
         await self._repository.commit()
         return await self.get_record(employee_id)
 

@@ -13,6 +13,7 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
     "es": {
         "errors.validation_failed": "Los datos enviados no son válidos.",
         "errors.invalid_request": "La solicitud no se pudo procesar.",
+    "errors.method_not_allowed": "Este recurso no admite ese método.",
         "errors.unauthenticated": "Necesitas iniciar sesión.",
         "errors.forbidden": "No tienes permiso para esta acción.",
         "errors.account_locked": "La cuenta está bloqueada temporalmente.",
@@ -65,6 +66,7 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
     "en": {
         "errors.validation_failed": "The submitted data is not valid.",
         "errors.invalid_request": "The request could not be processed.",
+    "errors.method_not_allowed": "This resource does not accept that method.",
         "errors.unauthenticated": "You need to sign in.",
         "errors.forbidden": "You do not have permission for this action.",
         "errors.account_locked": "The account is temporarily locked.",

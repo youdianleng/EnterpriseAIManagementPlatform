@@ -12,6 +12,9 @@ point of change, instead of relying on a TTL somewhere else.
 from collections.abc import Awaitable, Callable
 from uuid import UUID
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.audit import AuditAction, record
 from app.domain.errors import DomainError
 from app.domain.org.errors import OrgErrorCode
 from app.domain.org.models import (
@@ -24,8 +27,7 @@ from app.domain.org.models import (
 from app.domain.org.paths import child_path, depth_of, is_descendant_path
 from app.domain.org.repository import DepartmentRepository
 
-# Deepest depth index a department may occupy, with the root at 0.
-#
+# Deepest depth index a department may occupy, with the root at 0.#
 # The requirement is four *nested* levels (ticket 22: "部门级配置" over a
 # "4 层嵌套" tree), which is depths 0..4: the root plus four levels beneath it.
 # Stored and compared as an index because that is what the column holds.
@@ -71,9 +73,18 @@ def build_tree(departments: list[Department]) -> DepartmentTree:
 
 
 class DepartmentService:
-    def __init__(self, repository: DepartmentRepository, invalidate: Invalidate) -> None:
+    def __init__(
+        self,
+        repository: DepartmentRepository,
+        invalidate: Invalidate,
+        session: AsyncSession | None = None,
+    ) -> None:
         self._repository = repository
         self._invalidate = invalidate
+        # Optional so a service can be built without a session in a unit test that
+        # only exercises the tree rules. Every write path in the application
+        # passes one, because every write is audited.
+        self._session = session
 
     # --- reads -------------------------------------------------------------
 
@@ -94,6 +105,31 @@ class DepartmentService:
 
     # --- writes ------------------------------------------------------------
 
+    async def _audit(
+        self,
+        action: AuditAction,
+        department: Department,
+        *,
+        before: dict[str, object] | None = None,
+        after: dict[str, object] | None = None,
+    ) -> None:
+        """Record one structural change, before the caller commits.
+
+        Clearing somebody's department is how their documents become reachable to
+        somebody else, so this is not bookkeeping: it is the record that answers
+        "who could see this, and since when".
+        """
+        if self._session is None:
+            return
+        await record(
+            self._session,
+            action=action,
+            entity_type="department",
+            entity_id=department.id,
+            before=before,
+            after=after,
+        )
+
     async def create(self, data: DepartmentInput) -> Department:
         existing = await self._repository.get_by_code(data.code)
         if existing is not None:
@@ -113,13 +149,41 @@ class DepartmentService:
         department = await self._repository.save(
             data, path=child_path(parent_path, data.code), depth=depth
         )
+        await self._audit(
+            AuditAction.DEPARTMENT_CREATED,
+            department,
+            after={
+                "code": department.code,
+                "path": department.path,
+                "clearance_level": str(department.clearance_level),
+            },
+        )
         await self._repository.commit()
         await self._invalidate()
         return department
 
     async def update(self, department_id: UUID, patch: DepartmentPatch) -> Department:
-        await self.get(department_id)
+        before = await self.get(department_id)
         department = await self._repository.update(department_id, patch)
+        changes = patch.changes()
+        await self._audit(
+            AuditAction.DEPARTMENT_UPDATED,
+            department,
+            before={name: getattr(before, name) for name in changes},
+            after={name: getattr(department, name) for name in changes},
+        )
+        if "clearance_level" in changes and (
+            str(before.clearance_level) != str(department.clearance_level)
+        ):
+            # Its own record on purpose. A clearance edit changes what everybody in
+            # the department can reach, and "who could see this, and since when" is
+            # a question that must not require reading a diff of a rename.
+            await self._audit(
+                AuditAction.CLEARANCE_CHANGED,
+                department,
+                before={"clearance_level": str(before.clearance_level)},
+                after={"clearance_level": str(department.clearance_level)},
+            )
         await self._repository.commit()
         await self._invalidate()
         return department
@@ -167,9 +231,16 @@ class DepartmentService:
             new_path=new_path,
             new_code=department.code,
         )
+        moved = await self.get(department_id)
+        await self._audit(
+            AuditAction.DEPARTMENT_MOVED,
+            moved,
+            before={"path": department.path, "parent_id": str(department.parent_id)},
+            after={"path": moved.path, "parent_id": str(moved.parent_id)},
+        )
         await self._repository.commit()
         await self._invalidate()
-        return await self.get(department_id)
+        return moved
 
     async def delete(self, department_id: UUID) -> None:
         department = await self.get(department_id)
@@ -191,6 +262,11 @@ class DepartmentService:
             )
 
         await self._repository.delete(department_id)
+        await self._audit(
+            AuditAction.DEPARTMENT_DELETED,
+            department,
+            before={"code": department.code, "path": department.path},
+        )
         await self._repository.commit()
         await self._invalidate()
 

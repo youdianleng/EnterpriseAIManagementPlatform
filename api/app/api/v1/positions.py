@@ -30,6 +30,7 @@ def _service(session: AsyncSession) -> PositionService:
     return PositionService(
         repository=PostgresPositionRepository(session),
         departments=PostgresDepartmentRepository(session),
+        session=session,
     )
 
 

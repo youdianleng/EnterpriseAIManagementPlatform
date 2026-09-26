@@ -43,6 +43,7 @@ def _service(session: AsyncSession) -> DepartmentService:
     return DepartmentService(
         repository=PostgresDepartmentRepository(session),
         invalidate=invalidate_org_tree,
+        session=session,
     )
 
 

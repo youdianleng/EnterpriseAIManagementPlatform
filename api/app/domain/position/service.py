@@ -16,6 +16,9 @@ imports another domain's implementation.
 
 from uuid import UUID
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.audit import AuditAction, record
 from app.domain.errors import DomainError
 from app.domain.position.errors import PositionErrorCode
 from app.domain.position.models import Position, PositionInput, PositionPatch
@@ -23,9 +26,36 @@ from app.domain.position.repository import PositionRepository
 
 
 class PositionService:
-    def __init__(self, repository: PositionRepository, departments) -> None:  # noqa: ANN001
+    def __init__(
+        self,
+        repository: PositionRepository,
+        departments,  # noqa: ANN001
+        session: AsyncSession | None = None,
+    ) -> None:
         self._repository = repository
         self._departments = departments
+        # Optional for unit tests of the catalogue rules; every write path in the
+        # application passes one, because every write is audited.
+        self._session = session
+
+    async def _audit(
+        self,
+        action: AuditAction,
+        position: Position,
+        *,
+        before: dict[str, object] | None = None,
+        after: dict[str, object] | None = None,
+    ) -> None:
+        if self._session is None:
+            return
+        await record(
+            self._session,
+            action=action,
+            entity_type="job_position",
+            entity_id=position.id,
+            before=before,
+            after=after,
+        )
 
     async def get(self, position_id: UUID) -> Position:
         position = await self._repository.get(position_id)
@@ -56,12 +86,28 @@ class PositionService:
             )
 
         position = await self._repository.save(data)
+        await self._audit(
+            AuditAction.POSITION_CREATED,
+            position,
+            after={
+                "code": position.code,
+                "department_id": str(position.department_id),
+                "is_managerial": position.is_managerial,
+            },
+        )
         await self._repository.commit()
         return position
 
     async def update(self, position_id: UUID, patch: PositionPatch) -> Position:
-        await self.get(position_id)
+        before = await self.get(position_id)
         position = await self._repository.update(position_id, patch)
+        changes = patch.changes()
+        await self._audit(
+            AuditAction.POSITION_UPDATED,
+            position,
+            before={name: getattr(before, name) for name in changes},
+            after={name: getattr(position, name) for name in changes},
+        )
         await self._repository.commit()
         return position
 
@@ -69,6 +115,12 @@ class PositionService:
         """Soft removal: existing assignments keep resolving, new ones are refused."""
         await self.get(position_id)
         position = await self._repository.update(position_id, PositionPatch(is_active=False))
+        await self._audit(
+            AuditAction.POSITION_DEACTIVATED,
+            position,
+            before={"is_active": True},
+            after={"is_active": False},
+        )
         await self._repository.commit()
         return position
 
@@ -89,6 +141,11 @@ class PositionService:
             )
 
         await self._repository.delete(position_id)
+        await self._audit(
+            AuditAction.POSITION_DELETED,
+            position,
+            before={"code": position.code},
+        )
         await self._repository.commit()
 
 

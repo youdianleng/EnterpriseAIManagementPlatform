@@ -282,13 +282,13 @@ class Seeder:
         self._accounts = PostgresAccountRepository(session)
 
         self.department_service = DepartmentService(
-            repository=self._departments, invalidate=invalidate_org_tree
+            repository=self._departments, invalidate=invalidate_org_tree, session=session
         )
         self.position_service = PositionService(
-            repository=self._positions, departments=self._departments
+            repository=self._positions, departments=self._departments, session=session
         )
         self.employee_service = EmployeeService(
-            repository=self._employees, departments=self._departments
+            repository=self._employees, departments=self._departments, session=session
         )
         self.account_service = AccountService(
             repository=self._accounts,

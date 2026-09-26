@@ -30,7 +30,7 @@ _STATUS_TO_CODE: dict[int, ErrorCode] = {
     401: ErrorCode.UNAUTHENTICATED,
     403: ErrorCode.FORBIDDEN,
     404: ErrorCode.NOT_FOUND,
-    405: ErrorCode.INVALID_REQUEST,
+    405: ErrorCode.METHOD_NOT_ALLOWED,
     410: ErrorCode.RESOURCE_GONE,
     422: ErrorCode.VALIDATION_FAILED,
 }

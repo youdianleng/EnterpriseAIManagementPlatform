@@ -14,6 +14,10 @@ class ErrorCode(StrEnum):
     # Request shape.
     VALIDATION_FAILED = "ERR_VALIDATION_001"
     INVALID_REQUEST = "ERR_VALIDATION_002"
+    #: A method the path does not serve. Its own code because the status has to
+    #: stay 405: a client telling "you cannot write here" apart from "your request
+    #: was malformed" is the difference between a clear error and a mystery.
+    METHOD_NOT_ALLOWED = "ERR_VALIDATION_003"
 
     # Authentication and authorisation.
     UNAUTHENTICATED = "ERR_AUTH_001"
@@ -84,6 +88,7 @@ class ErrorDefinition:
 ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
     ErrorCode.VALIDATION_FAILED: ErrorDefinition(422, "errors.validation_failed"),
     ErrorCode.INVALID_REQUEST: ErrorDefinition(400, "errors.invalid_request"),
+    ErrorCode.METHOD_NOT_ALLOWED: ErrorDefinition(405, "errors.method_not_allowed"),
     ErrorCode.UNAUTHENTICATED: ErrorDefinition(401, "errors.unauthenticated"),
     ErrorCode.FORBIDDEN: ErrorDefinition(403, "errors.forbidden"),
     ErrorCode.ACCOUNT_LOCKED: ErrorDefinition(423, "errors.account_locked"),

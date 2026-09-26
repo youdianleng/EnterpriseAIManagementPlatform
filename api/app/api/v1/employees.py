@@ -63,6 +63,7 @@ def _service(session: AsyncSession) -> EmployeeService:
     return EmployeeService(
         repository=PostgresEmployeeRepository(session),
         departments=PostgresDepartmentRepository(session),
+        session=session,
     )
 
 

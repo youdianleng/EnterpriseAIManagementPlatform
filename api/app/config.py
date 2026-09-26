@@ -32,6 +32,15 @@ class Settings(BaseSettings):
     # separate means a test run can never truncate development data.
     test_database_name: str = "eam_test"
 
+    # Two different lifetimes, because they answer two different questions. The
+    # audit trail is evidence: Spanish labour law requires four years of working
+    # time records, and an audit record that expires sooner than the data it
+    # describes cannot explain that data. Runtime logs are diagnostics, they live
+    # on stdout rather than in this database at all, and two weeks is enough to
+    # investigate an incident.
+    audit_retention_days: int = 1460
+    log_retention_days: int = 14
+
     # Per-worker connection ceilings; 100 staff with a handful of AI requests
     # never needs more, and a low ceiling surfaces leaks instead of hiding them.
     db_pool_size: int = 5

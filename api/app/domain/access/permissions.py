@@ -38,6 +38,11 @@ class Action(StrEnum):
     # Session administration.
     SESSION_READ_OWN = "session.read_own"
 
+    # Compliance. Reading the audit trail is its own permission rather than a
+    # property of being senior: an administrator configures the system, and the
+    # reader who checks what they did must not be the same person.
+    AUDIT_READ = "audit.read"
+
     # Documents and the knowledge base. Fleshed out in tickets 12 and 31; present
     # here so the document module has an action to ask about from the start.
     DOCUMENT_READ = "document.read"
@@ -123,6 +128,14 @@ RULES: dict[Action, ActionRule] = {
     Action.SESSION_READ_OWN: ActionRule(
         roles=frozenset({"admin", "hr", "finance", "it", "compliance", "employee"}),
         description="Anyone may inspect their own session.",
+    ),
+    Action.AUDIT_READ: ActionRule(
+        roles=frozenset({"compliance"}),
+        description=(
+            "The audit trail is read by compliance alone. Not administration, "
+            "which is the subject of half of it, and not HR, which reads "
+            "personnel files rather than the record of who read them."
+        ),
     ),
     Action.DOCUMENT_READ: ActionRule(
         roles=frozenset({"admin", "hr", "finance", "it", "compliance", "employee"}),
