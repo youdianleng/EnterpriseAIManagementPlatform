@@ -40,6 +40,14 @@ class AuditAction(StrEnum):
     ACCOUNT_PASSWORD_RESET = "account.password_reset"
     ACCOUNT_PASSWORD_CHANGED = "account.password_changed"
 
+    # Authentication. Failures are recorded too: a trail of successes only cannot
+    # answer "was somebody trying to get in".
+    LOGIN_SUCCEEDED = "auth.login_succeeded"
+    LOGIN_FAILED = "auth.login_failed"
+    LOGOUT = "auth.logout"
+    PASSWORD_CHANGED = "auth.password_changed"
+    SESSIONS_FORCED_OUT = "auth.sessions_forced_out"
+
 
 def _snapshot(payload: dict[str, Any] | None) -> dict[str, Any] | None:
     """Copy of a snapshot, minus anything that must never be stored.

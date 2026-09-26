@@ -85,7 +85,7 @@ class DepartmentService:
         department = await self._repository.get(department_id)
         if department is None:
             raise DomainError(
-                OrgErrorCode.DEPARTMENT_NOT_FOUND, detail=f"unknown department {department_id}"
+                OrgErrorCode.ORG_DEPARTMENT_NOT_FOUND, detail=f"unknown department {department_id}"
             )
         return department
 
@@ -98,7 +98,7 @@ class DepartmentService:
         existing = await self._repository.get_by_code(data.code)
         if existing is not None:
             raise DomainError(
-                OrgErrorCode.DEPARTMENT_CODE_TAKEN, detail=f"code {data.code} already exists"
+                OrgErrorCode.ORG_DEPARTMENT_CODE_TAKEN, detail=f"code {data.code} already exists"
             )
 
         parent = await self._require_parent(data.parent_id)
@@ -106,7 +106,7 @@ class DepartmentService:
         depth = depth_of(child_path(parent_path, data.code))
         if depth > MAX_DEPTH:
             raise DomainError(
-                OrgErrorCode.DEPARTMENT_DEPTH_EXCEEDED,
+                OrgErrorCode.ORG_DEPARTMENT_DEPTH_EXCEEDED,
                 detail=f"depth {depth} would exceed the limit of {MAX_DEPTH}",
             )
 
@@ -129,7 +129,7 @@ class DepartmentService:
 
         if new_parent_id == department.id:
             raise DomainError(
-                OrgErrorCode.DEPARTMENT_MOVE_INTO_DESCENDANT,
+                OrgErrorCode.ORG_DEPARTMENT_MOVE_INTO_DESCENDANT,
                 detail="a department cannot be its own parent",
             )
 
@@ -140,7 +140,7 @@ class DepartmentService:
             # The guard mirrors the SQL `<@` operator used by the update below.
             if is_descendant_path(new_parent.path, department.path):
                 raise DomainError(
-                    OrgErrorCode.DEPARTMENT_MOVE_INTO_DESCENDANT,
+                    OrgErrorCode.ORG_DEPARTMENT_MOVE_INTO_DESCENDANT,
                     detail=f"{new_parent.path} is inside {department.path}",
                 )
             # Moving the subtree shifts everything beneath it by the same amount,
@@ -149,7 +149,7 @@ class DepartmentService:
             resulting_depth = depth_of(f"{new_parent.path}.{department.code}") + subtree_height
             if resulting_depth > MAX_DEPTH:
                 raise DomainError(
-                    OrgErrorCode.DEPARTMENT_DEPTH_EXCEEDED,
+                    OrgErrorCode.ORG_DEPARTMENT_DEPTH_EXCEEDED,
                     detail=f"move would reach depth {resulting_depth}, limit is {MAX_DEPTH}",
                 )
 
@@ -179,14 +179,14 @@ class DepartmentService:
         employees = await self._repository.count_employees(department_id)
         if employees:
             raise DomainError(
-                OrgErrorCode.DEPARTMENT_NOT_EMPTY,
+                OrgErrorCode.ORG_DEPARTMENT_NOT_EMPTY,
                 detail=f"{employees} active employees are assigned to {department.code}",
             )
 
         children = await self._repository.count_children(department_id)
         if children:
             raise DomainError(
-                OrgErrorCode.DEPARTMENT_HAS_CHILDREN,
+                OrgErrorCode.ORG_DEPARTMENT_HAS_CHILDREN,
                 detail=f"{children} sub-departments hang off {department.code}",
             )
 
@@ -202,12 +202,12 @@ class DepartmentService:
         parent = await self._repository.get(parent_id)
         if parent is None:
             raise DomainError(
-                OrgErrorCode.DEPARTMENT_PARENT_INVALID,
+                OrgErrorCode.ORG_DEPARTMENT_PARENT_INVALID,
                 detail=f"parent {parent_id} does not exist",
             )
         if not parent.is_active:
             raise DomainError(
-                OrgErrorCode.DEPARTMENT_PARENT_INVALID,
+                OrgErrorCode.ORG_DEPARTMENT_PARENT_INVALID,
                 detail=f"parent {parent.code} is inactive",
             )
         return parent

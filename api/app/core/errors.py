@@ -19,7 +19,6 @@ class ErrorCode(StrEnum):
     UNAUTHENTICATED = "ERR_AUTH_001"
     FORBIDDEN = "ERR_AUTH_002"
     ACCOUNT_LOCKED = "ERR_AUTH_003"
-    PASSWORD_CHANGE_REQUIRED = "ERR_AUTH_004"
 
     # Resources.
     NOT_FOUND = "ERR_RESOURCE_001"
@@ -60,6 +59,13 @@ class ErrorCode(StrEnum):
     ACCOUNT_EMPLOYEE_NOT_ACTIVE = "ERR_ACC_004"
     ACCOUNT_ALREADY_IN_STATE = "ERR_ACC_005"
     ACCOUNT_PASSWORD_POLICY = "ERR_ACC_006"
+    ACCOUNT_INVALID_CREDENTIALS = "ERR_ACC_007"
+    ACCOUNT_DISABLED = "ERR_ACC_008"
+    ACCOUNT_PASSWORD_REUSED = "ERR_ACC_009"
+
+    # Sessions.
+    SESSION_INVALID = "ERR_SES_001"
+    PASSWORD_CHANGE_REQUIRED = "ERR_SES_002"
 
     # Cross-cutting.
     INTERNAL_ERROR = "ERR_INTERNAL_001"
@@ -81,7 +87,6 @@ ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
     ErrorCode.UNAUTHENTICATED: ErrorDefinition(401, "errors.unauthenticated"),
     ErrorCode.FORBIDDEN: ErrorDefinition(403, "errors.forbidden"),
     ErrorCode.ACCOUNT_LOCKED: ErrorDefinition(423, "errors.account_locked"),
-    ErrorCode.PASSWORD_CHANGE_REQUIRED: ErrorDefinition(403, "errors.password_change_required"),
     ErrorCode.NOT_FOUND: ErrorDefinition(404, "errors.not_found"),
     ErrorCode.CONFLICT: ErrorDefinition(409, "errors.conflict"),
     ErrorCode.RESOURCE_GONE: ErrorDefinition(410, "errors.resource_gone"),
@@ -136,6 +141,17 @@ ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
     ),
     ErrorCode.ACCOUNT_ALREADY_IN_STATE: ErrorDefinition(409, "errors.account_already_in_state"),
     ErrorCode.ACCOUNT_PASSWORD_POLICY: ErrorDefinition(422, "errors.account_password_policy"),
+    ErrorCode.ACCOUNT_INVALID_CREDENTIALS: ErrorDefinition(
+        401, "errors.account_invalid_credentials"
+    ),
+    ErrorCode.ACCOUNT_DISABLED: ErrorDefinition(403, "errors.account_disabled"),
+    ErrorCode.ACCOUNT_PASSWORD_REUSED: ErrorDefinition(422, "errors.account_password_reused"),
+    # 401 rather than 403: the session is not merely unauthorised for this
+    # resource, it is no longer a session at all, and the client should sign in.
+    ErrorCode.SESSION_INVALID: ErrorDefinition(401, "errors.session_invalid"),
+    # 403 with its own code so the client can route to the change-password screen
+    # instead of showing a permission error.
+    ErrorCode.PASSWORD_CHANGE_REQUIRED: ErrorDefinition(403, "errors.password_change_required"),
     ErrorCode.INTERNAL_ERROR: ErrorDefinition(500, "errors.internal_error", expose_detail=False),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorDefinition(
         503, "errors.service_unavailable", expose_detail=False

@@ -135,8 +135,18 @@ def test_libpq_dsn_conversion_strips_the_driver_suffix() -> None:
     assert to_libpq_dsn("postgresql://u:p@h:5432/db") == "postgresql://u:p@h:5432/db"
 
 
-def test_test_database_url_targets_a_separate_database(settings: Settings) -> None:
-    """A test run must never be able to truncate development data."""
-    assert settings.test_database_name not in settings.database_url
+def test_the_application_under_test_uses_the_test_database(settings: Settings) -> None:
+    """A test run must never be able to truncate development data.
+
+    The earlier version of this test asserted that `settings.database_url` did
+    *not* name the test database — which was true only because `conftest` used
+    `setdefault` on an environment variable the container already exported, so
+    the application quietly kept pointing at `eam`. That is the defect, written
+    down as an expectation; it left 181 audit rows in the development database.
+
+    What matters is that the settings the application actually uses name the test
+    database, so this asserts that directly.
+    """
+    assert settings.database_url.endswith(f"/{settings.test_database_name}")
     assert settings.test_database_url.endswith(f"/{settings.test_database_name}")
     assert settings.admin_database_url.endswith("/postgres")

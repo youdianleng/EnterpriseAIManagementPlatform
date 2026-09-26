@@ -25,8 +25,13 @@ API_ROOT = Path(__file__).resolve().parents[1]
 
 # The application reads settings at import time, so the test database must be
 # selected before anything imports app.config.
-os.environ.setdefault(
-    "DATABASE_URL", "postgresql+psycopg://eam:eam_dev_password@postgres:5432/eam_test"
+#
+# Assigned, not `setdefault`: the container exports DATABASE_URL pointing at the
+# development database, so a default never applies and the application's own
+# engine would read and write `eam` during a test run. That is not hypothetical —
+# it left 181 audit rows in the development database before being caught.
+os.environ["DATABASE_URL"] = (
+    "postgresql+psycopg://eam:eam_dev_password@postgres:5432/eam_test"
 )
 os.environ.setdefault("APP_ENV", "test")
 

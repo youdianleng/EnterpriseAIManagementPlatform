@@ -206,7 +206,7 @@ class EmployeeService:
         department = await self._departments.get(data.department_id)
         if department is None:
             raise DomainError(
-                OrgErrorCode.DEPARTMENT_NOT_FOUND,
+                OrgErrorCode.ORG_DEPARTMENT_NOT_FOUND,
                 detail=f"department {data.department_id} does not exist",
             )
 

@@ -1,35 +1,34 @@
-feat(accounts): login identities with one-time passwords
+feat(auth): login, server-side sessions and the forced password change
 
-Ticket 09. An account is the login identity attached to an employee; the
-temporary password exists in exactly one response and nowhere else.
+Ticket 10. The session id travels in an httpOnly cookie and everything that
+decides access stays on the server.
 
-- Argon2id, not SHA-256. The originating answer for this ticket said the
-  temporary password should be "generated as a SHA-256 password". SHA-256 is a
-  fast general-purpose digest — cheap by design, which is the opposite of what a
-  password store needs. The design baseline specifies Argon2id, and a CHECK
-  constraint requires the `$argon2id$` prefix so a plaintext or foreign value
-  cannot be written even by a mistaken migration. The likely intent was about
-  generating the value: generation is `secrets`-based random, storage is Argon2id.
-- Generated passwords exclude characters that are misread when spoken or copied
-  by hand (0/O, 1/l/I, 5/S, 8/B, 2/Z) and are grouped in fours.
-- One account per employee, enforced by a UNIQUE constraint rather than only a
-  service check, so two concurrent administrators cannot both win.
-- Disabling and resetting advance `session_epoch` and record it in Redis.
-  Sessions will carry the epoch they were issued under, which makes revocation a
-  comparison instead of a key scan; ticket 10 issues them.
-- Account changes and their audit records share one transaction, so the trail
-  cannot disagree with the data. The audit writer redacts password-shaped fields
-  as a second line of defence.
-- The password policy lives in `core.security` and is published at
-  `/accounts/password-policy`, so the UI states the rule instead of restating it.
+- Redis-backed sessions: `session:<id>` for the record and `session:user:<id>`
+  for that user's live ids. The index is why a password change can end sessions
+  on other devices without scanning the keyspace.
+- Revocation is a comparison, not a scan. A session carries the epoch it was
+  issued under; a password change, an administrative reset or a deactivation
+  moves the account's epoch past it, so every older session stops matching.
+- The forced-change gate is an application-level dependency, not a per-route one.
+  A route added later cannot be accidentally exempt — which is the failure mode
+  the requirement exists to prevent. Only the change-password endpoint and the
+  two that explain why everything else is refused stay reachable.
+- Changing a password keeps the device that made the change signed in by issuing
+  a replacement session, and ends every other one. Signing the user out of the
+  device they are holding would be hostile; leaving the others alive would defeat
+  the point.
+- Lockout after five failures, counting per account rather than per address: an
+  attacker who moves between addresses would slip past an address-keyed counter.
+  It fails open when Redis is unreachable, because a cache outage must not lock
+  every account out of the system.
+- Every outcome is audited, failures included, with the client address. A trail
+  of successes only cannot answer "was somebody trying to get in".
 
-Four defects fixed while verifying: bulk UPDATEs left loaded objects stale in the
-identity map, so a just-disabled account read as active; `session_epoch` was
-bumped after the account was read, so responses carried the old epoch; the
-password-change schema duplicated the length rule and produced a generic
-validation error instead of the catalogued policy error; and account responses
-had two different shapes.
-
-Audit scope: append-only is not yet enforced at the database level — the app
-still connects as the table owner. Ticket 13 adds the restricted role, and that
-is recorded in app/audit.py so the gap is not mistaken for a finished design.
+Six defects fixed while verifying. The serious one: `conftest` used `setdefault`
+on DATABASE_URL, which the container already exports, so a full test run wrote
+181 audit rows into the development database — and an existing test asserted
+that arrangement as expected behaviour. The others: four missing error-code
+aliases that surfaced as AttributeErrors inside 500s; a duplicated enum member
+and a duplicated message key; three different naming conventions across the
+alias classes; and a guard that opened its own session and so could not see what
+the route saw.

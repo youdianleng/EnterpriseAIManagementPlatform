@@ -80,6 +80,22 @@ def make_employee(status: str = "active") -> str:
 def main() -> None:
     suffix = uuid4().hex[:6]
 
+    # Start from a clean slate. The login throttle lives in Redis and outlives the
+    # process, and leftover rows would change what this run observes — a probe
+    # that only passes on a pristine machine is a probe that stops being run.
+    import redis
+
+    from app.throttle import FAILED_ATTEMPTS_KEY, normalise
+
+    client = redis.Redis.from_url(get_settings().redis_url, decode_responses=True)
+    try:
+        for name in (f"probe{suffix}", f"other{suffix}", f"gone{suffix}", f"nope{suffix}"):
+            client.delete(FAILED_ATTEMPTS_KEY.format(username=normalise(name)))
+    finally:
+        client.close()
+    for statement in ("DELETE FROM audit_log", "DELETE FROM users", "DELETE FROM employees"):
+        run_sql(statement, {})
+
     # --- creation ----------------------------------------------------------
     employee_id = make_employee()
     status, created = call(

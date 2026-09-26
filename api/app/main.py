@@ -3,18 +3,20 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
 from app.api.v1 import accounts as accounts_v1
+from app.api.v1 import auth as auth_v1
 from app.api.v1 import departments as departments_v1
 from app.api.v1 import employees as employees_v1
 from app.api.v1 import positions as positions_v1
 from app.cache import close_redis
 from app.config import get_settings
 from app.core.exception_handlers import register_exception_handlers
-from app.db import dispose_engine
+from app.db import dispose_engine, get_session_factory
+from app.guards import enforce_password_change
 from app.logging import configure_logging, get_logger
 from app.middleware import (
     REQUEST_ID_HEADER,
@@ -51,7 +53,12 @@ def create_app() -> FastAPI:
         docs_url="/docs" if settings.is_development else None,
         redoc_url=None,
         lifespan=lifespan,
+        # Applied to every route, so a new endpoint cannot be accidentally exempt
+        # from the forced password change rule.
+        dependencies=[Depends(enforce_password_change)],
     )
+    # The guard opens its own session; the app owns the factory it uses.
+    app.state.session_factory = get_session_factory()
     # Our envelope middleware replaces Starlette's default one; installing it
     # here clears the built-in before any other middleware is added.
     app.add_middleware(EnvelopeErrorMiddleware)
@@ -79,6 +86,7 @@ def create_app() -> FastAPI:
     app.include_router(employees_v1.router, prefix=API_PREFIX)
     app.include_router(positions_v1.router, prefix=API_PREFIX)
     app.include_router(accounts_v1.router, prefix=API_PREFIX)
+    app.include_router(auth_v1.router, prefix=API_PREFIX)
     if settings.is_development:
         app.include_router(debug.router, prefix=API_PREFIX)
 
