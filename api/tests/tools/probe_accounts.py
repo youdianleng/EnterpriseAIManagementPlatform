@@ -6,9 +6,16 @@ The claim worth driving over real HTTP is not "an account was created" but
 "the temporary password is unrecoverable": it must not reappear in any later
 response, and it must not exist in the database or the audit log either. The
 database check runs through a separate connection for that reason.
+
+Account administration is now session-authenticated like everything else, so the
+probe bootstraps an administrator: one employee and account written directly,
+then a real login. An earlier version sent an `X-Actor-Roles` header, which no
+longer exists — the refusal it produced was `ERR_SES_001`, not a permission
+error, and the probe reported it as "an account is created: 401".
 """
 
 import asyncio
+import http.cookiejar
 import json
 import sys
 import urllib.error
@@ -22,10 +29,11 @@ from sqlalchemy import text  # noqa: E402
 from sqlalchemy.ext.asyncio import async_sessionmaker  # noqa: E402
 
 from app.config import get_settings  # noqa: E402
+from app.core.security import hash_password
 from app.db import build_engine  # noqa: E402
 
 BASE = "http://localhost:8000/api/v1"
-ADMIN = {"X-Actor-Roles": "admin", "Content-Type": "application/json"}
+ADMIN = {"Content-Type": "application/json"}
 
 failures: list[str] = []
 
@@ -36,17 +44,33 @@ def check(label: str, condition: bool, observed: object = "") -> None:
         failures.append(label)
 
 
-def call(method: str, path: str, body: dict | None = None, headers: dict | None = None):
-    merged = dict(headers or ADMIN)
-    data = json.dumps(body).encode() if body is not None else None
-    request = urllib.request.Request(BASE + path, data=data, method=method, headers=merged)
-    try:
-        response = urllib.request.urlopen(request, timeout=10)
-        payload = response.read()
-        return response.status, json.loads(payload) if payload else None
-    except urllib.error.HTTPError as exc:
-        payload = exc.read()
-        return exc.code, json.loads(payload) if payload else None
+class Session:
+    """A caller that keeps cookies, like a browser does."""
+
+    def __init__(self) -> None:
+        self.jar = http.cookiejar.CookieJar()
+        self.opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(self.jar)
+        )
+
+    def call(self, method: str, path: str, body: dict | None = None, headers: dict | None = None):
+        merged = dict(ADMIN)
+        merged.update(headers or {})
+        data = json.dumps(body).encode() if body is not None else None
+        request = urllib.request.Request(BASE + path, data=data, method=method, headers=merged)
+        try:
+            response = self.opener.open(request, timeout=10)
+            payload = response.read()
+            return response.status, json.loads(payload) if payload else None
+        except urllib.error.HTTPError as exc:
+            payload = exc.read()
+            return exc.code, json.loads(payload) if payload else None
+
+
+#: Filled in by `bootstrap_admin`; the module-level default keeps `call` usable
+#: before that for the login request itself.
+SESSION = Session()
+call = SESSION.call
 
 
 def run_sql(statement: str, params: dict):
@@ -77,6 +101,83 @@ def make_employee(status: str = "active") -> str:
     return str(employee_id)
 
 
+def create_plain_account(username: str) -> str:
+    """An employee account with no administrative role, ready to sign in.
+
+    Created through the API by the administrator, then the temporary password is
+    replaced through the real forced-change flow. That keeps the probe honest:
+    the account reaches a usable state the same way a person's would, and the
+    change-password path gets exercised as a side effect.
+    """
+    status, created = call(
+        "POST", "/accounts", {"employee_id": make_employee(), "username": username}
+    )
+    assert status == 201, f"could not create {username}: {status} {created}"
+
+    session = Session()
+    status, _ = session.call(
+        "POST",
+        "/auth/login",
+        {"username": username, "password": created["temporary_password"]},
+    )
+    assert status == 200, f"{username} could not sign in: {status}"
+
+    status, _ = session.call(
+        "POST",
+        "/auth/change-password",
+        {
+            "current_password": created["temporary_password"],
+            "new_password": "Str0ng!Password1",
+        },
+    )
+    assert status == 200, f"{username} could not change its password: {status}"
+    return username
+
+
+def bootstrap_admin() -> str:
+    """Create an administrator and sign in, returning the username.
+
+    Written straight to the database because there is no other way to get the
+    first administrator: the endpoint that creates accounts needs one.
+
+    The `roles` cast is jsonb, and the password is a real Argon2id hash — the
+    database enforces both, which is the point of those constraints.
+    """
+    employee_id = uuid4()
+    user_id = uuid4()
+    username = f"admin{uuid4().hex[:8]}"
+
+    run_sql(
+        """
+        INSERT INTO employees (id, first_name, last_name, email, hire_date, status)
+        VALUES (:id, 'Admin', 'Root', :email, '2020-01-01', 'active')
+        """,
+        {"id": employee_id, "email": f"{username}@empresa.es"},
+    )
+    run_sql(
+        """
+        INSERT INTO users (id, employee_id, username, password_hash, must_change_password,
+                           is_active, session_epoch, roles)
+        VALUES (:id, :employee_id, :username, :hash, false, true, 1,
+                CAST('["admin"]' AS jsonb))
+        """,
+        {
+            "id": user_id,
+            "employee_id": employee_id,
+            "username": username,
+            "hash": hash_password("Str0ng!Password1"),
+        },
+    )
+
+    status, _ = SESSION.call(
+        "POST",
+        "/auth/login",
+        {"username": username, "password": "Str0ng!Password1"},
+    )
+    assert status == 200, f"the bootstrap administrator could not sign in: {status}"
+    return username
+
+
 def main() -> None:
     suffix = uuid4().hex[:6]
 
@@ -95,6 +196,9 @@ def main() -> None:
         client.close()
     for statement in ("DELETE FROM audit_log", "DELETE FROM users", "DELETE FROM employees"):
         run_sql(statement, {})
+
+    admin_username = bootstrap_admin()
+    check("an administrator can sign in", bool(admin_username), admin_username[:10] + "…")
 
     # --- creation ----------------------------------------------------------
     employee_id = make_employee()
@@ -166,13 +270,27 @@ def main() -> None:
     )
 
     # --- authorisation -----------------------------------------------------
-    status, _ = call(
+    # A signed-in caller without the administrator role. The earlier version sent
+    # an `X-Actor-Roles` header, which no longer exists: the refusal it produced
+    # was about the missing session, not about the role, so it proved nothing.
+    employee_session = Session()
+    employee_username = create_plain_account(f"plain{suffix}")
+    status, _ = employee_session.call(
+        "POST", "/auth/login", {"username": employee_username, "password": "Str0ng!Password1"}
+    )
+    assert status == 200, f"the plain employee could not sign in: {status}"
+
+    status, body = employee_session.call(
         "POST",
         "/accounts",
         {"employee_id": make_employee(), "username": f"nope{suffix}"},
-        headers={"X-Actor-Roles": "hr"},
     )
     check("creating an account needs an administrator", status == 403, status)
+    check(
+        "and the refusal is the permission one, not a session one",
+        body.get("error", {}).get("code") == "ERR_AUTH_002",
+        body.get("error", {}).get("code"),
+    )
 
     # --- disabling ---------------------------------------------------------
     status, disabled = call(
@@ -200,48 +318,21 @@ def main() -> None:
         reset["session_epoch"],
     )
 
-    # --- self-service ------------------------------------------------------
-    status, body = call(
-        "POST",
-        f"/accounts/{account_id}/change-password",
-        {"current_password": "wrong", "new_password": "Str0ng!Password1"},
-        headers={"Content-Type": "application/json"},
-    )
-    check("a wrong current password is refused", status == 422, status)
-    check(
-        "with the password-policy code",
-        body.get("error", {}).get("code") == "ERR_ACC_006",
-        body.get("error", {}).get("code"),
-    )
-
-    status, body = call(
-        "POST",
-        f"/accounts/{account_id}/change-password",
-        {"current_password": reset["temporary_password"], "new_password": "weak"},
-        headers={"Content-Type": "application/json"},
-    )
-    check("a weak new password is refused", status == 422, status)
-    check(
-        "naming every broken rule",
-        "too_short" in (body.get("error", {}).get("detail") or ""),
-        body.get("error", {}).get("detail"),
-    )
-
-    status, changed = call(
+    # --- one path to a password change -------------------------------------
+    # Ticket 09 briefly exposed the self-service change here, next to the reset
+    # an administrator performs. That was a second implementation of one rule,
+    # guarded differently and audited under a second action name, so it is gone:
+    # changing your own password is a session operation, it lives in `auth`, and
+    # `probe_auth.py` drives it end to end. This check keeps it from creeping back.
+    status, _ = call(
         "POST",
         f"/accounts/{account_id}/change-password",
         {
             "current_password": reset["temporary_password"],
             "new_password": "Str0ng!Password1",
         },
-        headers={"Content-Type": "application/json"},
     )
-    check("a strong new password is accepted", status == 200, status)
-    check(
-        "and the forced change is cleared",
-        changed["must_change_password"] is False,
-        changed["must_change_password"],
-    )
+    check("changing a password is not an account-scoped operation", status == 404, status)
 
     # --- the policy surface ------------------------------------------------
     status, policy = call("GET", "/accounts/password-policy")

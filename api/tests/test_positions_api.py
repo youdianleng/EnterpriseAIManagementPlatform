@@ -1,42 +1,23 @@
-"""Position catalogue over HTTP against real PostgreSQL."""
+"""Position catalogue over HTTP against real PostgreSQL.
 
-from collections.abc import AsyncIterator
+Callers are real accounts with real sessions: writes go through a managing actor,
+reads through any signed-in employee, and the kernel decides rather than a header.
+"""
+
 from uuid import uuid4
 
-import pytest
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.api.v1.deps import db_session
-from app.main import app
-
-STRUCTURE_HEADERS = {"X-Actor-Roles": "hr"}
+from tests.support.platform import Platform
 
 
-@pytest.fixture
-async def client(session: AsyncSession) -> AsyncIterator[AsyncClient]:
-    async def override() -> AsyncIterator[AsyncSession]:
-        yield session
-
-    app.dependency_overrides[db_session] = override
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as http:
-        yield http
-    app.dependency_overrides.clear()
+async def make_department(platform: Platform, code: str) -> str:
+    """Scaffolding: these tests are about positions, not departments."""
+    return await platform.department(code)
 
 
-async def make_department(client: AsyncClient, code: str) -> dict:
-    response = await client.post(
-        "/api/v1/departments",
-        json={"code": code, "name_es": code, "name_en": code},
-        headers=STRUCTURE_HEADERS,
-    )
-    assert response.status_code == 201, response.text
-    return response.json()
-
-
-async def create_position(client: AsyncClient, department_id: str, code: str, **extra: object):
-    response = await client.post(
+async def create_position(platform: Platform, department_id: str, code: str, **extra: object):
+    """The raw response, because the rejection cases assert on the error code."""
+    admin = await platform.account(roles=("admin",))
+    return await admin.post(
         "/api/v1/positions",
         json={
             "code": code,
@@ -45,15 +26,13 @@ async def create_position(client: AsyncClient, department_id: str, code: str, **
             "department_id": department_id,
             **extra,
         },
-        headers=STRUCTURE_HEADERS,
     )
-    return response
 
 
-async def test_a_position_carries_its_department(client: AsyncClient) -> None:
-    department = await make_department(client, "rrhh")
+async def test_a_position_carries_its_department(platform: Platform) -> None:
+    department = await make_department(platform, "rrhh")
 
-    response = await create_position(client, department["id"], "tech")
+    response = await create_position(platform, department, "tech")
 
     assert response.status_code == 201, response.text
     body = response.json()
@@ -63,186 +42,131 @@ async def test_a_position_carries_its_department(client: AsyncClient) -> None:
     assert body["active_assignment_count"] == 0
 
 
-async def test_codes_are_unique_per_department_not_globally(client: AsyncClient) -> None:
-    first = await make_department(client, "rrhh")
-    second = await make_department(client, "finanzas")
+async def test_codes_are_unique_per_department_not_globally(platform: Platform) -> None:
+    first = await make_department(platform, "rrhh")
+    second = await make_department(platform, "finanzas")
 
-    assert (await create_position(client, first["id"], "manager")).status_code == 201
+    assert (await create_position(platform, first, "manager")).status_code == 201
     # The same code under another department is legitimate.
-    assert (await create_position(client, second["id"], "manager")).status_code == 201
+    assert (await create_position(platform, second, "manager")).status_code == 201
     # Twice in one department is not.
-    duplicate = await create_position(client, first["id"], "manager")
+    duplicate = await create_position(platform, first, "manager")
     assert duplicate.status_code == 409
     assert duplicate.json()["error"]["code"] == "ERR_POS_002"
 
 
-async def test_a_position_needs_a_real_department(client: AsyncClient) -> None:
-    response = await create_position(client, str(uuid4()), "tech")
+async def test_a_position_needs_a_real_department(platform: Platform) -> None:
+    response = await create_position(platform, str(uuid4()), "tech")
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "ERR_POS_003"
 
 
-async def test_an_inactive_department_cannot_gain_positions(client: AsyncClient) -> None:
-    department = await make_department(client, "rrhh")
-    await client.patch(
-        f"/api/v1/departments/{department['id']}",
-        json={"is_active": False},
-        headers=STRUCTURE_HEADERS,
-    )
+async def test_an_inactive_department_cannot_gain_positions(platform: Platform) -> None:
+    department = await make_department(platform, "rrhh")
+    admin = await platform.account(roles=("admin",))
+    await admin.patch(f"/api/v1/departments/{department}", json={"is_active": False})
 
-    response = await create_position(client, department["id"], "tech")
+    response = await create_position(platform, department, "tech")
 
     assert response.status_code == 422
 
 
-async def test_the_catalogue_can_be_filtered_by_department(client: AsyncClient) -> None:
-    first = await make_department(client, "rrhh")
-    second = await make_department(client, "finanzas")
-    await create_position(client, first["id"], "tech")
-    await create_position(client, second["id"], "analyst")
+async def test_the_catalogue_can_be_filtered_by_department(platform: Platform) -> None:
+    first = await make_department(platform, "rrhh")
+    second = await make_department(platform, "finanzas")
+    await create_position(platform, first, "tech")
+    await create_position(platform, second, "analyst")
+    reader = await platform.account(roles=("employee",))
 
-    response = await client.get("/api/v1/positions", params={"department_id": first["id"]})
+    response = await reader.get("/api/v1/positions", params={"department_id": first})
 
+    assert response.status_code == 200, response.text
     assert [row["code"] for row in response.json()] == ["tech"]
 
 
-async def test_a_position_in_use_cannot_be_deleted(
-    client: AsyncClient, session: AsyncSession
-) -> None:
+async def test_a_position_in_use_cannot_be_deleted(platform: Platform) -> None:
     """Deleting it would leave live assignments pointing at nothing."""
-    department = await make_department(client, "rrhh")
-    position = (await create_position(client, department["id"], "tech")).json()
-    employee = (
-        await client.post(
-            "/api/v1/employees",
-            json={
-                "first_name": "Ana",
-                "last_name": "Martín",
-                "email": "ana@empresa.es",
-                "hire_date": "2024-01-15",
-            },
-            headers=STRUCTURE_HEADERS,
-        )
-    ).json()
-    await client.post(
-        f"/api/v1/employees/{employee['id']}/assignments",
-        json={
-            "department_id": department["id"],
-            "job_position_id": position["id"],
-            "start_date": "2024-01-15",
-        },
-        headers=STRUCTURE_HEADERS,
-    )
+    department = await make_department(platform, "rrhh")
+    position = (await create_position(platform, department, "tech")).json()
+    employee = await platform.employee(email="ana@empresa.es")
+    await platform.assign(employee, department, position["id"])
 
     # The list view exposes why, so an operator is not left guessing.
-    listed = await client.get("/api/v1/positions", params={"department_id": department["id"]})
+    reader = await platform.account(roles=("employee",))
+    listed = await reader.get("/api/v1/positions", params={"department_id": department})
+    assert listed.status_code == 200, listed.text
     assert listed.json()[0]["active_assignment_count"] == 1
 
-    response = await client.delete(
-        f"/api/v1/positions/{position['id']}", headers=STRUCTURE_HEADERS
-    )
+    admin = await platform.account(roles=("admin",))
+    response = await admin.delete(f"/api/v1/positions/{position['id']}")
 
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "ERR_POS_004"
 
 
-async def test_deactivating_retires_a_position_that_is_in_use(
-    client: AsyncClient,
-) -> None:
+async def test_deactivating_retires_a_position_that_is_in_use(platform: Platform) -> None:
     """The supported path for replacing a role: keep history resolving."""
-    department = await make_department(client, "rrhh")
-    position = (await create_position(client, department["id"], "tech")).json()
-    employee = (
-        await client.post(
-            "/api/v1/employees",
-            json={
-                "first_name": "Ana",
-                "last_name": "Martín",
-                "email": "ana@empresa.es",
-                "hire_date": "2024-01-15",
-            },
-            headers=STRUCTURE_HEADERS,
-        )
-    ).json()
-    await client.post(
-        f"/api/v1/employees/{employee['id']}/assignments",
-        json={
-            "department_id": department["id"],
-            "job_position_id": position["id"],
-            "start_date": "2024-01-15",
-        },
-        headers=STRUCTURE_HEADERS,
-    )
+    department = await make_department(platform, "rrhh")
+    position = (await create_position(platform, department, "tech")).json()
+    holder = await platform.account(roles=("employee",))
+    await platform.assign(holder.employee_id, department, position["id"])
 
-    response = await client.post(
-        f"/api/v1/positions/{position['id']}/deactivate", headers=STRUCTURE_HEADERS
-    )
+    admin = await platform.account(roles=("admin",))
+    response = await admin.post(f"/api/v1/positions/{position['id']}/deactivate")
 
     assert response.status_code == 200
     assert response.json()["is_active"] is False
-    # The existing assignment still resolves.
-    profile = await client.get(f"/api/v1/employees/{employee['id']}", headers=STRUCTURE_HEADERS)
+    # The existing assignment still resolves. Read as the holder, because an
+    # administrator is not privileged here and would see no assignments at all.
+    profile = await holder.get("/api/v1/employees/me")
+    assert profile.status_code == 200, profile.text
     assert profile.json()["assignments"][0]["job_title_es"] == "tech es"
 
 
-async def test_a_deactivated_position_cannot_take_new_assignments(
-    client: AsyncClient,
-) -> None:
-    department = await make_department(client, "rrhh")
-    position = (await create_position(client, department["id"], "tech")).json()
-    await client.post(
-        f"/api/v1/positions/{position['id']}/deactivate", headers=STRUCTURE_HEADERS
-    )
-    employee = (
-        await client.post(
-            "/api/v1/employees",
-            json={
-                "first_name": "Ana",
-                "last_name": "Martín",
-                "email": "ana@empresa.es",
-                "hire_date": "2024-01-15",
-            },
-            headers=STRUCTURE_HEADERS,
-        )
-    ).json()
+async def test_a_deactivated_position_cannot_take_new_assignments(platform: Platform) -> None:
+    department = await make_department(platform, "rrhh")
+    position = (await create_position(platform, department, "tech")).json()
+    admin = await platform.account(roles=("admin",))
+    await admin.post(f"/api/v1/positions/{position['id']}/deactivate")
+    employee = await platform.employee(email="ana@empresa.es")
 
-    response = await client.post(
-        f"/api/v1/employees/{employee['id']}/assignments",
+    response = await admin.post(
+        f"/api/v1/employees/{employee}/assignments",
         json={
-            "department_id": department["id"],
+            "department_id": department,
             "job_position_id": position["id"],
             "start_date": "2024-01-15",
         },
-        headers=STRUCTURE_HEADERS,
     )
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "ERR_EMP_006"
 
 
-async def test_an_unused_position_can_be_deleted(client: AsyncClient) -> None:
-    department = await make_department(client, "rrhh")
-    position = (await create_position(client, department["id"], "tech")).json()
+async def test_an_unused_position_can_be_deleted(platform: Platform) -> None:
+    department = await make_department(platform, "rrhh")
+    position = (await create_position(platform, department, "tech")).json()
+    admin = await platform.account(roles=("admin",))
+    reader = await platform.account(roles=("employee",))
 
-    response = await client.delete(
-        f"/api/v1/positions/{position['id']}", headers=STRUCTURE_HEADERS
-    )
+    response = await admin.delete(f"/api/v1/positions/{position['id']}")
 
     assert response.status_code == 204
-    assert (await client.get(f"/api/v1/positions/{position['id']}")).status_code == 404
+    assert (await reader.get(f"/api/v1/positions/{position['id']}")).status_code == 404
 
 
-async def test_writes_require_a_structure_role(client: AsyncClient) -> None:
-    department = await make_department(client, "rrhh")
+async def test_writes_require_a_managing_role(platform: Platform) -> None:
+    department = await make_department(platform, "rrhh")
+    employee = await platform.account(roles=("employee",))
 
-    response = await client.post(
+    response = await employee.post(
         "/api/v1/positions",
         json={
             "code": "tech",
             "title_es": "x",
             "title_en": "x",
-            "department_id": department["id"],
+            "department_id": department,
         },
     )
 
@@ -250,51 +174,48 @@ async def test_writes_require_a_structure_role(client: AsyncClient) -> None:
     assert response.json()["error"]["code"] == "ERR_AUTH_002"
 
 
-async def test_reads_are_open_until_authentication_lands(client: AsyncClient) -> None:
-    response = await client.get("/api/v1/positions")
+async def test_reads_require_a_session(platform: Platform) -> None:
+    """Anonymous is no longer a caller; any signed-in employee still reads."""
+    anonymous = await platform.client.get("/api/v1/positions")
 
-    assert response.status_code == 200
+    assert anonymous.status_code == 401
+    assert anonymous.json()["error"]["code"] == "ERR_SES_001"
+
+    employee = await platform.account(roles=("employee",))
+    assert (await employee.get("/api/v1/positions")).status_code == 200
 
 
-async def test_unknown_fields_are_refused(client: AsyncClient) -> None:
+async def test_unknown_fields_are_refused(platform: Platform) -> None:
     """Same closed-contract rule as the employee payload."""
-    department = await make_department(client, "rrhh")
+    department = await make_department(platform, "rrhh")
 
-    response = await client.post(
-        "/api/v1/positions",
-        json={
-            "code": "tech",
-            "title_es": "x",
-            "title_en": "x",
-            "department_id": department["id"],
-            "salary_band": "B2",
-        },
-        headers=STRUCTURE_HEADERS,
-    )
+    response = await create_position(platform, department, "tech", salary_band="B2")
 
     assert response.status_code == 422
 
 
-async def test_inactive_positions_can_be_excluded(client: AsyncClient) -> None:
-    department = await make_department(client, "rrhh")
-    live = (await create_position(client, department["id"], "live")).json()
-    retired = (await create_position(client, department["id"], "retired")).json()
-    await client.post(
-        f"/api/v1/positions/{retired['id']}/deactivate", headers=STRUCTURE_HEADERS
-    )
+async def test_inactive_positions_can_be_excluded(platform: Platform) -> None:
+    department = await make_department(platform, "rrhh")
+    live = (await create_position(platform, department, "live")).json()
+    retired = (await create_position(platform, department, "retired")).json()
+    admin = await platform.account(roles=("admin",))
+    await admin.post(f"/api/v1/positions/{retired['id']}/deactivate")
+    reader = await platform.account(roles=("employee",))
 
-    everything = await client.get("/api/v1/positions")
-    active_only = await client.get("/api/v1/positions", params={"include_inactive": "false"})
+    everything = await reader.get("/api/v1/positions")
+    active_only = await reader.get("/api/v1/positions", params={"include_inactive": "false"})
 
     assert len(everything.json()) == 2
     assert [row["id"] for row in active_only.json()] == [live["id"]]
 
 
-async def test_the_managerial_flag_round_trips(client: AsyncClient) -> None:
-    department = await make_department(client, "rrhh")
+async def test_the_managerial_flag_round_trips(platform: Platform) -> None:
+    department = await make_department(platform, "rrhh")
 
-    created = (await create_position(client, department["id"], "head", is_managerial=True)).json()
-
+    created = (await create_position(platform, department, "head", is_managerial=True)).json()
     assert created["is_managerial"] is True
-    fetched = await client.get(f"/api/v1/positions/{created['id']}")
+
+    reader = await platform.account(roles=("employee",))
+    fetched = await reader.get(f"/api/v1/positions/{created['id']}")
+    assert fetched.status_code == 200, fetched.text
     assert fetched.json()["is_managerial"] is True

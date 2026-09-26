@@ -23,8 +23,6 @@ from app.audit import AuditAction, record
 from app.core.security import (
     generate_temporary_password,
     hash_password,
-    password_policy_violations,
-    verify_password,
 )
 from app.domain.account.errors import AccountErrorCode
 from app.domain.account.models import (
@@ -213,53 +211,3 @@ class AccountService:
         )
         await self._repository.commit()
         return AccountWithSecret(account=updated, temporary_password=temporary_password)
-
-    async def change_own_password(
-        self,
-        user_id: UUID,
-        *,
-        current_password: str,
-        new_password: str,
-    ) -> UserAccount:
-        """Self-service change, used by the forced first-login flow in ticket 10.
-
-        The current password is required even though the caller already holds a
-        session: it is the only thing that distinguishes the account holder from
-        someone who found an unlocked screen.
-        """
-        account = await self.get(user_id)
-        stored_hash = await self._repository.get_password_hash(user_id)
-        if stored_hash is None or not verify_password(stored_hash, current_password):
-            raise DomainError(
-                AccountErrorCode.ACCOUNT_PASSWORD_POLICY,
-                detail="current password does not match",
-            )
-
-        violations = password_policy_violations(new_password)
-        if violations:
-            raise DomainError(
-                AccountErrorCode.ACCOUNT_PASSWORD_POLICY,
-                detail="policy violations: " + ", ".join(violations),
-            )
-
-        updated = await self._repository.set_password(
-            user_id, password_hash=hash_password(new_password), must_change=False
-        )
-        # Bumped after the password write but read back through `set_password`,
-        # so the response carries the epoch every future session check will use.
-        epoch = await self._repository.bump_session_epoch(user_id)
-        await self._revoker.revoke_all(user_id, epoch=epoch)
-        updated = await self.get(user_id)
-
-        await record(
-            self._session,
-            action=AuditAction.ACCOUNT_PASSWORD_CHANGED,
-            entity_type="user",
-            entity_id=user_id,
-            actor_user_id=user_id,
-            actor_roles=frozenset(),
-            before={"must_change_password": account.must_change_password},
-            after={"must_change_password": False},
-        )
-        await self._repository.commit()
-        return updated

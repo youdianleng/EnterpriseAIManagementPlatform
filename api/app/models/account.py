@@ -16,7 +16,9 @@ from sqlalchemy import (
     Integer,
     String,
     func,
+    text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -46,6 +48,12 @@ class User(Base):
         unique=True,
     )
     username: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    #: System roles held. Fixed set, small, and read on every request as part of
+    #: the permission snapshot, which is why it is a column rather than a join.
+    #: The database constrains the values to the known set.
+    roles: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[\"employee\"]'::jsonb")
+    )
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

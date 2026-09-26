@@ -38,8 +38,16 @@ async def test_redis_ping_reports_health(redis_client: redis.Redis) -> None:
     assert await redis_client.ping() is True
 
 
-async def test_flushdb_fixture_isolates_tests(redis_client: redis.Redis) -> None:
+async def test_the_fixture_clears_volatile_keys(redis_client: redis.Redis) -> None:
     """Guards the fixture itself: a leaked key would make later tests order-dependent."""
     assert await redis_client.keys("probe:*") == []
 
     await redis_client.set("probe:leak", "x")
+
+
+async def test_the_fixture_leaves_sessions_alone(redis_client: redis.Redis) -> None:
+    """Sessions are app state, not test pollution: a cookie held by a test must
+    survive the fixture, or every signed-in test becomes order-dependent."""
+    await redis_client.set("session:example", "{}")
+
+    assert await redis_client.get("session:example") == "{}"

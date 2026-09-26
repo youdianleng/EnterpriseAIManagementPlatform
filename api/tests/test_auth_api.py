@@ -26,7 +26,9 @@ from app.db import build_engine
 from app.main import app
 from app.throttle import MAX_FAILED_ATTEMPTS
 
-ADMIN = {"X-Actor-Roles": "admin"}
+# Account administration is session-authenticated like everything else, so the
+# tests that need an administrator sign one in. The `admin` fixture below is that
+# administrator; a header would bypass the mechanism under test.
 KNOWN_PASSWORD = "Str0ng!Password1"
 
 
@@ -166,6 +168,69 @@ async def pending_account(committer: async_sessionmaker) -> dict:
     return await grant_account(committer, must_change_password=True)
 
 
+class SignedInAdmin:
+    """A thin wrapper so a test reads as `await admin.post(...)`."""
+
+    def __init__(self, client: AsyncClient) -> None:
+        self.client = client
+
+    async def post(self, path: str, **kwargs):
+        return await self.client.post(path, **kwargs)
+
+    async def get(self, path: str, **kwargs):
+        return await self.client.get(path, **kwargs)
+
+
+@pytest.fixture
+async def admin(committer: async_sessionmaker) -> AsyncIterator[SignedInAdmin]:
+    """A signed-in administrator, for the tests that manage someone else's account.
+
+    Built here rather than in `tests/support/platform.py` because this module owns
+    its own committing database, and mixing the two fixtures would give a test two
+    different views of the same tables.
+    """
+    employee_id = uuid4()
+    user_id = uuid4()
+    username = f"admin{uuid4().hex[:8]}"
+
+    async with committer() as session:
+        await session.execute(
+            text(
+                """
+                INSERT INTO employees (id, first_name, last_name, email, hire_date, status)
+                VALUES (:id, 'Admin', 'Root', :email, '2020-01-01', 'active')
+                """
+            ),
+            {"id": employee_id, "email": f"{username}@empresa.es"},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO users (id, employee_id, username, password_hash,
+                                   must_change_password, is_active, session_epoch, roles)
+                VALUES (:id, :employee_id, :username, :password_hash, false, true, 1,
+                        CAST('["admin"]' AS jsonb))
+                """
+            ),
+            {
+                "id": user_id,
+                "employee_id": employee_id,
+                "username": username,
+                "password_hash": hash_password(KNOWN_PASSWORD),
+            },
+        )
+        await session.commit()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        response = await http.post(
+            "/api/v1/auth/login",
+            json={"username": username, "password": KNOWN_PASSWORD},
+        )
+        assert response.status_code == 200, response.text
+        yield SignedInAdmin(http)
+
+
 async def read_audit(committer: async_sessionmaker, action: str) -> list[dict]:
     async with committer() as session:
         rows = (
@@ -229,10 +294,10 @@ async def test_an_unknown_username_and_a_wrong_password_are_indistinguishable(
     assert unknown.json()["error"]["message"] == wrong.json()["error"]["message"]
 
 
-async def test_a_disabled_account_cannot_sign_in(client: AsyncClient, account: dict) -> None:
-    await client.post(
-        f"/api/v1/accounts/{account['user_id']}/deactivate", headers=ADMIN
-    )
+async def test_a_disabled_account_cannot_sign_in(
+    client: AsyncClient, account: dict, admin: SignedInAdmin
+) -> None:
+    await admin.post(f"/api/v1/accounts/{account['user_id']}/deactivate")
 
     response = await sign_in(client, account["username"], account["password"])
 
@@ -466,13 +531,13 @@ async def test_a_password_change_ends_other_sessions(
 
 
 async def test_disabling_an_account_ends_its_session(
-    client: AsyncClient, account: dict
+    client: AsyncClient, account: dict, admin: SignedInAdmin
 ) -> None:
     """`is_active` alone would leave a session issued a minute ago still working."""
     await sign_in(client, account["username"], account["password"])
     assert (await client.get("/api/v1/auth/session")).status_code == 200
 
-    await client.post(f"/api/v1/accounts/{account['user_id']}/deactivate", headers=ADMIN)
+    await admin.post(f"/api/v1/accounts/{account['user_id']}/deactivate")
 
     refused = await client.get("/api/v1/auth/session")
     assert refused.status_code == 401
@@ -509,13 +574,11 @@ async def test_end_all_sessions_invalidates_every_device(
 
 
 async def test_a_password_reset_by_an_administrator_ends_the_session(
-    client: AsyncClient, account: dict
+    client: AsyncClient, account: dict, admin: SignedInAdmin
 ) -> None:
     await sign_in(client, account["username"], account["password"])
 
-    await client.post(
-        f"/api/v1/accounts/{account['user_id']}/reset-password", headers=ADMIN
-    )
+    await admin.post(f"/api/v1/accounts/{account['user_id']}/reset-password")
 
     assert (await client.get("/api/v1/auth/session")).status_code == 401
 

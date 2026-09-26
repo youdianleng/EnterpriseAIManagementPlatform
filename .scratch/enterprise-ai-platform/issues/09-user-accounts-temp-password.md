@@ -31,4 +31,10 @@
 3. The password-change schema imposed `min_length=8`, which rejected a weak password with a generic validation error instead of the catalogued policy error — the rule has one home (`core.security`) and the schema should not restate it.
 4. Account responses had two shapes: creation nested an `account` object while state changes returned it flat. Flattened, with `temporary_password` present only when one was just issued.
 
+**Amended by ticket 11.** The self-service change-password endpoint this ticket
+shipped (`POST /accounts/{id}/change-password`) has been removed: ticket 10 owns
+that operation on `/auth/change-password`, where it can replace the session cookie
+and be audited as an authentication event. Administration of *other* people's
+passwords stays here, as a reset. See ticket 11 for the reasoning.
+
 **Audit scope note:** the append-only guarantee is not yet enforced at the database level — the application still connects as the table owner. Ticket 13 introduces a role with INSERT and SELECT only on `audit_log`, which is the point at which it stops depending on application code. Recorded in `app/audit.py` so the gap is not mistaken for a finished design. Ticket 14 adds the compliance read surface and the remaining actions.

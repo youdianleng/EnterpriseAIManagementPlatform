@@ -33,3 +33,10 @@
 6. **`conftest` used `setdefault` on `DATABASE_URL`, which the container already exports.** The default never applied, so a full test run wrote **181 audit rows into the development database**. Now assigned, and `test_database.py` asserts the invariant that actually matters instead of asserting the old bug. This is the most serious defect of the round: tests were mutating development data, and the old test documented that as expected behaviour.
 
 **Probe hygiene:** `probe_auth` trips the lockout on purpose, and the counters live in Redis beyond the process. Both auth-related probes now clear their own counters and rows before running, so a second run measures the same thing as the first.
+
+**Amended by ticket 11.** This ticket's `/auth/change-password` is now the *only*
+path that changes a password: ticket 09's account-scoped duplicate was removed.
+The `redis_client` fixture also stopped calling `flushdb()` — it wiped live
+sessions, so any test holding a cookie while asking for Redis isolation was
+answered 401 by a fixture rather than by the code under test. It now clears only
+the volatile namespaces (login counters, probe keys).

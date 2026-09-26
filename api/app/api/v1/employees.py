@@ -12,9 +12,9 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.deps import (
+    current_principal,
     db_session,
-    require_employee_managing_role,
-    viewer_context,
+    require,
 )
 from app.api.v1.schemas.employee import (
     AssignmentCreate,
@@ -26,6 +26,12 @@ from app.api.v1.schemas.employee import (
     EmployeePrivateRead,
     EmployeeRead,
     EmployeeUpdate,
+)
+from app.domain.access import (
+    Action,
+    Principal,
+    ResourceKind,
+    to_viewer_context,
 )
 from app.domain.employee.models import (
     Assignment,
@@ -39,7 +45,6 @@ from app.domain.employee.models import (
 from app.domain.employee.service import EmployeeService
 from app.domain.employee.visibility import (
     Projection,
-    ViewerContext,
     project_directory_row,
     project_private,
     resolve_visibility,
@@ -48,6 +53,10 @@ from app.repositories.employee import PostgresEmployeeRepository
 from app.repositories.org import PostgresDepartmentRepository
 
 router = APIRouter(tags=["employees"])
+
+guard_read_employee = require(Action.EMPLOYEE_READ, ResourceKind.EMPLOYEE)
+guard_read_directory = require(Action.EMPLOYEE_DIRECTORY, ResourceKind.EMPLOYEE)
+guard_manage_employees = require(Action.EMPLOYEE_MANAGE, ResourceKind.EMPLOYEE)
 
 
 def _service(session: AsyncSession) -> EmployeeService:
@@ -152,10 +161,11 @@ async def _approver_map(session: AsyncSession, record: EmployeeRecord) -> dict[U
     # response model has the attribute and serialises its default.
     response_model_exclude_none=True,
     summary="Contact list",
+    dependencies=[Depends(guard_read_directory)],
 )
 async def read_directory(
     include_terminated: bool = Query(default=False),
-    viewer: ViewerContext = Depends(viewer_context),
+    principal: Principal = Depends(current_principal),
     session: AsyncSession = Depends(db_session),
 ) -> list[DirectoryEntryRead]:
     """Name, position and — for colleagues — email. Nothing else.
@@ -166,7 +176,7 @@ async def read_directory(
     """
     entries = await _service(session).list_directory(include_terminated=include_terminated)
     return [
-        DirectoryEntryRead(**project_directory_row(viewer, entry))  # type: ignore[arg-type]
+        DirectoryEntryRead(**project_directory_row(to_viewer_context(principal), entry))  # type: ignore[arg-type]
         for entry in entries
     ]
 
@@ -176,11 +186,11 @@ async def read_directory(
     response_model=EmployeeRead, response_model_exclude_none=True,
     status_code=201,
     summary="Create an employee record",
-    dependencies=[Depends(require_employee_managing_role)],
+    dependencies=[Depends(guard_manage_employees)],
 )
 async def create_employee(
     payload: EmployeeCreate,
-    viewer: ViewerContext = Depends(viewer_context),
+    principal: Principal = Depends(current_principal),
     session: AsyncSession = Depends(db_session),
 ) -> EmployeeRead:
     private = payload.private or EmployeePrivateIn()
@@ -208,7 +218,7 @@ async def create_employee(
         )
     )
     return _profile(
-        resolve_visibility(viewer, record),
+        resolve_visibility(to_viewer_context(principal), record),
         record,
         approvers=await _approver_map(session, record),
         include_assignments=True,
@@ -222,22 +232,18 @@ async def create_employee(
     summary="My own profile",
 )
 async def read_my_profile(
-    viewer: ViewerContext = Depends(viewer_context),
+    principal: Principal = Depends(current_principal),
     session: AsyncSession = Depends(db_session),
 ) -> EmployeeRead:
     """Always the full record for the caller.
 
-    Takes no identifier, so there is nothing to tamper with. Ticket 10 replaces
-    the header-derived context with the session.
+    Takes no identifier, so there is nothing to tamper with: the record read is
+    the one belonging to the authenticated principal. A request without a valid
+    session never reaches here, because the principal dependency refuses first.
     """
-    from app.core.errors import AppError, ErrorCode
-
-    if viewer.employee_id is None:
-        raise AppError(ErrorCode.UNAUTHENTICATED, detail="no acting employee")
-
-    record = await _service(session).get_record(viewer.employee_id)
+    record = await _service(session).get_record(principal.employee_id)
     return _profile(
-        resolve_visibility(viewer, record),
+        resolve_visibility(to_viewer_context(principal), record),
         record,
         approvers=await _approver_map(session, record),
         include_assignments=True,
@@ -249,15 +255,16 @@ async def read_my_profile(
     response_model=EmployeeRead,
     response_model_exclude_none=True,
     summary="Read a profile",
+    dependencies=[Depends(guard_read_employee)],
 )
 async def read_employee(
     employee_id: UUID,
-    viewer: ViewerContext = Depends(viewer_context),
+    principal: Principal = Depends(current_principal),
     session: AsyncSession = Depends(db_session),
 ) -> EmployeeRead:
     record = await _service(session).get_record(employee_id)
     return _profile(
-        resolve_visibility(viewer, record),
+        resolve_visibility(to_viewer_context(principal), record),
         record,
         approvers=await _approver_map(session, record),
         include_assignments=True,
@@ -268,18 +275,18 @@ async def read_employee(
     "/employees/{employee_id}",
     response_model=EmployeeRead, response_model_exclude_none=True,
     summary="Update a profile",
-    dependencies=[Depends(require_employee_managing_role)],
+    dependencies=[Depends(guard_manage_employees)],
 )
 async def update_employee(
     employee_id: UUID,
     payload: EmployeeUpdate,
-    viewer: ViewerContext = Depends(viewer_context),
+    principal: Principal = Depends(current_principal),
     session: AsyncSession = Depends(db_session),
 ) -> EmployeeRead:
     patch = EmployeePatch(**payload.model_dump(exclude_unset=True))
     record = await _service(session).update(employee_id, patch)
     return _profile(
-        resolve_visibility(viewer, record),
+        resolve_visibility(to_viewer_context(principal), record),
         record,
         approvers=await _approver_map(session, record),
         include_assignments=True,
@@ -290,12 +297,12 @@ async def update_employee(
     "/employees/{employee_id}/private",
     response_model=EmployeeRead, response_model_exclude_none=True,
     summary="Update withheld details",
-    dependencies=[Depends(require_employee_managing_role)],
+    dependencies=[Depends(guard_manage_employees)],
 )
 async def update_employee_private(
     employee_id: UUID,
     payload: EmployeePrivateIn,
-    viewer: ViewerContext = Depends(viewer_context),
+    principal: Principal = Depends(current_principal),
     session: AsyncSession = Depends(db_session),
 ) -> EmployeeRead:
     record = await _service(session).update_private(
@@ -311,7 +318,7 @@ async def update_employee_private(
         ),
     )
     return _profile(
-        resolve_visibility(viewer, record),
+        resolve_visibility(to_viewer_context(principal), record),
         record,
         approvers=await _approver_map(session, record),
         include_assignments=True,
@@ -323,12 +330,12 @@ async def update_employee_private(
     response_model=EmployeeRead, response_model_exclude_none=True,
     status_code=201,
     summary="Attach a position",
-    dependencies=[Depends(require_employee_managing_role)],
+    dependencies=[Depends(guard_manage_employees)],
 )
 async def add_assignment(
     employee_id: UUID,
     payload: AssignmentCreate,
-    viewer: ViewerContext = Depends(viewer_context),
+    principal: Principal = Depends(current_principal),
     session: AsyncSession = Depends(db_session),
 ) -> EmployeeRead:
     record = await _service(session).assign_position(
@@ -344,7 +351,7 @@ async def add_assignment(
         ),
     )
     return _profile(
-        resolve_visibility(viewer, record),
+        resolve_visibility(to_viewer_context(principal), record),
         record,
         approvers=await _approver_map(session, record),
         include_assignments=True,
@@ -355,17 +362,17 @@ async def add_assignment(
     "/employees/{employee_id}/assignments/{assignment_id}",
     response_model=EmployeeRead, response_model_exclude_none=True,
     summary="End a position assignment",
-    dependencies=[Depends(require_employee_managing_role)],
+    dependencies=[Depends(guard_manage_employees)],
 )
 async def end_assignment(
     employee_id: UUID,
     assignment_id: UUID,
-    viewer: ViewerContext = Depends(viewer_context),
+    principal: Principal = Depends(current_principal),
     session: AsyncSession = Depends(db_session),
 ) -> EmployeeRead:
     record = await _service(session).end_assignment(employee_id, assignment_id)
     return _profile(
-        resolve_visibility(viewer, record),
+        resolve_visibility(to_viewer_context(principal), record),
         record,
         approvers=await _approver_map(session, record),
         include_assignments=True,
@@ -376,18 +383,18 @@ async def end_assignment(
     "/employees/{employee_id}/assignments/{assignment_id}/primary",
     response_model=EmployeeRead, response_model_exclude_none=True,
     summary="Change the primary position",
-    dependencies=[Depends(require_employee_managing_role)],
+    dependencies=[Depends(guard_manage_employees)],
 )
 async def set_primary_assignment(
     employee_id: UUID,
     assignment_id: UUID,
-    viewer: ViewerContext = Depends(viewer_context),
+    principal: Principal = Depends(current_principal),
     session: AsyncSession = Depends(db_session),
 ) -> EmployeeRead:
     """Administrative only — this is what drives approval routing."""
     record = await _service(session).set_primary(employee_id, assignment_id)
     return _profile(
-        resolve_visibility(viewer, record),
+        resolve_visibility(to_viewer_context(principal), record),
         record,
         approvers=await _approver_map(session, record),
         include_assignments=True,

@@ -47,15 +47,6 @@ class AccountStateChange(StrictModel):
     reason: str | None = Field(default=None, max_length=500)
 
 
-class PasswordChange(StrictModel):
-    current_password: str = Field(min_length=1)
-    # Only "non-empty" here: the length and character-class rules live in
-    # `core.security`, and duplicating them as schema bounds would reject a weak
-    # password with a generic validation error instead of the catalogued
-    # password-policy error the client is meant to render.
-    new_password: str = Field(min_length=1, max_length=200)
-
-
 class PasswordPolicyViolation(BaseModel):
     """Returned inside the error envelope so a client can render a fix."""
 

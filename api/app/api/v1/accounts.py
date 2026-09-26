@@ -6,6 +6,12 @@ again, because nothing stored it.
 
 Every response is the same shape: an account, optionally carrying the one-time
 password that was just issued.
+
+**There is no change-password endpoint here.** Changing your own password lives
+in `api/v1/auth.py`, because it is a session operation: it replaces the cookie,
+bumps the epoch and is the single endpoint an account in the forced-change state
+may reach. A second path to the same write would be guarded differently and would
+drift. Administration of *other* people's passwords stays here, as a reset.
 """
 
 from uuid import UUID
@@ -13,31 +19,27 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.deps import (
-    actor_employee_id,
-    actor_roles,
-    db_session,
-    require_roles,
-)
+from app.api.v1.deps import current_principal, db_session, require
 from app.api.v1.schemas.account import (
     AccountCreate,
     AccountPasswordReset,
     AccountRead,
     AccountStateChange,
-    PasswordChange,
     PasswordPolicyRead,
 )
 from app.cache import RedisSessionRevoker
 from app.core.security import MINIMUM_PASSWORD_LENGTH, REQUIRED_CHARACTER_CLASSES
+from app.domain.access import Action, Principal, ResourceKind
 from app.domain.account.models import UserAccount, UserAccountInput
 from app.domain.account.service import AccountService
 from app.repositories.account import PostgresAccountRepository
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
 
-# Only an administrator manages accounts. Deny by default until ticket 11 wires
-# the real session.
-require_admin = require_roles("admin")
+# Only an administrator manages accounts; both guards read the session's
+# permission snapshot through the kernel.
+manage_accounts = require(Action.ACCOUNT_MANAGE, ResourceKind.ACCOUNT)
+read_accounts = require(Action.ACCOUNT_LIST, ResourceKind.ACCOUNT)
 
 
 def _service(session: AsyncSession) -> AccountService:
@@ -59,7 +61,7 @@ def _read(account: UserAccount, *, temporary_password: str | None = None) -> Acc
     "",
     response_model=list[AccountRead],
     summary="List accounts",
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(read_accounts)],
 )
 async def list_accounts(
     include_inactive: bool = Query(default=True),
@@ -78,7 +80,12 @@ async def list_accounts(
     summary="The password rule, for the UI to display",
 )
 async def read_password_policy() -> PasswordPolicyRead:
-    """Published rather than duplicated in the frontend, so the rule has one home."""
+    """**Deliberately public**, marked as such rather than left unguarded.
+
+    The sign-in screen states the rule before anyone has a session. The response
+    is a fixed description of the policy and reveals nothing about any account, so
+    there is nothing here to protect and no action to name.
+    """
     return PasswordPolicyRead(
         minimum_length=MINIMUM_PASSWORD_LENGTH,
         required_classes=list(REQUIRED_CHARACTER_CLASSES),
@@ -90,18 +97,17 @@ async def read_password_policy() -> PasswordPolicyRead:
     response_model=AccountRead,
     status_code=201,
     summary="Create an account and reveal its one-time password",
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(manage_accounts)],
 )
 async def create_account(
     payload: AccountCreate,
-    roles: frozenset[str] = Depends(actor_roles),
-    actor: UUID | None = Depends(actor_employee_id),
+    principal: Principal = Depends(current_principal),
     session: AsyncSession = Depends(db_session),
 ) -> AccountRead:
     result = await _service(session).create(
         UserAccountInput(employee_id=payload.employee_id, username=payload.username),
-        actor_user_id=actor,
-        actor_roles=roles,
+        actor_user_id=principal.user_id,
+        actor_roles=principal.roles,
     )
     return _read(result.account, temporary_password=result.temporary_password)
 
@@ -110,7 +116,7 @@ async def create_account(
     "/{account_id}",
     response_model=AccountRead,
     summary="Read an account",
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(manage_accounts)],
 )
 async def read_account(
     account_id: UUID,
@@ -123,13 +129,12 @@ async def read_account(
     "/{account_id}/deactivate",
     response_model=AccountRead,
     summary="Disable an account and end its sessions",
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(manage_accounts)],
 )
 async def deactivate_account(
     account_id: UUID,
     payload: AccountStateChange | None = None,
-    roles: frozenset[str] = Depends(actor_roles),
-    actor: UUID | None = Depends(actor_employee_id),
+    principal: Principal = Depends(current_principal),
     session: AsyncSession = Depends(db_session),
 ) -> AccountRead:
     """Disabling is the supported removal: it keeps history readable and stops
@@ -138,8 +143,8 @@ async def deactivate_account(
         account_id,
         is_active=False,
         reason=payload.reason if payload else None,
-        actor_user_id=actor,
-        actor_roles=roles,
+        actor_user_id=principal.user_id,
+        actor_roles=principal.roles,
     )
     return _read(account)
 
@@ -148,21 +153,20 @@ async def deactivate_account(
     "/{account_id}/reactivate",
     response_model=AccountRead,
     summary="Re-enable a disabled account",
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(manage_accounts)],
 )
 async def reactivate_account(
     account_id: UUID,
     payload: AccountStateChange | None = None,
-    roles: frozenset[str] = Depends(actor_roles),
-    actor: UUID | None = Depends(actor_employee_id),
+    principal: Principal = Depends(current_principal),
     session: AsyncSession = Depends(db_session),
 ) -> AccountRead:
     account = await _service(session).set_active(
         account_id,
         is_active=True,
         reason=payload.reason if payload else None,
-        actor_user_id=actor,
-        actor_roles=roles,
+        actor_user_id=principal.user_id,
+        actor_roles=principal.roles,
     )
     return _read(account)
 
@@ -171,42 +175,18 @@ async def reactivate_account(
     "/{account_id}/reset-password",
     response_model=AccountRead,
     summary="Issue a new one-time password",
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(manage_accounts)],
 )
 async def reset_password(
     account_id: UUID,
     payload: AccountPasswordReset | None = None,
-    roles: frozenset[str] = Depends(actor_roles),
-    actor: UUID | None = Depends(actor_employee_id),
+    principal: Principal = Depends(current_principal),
     session: AsyncSession = Depends(db_session),
 ) -> AccountRead:
     result = await _service(session).reset_password(
         account_id,
         reason=payload.reason if payload else None,
-        actor_user_id=actor,
-        actor_roles=roles,
+        actor_user_id=principal.user_id,
+        actor_roles=principal.roles,
     )
     return _read(result.account, temporary_password=result.temporary_password)
-
-
-@router.post(
-    "/{account_id}/change-password",
-    response_model=AccountRead,
-    summary="Change your own password",
-)
-async def change_password(
-    account_id: UUID,
-    payload: PasswordChange,
-    session: AsyncSession = Depends(db_session),
-) -> AccountRead:
-    """Requires the current password even though the caller holds a session.
-
-    That requirement is what separates the account holder from someone who found
-    an unlocked screen. Ticket 10 restricts this to the caller's own account.
-    """
-    account = await _service(session).change_own_password(
-        account_id,
-        current_password=payload.current_password,
-        new_password=payload.new_password,
-    )
-    return _read(account)

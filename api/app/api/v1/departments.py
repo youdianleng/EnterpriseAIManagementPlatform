@@ -1,7 +1,11 @@
-"""Department tree endpoints.
+"""Department endpoints.
 
 The tree is structure that nearly every request reads and few ever change, so it
 is cached and every write bumps a version stamp rather than expiring keys.
+
+Authorisation is named, not tested: each route declares the catalogue action it
+performs and the kernel answers. There is no role comparison in this file, and
+adding one would be the bug.
 """
 
 from uuid import UUID
@@ -9,7 +13,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.deps import db_session, require_structure_role
+from app.api.v1.deps import db_session, require
 from app.api.v1.schemas.org import (
     DepartmentCreate,
     DepartmentMove,
@@ -19,6 +23,7 @@ from app.api.v1.schemas.org import (
     DepartmentUpdate,
 )
 from app.cache import invalidate_org_tree
+from app.domain.access import Action, ResourceKind
 from app.domain.org.models import (
     Department,
     DepartmentInput,
@@ -29,6 +34,9 @@ from app.domain.org.service import DepartmentService
 from app.repositories.org import PostgresDepartmentRepository
 
 router = APIRouter(prefix="/departments", tags=["organisation"])
+
+read_tree = require(Action.DEPARTMENT_READ, ResourceKind.DEPARTMENT)
+manage_tree = require(Action.DEPARTMENT_MANAGE, ResourceKind.DEPARTMENT)
 
 
 def _service(session: AsyncSession) -> DepartmentService:
@@ -57,7 +65,12 @@ def _tree_read(tree: DepartmentTree) -> DepartmentTreeRead:
     )
 
 
-@router.get("", response_model=DepartmentTreeRead, summary="Organisation tree")
+@router.get(
+    "",
+    response_model=DepartmentTreeRead,
+    summary="Organisation tree",
+    dependencies=[Depends(read_tree)],
+)
 async def list_departments(
     include_inactive: bool = Query(default=True),
     session: AsyncSession = Depends(db_session),
@@ -71,7 +84,7 @@ async def list_departments(
     response_model=DepartmentRead,
     status_code=201,
     summary="Create a department",
-    dependencies=[Depends(require_structure_role)],
+    dependencies=[Depends(manage_tree)],
 )
 async def create_department(
     payload: DepartmentCreate,
@@ -92,7 +105,12 @@ async def create_department(
     return _read(department)
 
 
-@router.get("/{department_id}", response_model=DepartmentRead, summary="Read a department")
+@router.get(
+    "/{department_id}",
+    response_model=DepartmentRead,
+    summary="Read a department",
+    dependencies=[Depends(read_tree)],
+)
 async def get_department(
     department_id: UUID,
     session: AsyncSession = Depends(db_session),
@@ -104,6 +122,7 @@ async def get_department(
     "/{department_id}/subtree",
     response_model=list[DepartmentRead],
     summary="A department and its descendants",
+    dependencies=[Depends(read_tree)],
 )
 async def list_subtree(
     department_id: UUID,
@@ -120,7 +139,7 @@ async def list_subtree(
     "/{department_id}",
     response_model=DepartmentRead,
     summary="Update a department",
-    dependencies=[Depends(require_structure_role)],
+    dependencies=[Depends(manage_tree)],
 )
 async def update_department(
     department_id: UUID,
@@ -136,7 +155,7 @@ async def update_department(
     "/{department_id}/move",
     response_model=DepartmentRead,
     summary="Move a department and its subtree",
-    dependencies=[Depends(require_structure_role)],
+    dependencies=[Depends(manage_tree)],
 )
 async def move_department(
     department_id: UUID,
@@ -150,7 +169,7 @@ async def move_department(
     "/{department_id}",
     status_code=204,
     summary="Delete an empty department",
-    dependencies=[Depends(require_structure_role)],
+    dependencies=[Depends(manage_tree)],
 )
 async def delete_department(
     department_id: UUID,

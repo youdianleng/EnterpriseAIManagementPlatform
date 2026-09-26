@@ -38,15 +38,19 @@ class AuditAction(StrEnum):
     ACCOUNT_DEACTIVATED = "account.deactivated"
     ACCOUNT_REACTIVATED = "account.reactivated"
     ACCOUNT_PASSWORD_RESET = "account.password_reset"
-    ACCOUNT_PASSWORD_CHANGED = "account.password_changed"
 
     # Authentication. Failures are recorded too: a trail of successes only cannot
     # answer "was somebody trying to get in".
     LOGIN_SUCCEEDED = "auth.login_succeeded"
     LOGIN_FAILED = "auth.login_failed"
     LOGOUT = "auth.logout"
+    #: One action for "somebody set their own password", whichever screen did it.
     PASSWORD_CHANGED = "auth.password_changed"
     SESSIONS_FORCED_OUT = "auth.sessions_forced_out"
+
+    # Authorisation. A refused attempt is half of what an incident review needs;
+    # the other half is who was allowed.
+    ACCESS_REFUSED = "access.refused"
 
 
 def _snapshot(payload: dict[str, Any] | None) -> dict[str, Any] | None:

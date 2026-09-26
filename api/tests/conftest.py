@@ -13,13 +13,18 @@ truncating.
 import os
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import psycopg
 import pytest
 from alembic import command
 from alembic.config import Config
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
+
+if TYPE_CHECKING:
+    from tests.support.platform import Platform
 
 API_ROOT = Path(__file__).resolve().parents[1]
 
@@ -76,7 +81,15 @@ def test_database_url(settings: Settings) -> str:
 
 @pytest.fixture(scope="session", autouse=True)
 def migrated_database(settings: Settings) -> Iterator[None]:
-    """Create the test database if missing, then migrate it to head."""
+    """Create the test database if missing, then migrate it to head.
+
+    `upgrade head` runs on every session, not only when the database is created.
+    An earlier version migrated inside the `if not exists` branch, so an existing
+    test database stayed on whatever schema it had the day it was made — new
+    columns and extensions were simply absent, and the failures that produced
+    ("column roles does not exist", "ltree syntax error") pointed at the code
+    rather than at the fixture.
+    """
     with psycopg.connect(settings.sync_admin_database_url, autocommit=True) as admin:
         exists = admin.execute(
             "SELECT 1 FROM pg_database WHERE datname = %s", (settings.test_database_name,)
@@ -115,17 +128,32 @@ async def session(connection: AsyncConnection) -> AsyncIterator[AsyncSession]:
         yield db_session
 
 
+#: Cleared before and after any test that asks for `redis_client`. Sessions,
+#: session epochs and permission snapshots are deliberately absent: a test can
+#: hold a live session cookie while this fixture runs, and wiping it would turn
+#: an unrelated assertion into a confusing 401. What actually leaks between
+#: tests is the login throttle, which is keyed by username.
+VOLATILE_KEY_PATTERNS = ("auth:failures:*", "probe:*")
+
+
 @pytest.fixture
 async def redis_client(settings: Settings) -> AsyncIterator["object"]:
-    """Redis client on a flushed database, so counters never leak between tests."""
+    """Redis client on a cleared keyspace, so counters never leak between tests."""
     import redis.asyncio as redis
 
     client = redis.from_url(settings.redis_url, decode_responses=True)
-    await client.flushdb()
+
+    async def clear_volatile_keys() -> None:
+        for pattern in VOLATILE_KEY_PATTERNS:
+            keys = [key async for key in client.scan_iter(match=pattern, count=100)]
+            if keys:
+                await client.delete(*keys)
+
+    await clear_volatile_keys()
     try:
         yield client
     finally:
-        await client.flushdb()
+        await clear_volatile_keys()
         await client.aclose()
 
 
@@ -133,3 +161,146 @@ async def redis_client(settings: Settings) -> AsyncIterator["object"]:
 def libpq_dsn(settings: Settings) -> str:
     """Raw psycopg DSN for assertions that must bypass the ORM."""
     return to_libpq_dsn(settings.test_database_url)
+
+
+@pytest.fixture
+async def platform(settings: Settings) -> AsyncIterator["Platform"]:
+    """A clean database plus a client, for API tests.
+
+    Committing, not rolled back: the endpoints under test read committed rows
+    through their own sessions, so a per-test transaction is invisible to them.
+    See `tests/support/platform.py` for why that is the right shape here.
+    """
+    from tests.support.platform import running_platform
+
+    async with running_platform(settings) as running:
+        yield running
+
+
+# --- authenticating API tests ----------------------------------------------
+
+
+class SignedIn:
+    """A caller with a real session cookie.
+
+    Authorisation is exercised through the same path production uses: a session in
+    Redis, the epoch check, and a principal resolved from the database. Nothing
+    here injects permissions directly, because a test that bypasses the mechanism
+    it is testing proves nothing about it.
+    """
+
+    def __init__(self, client, account) -> None:  # noqa: ANN001
+        self.client = client
+        self.account = account
+
+    @property
+    def user_id(self):
+        return self.account["user_id"]
+
+    async def call(self, method: str, path: str, **kwargs):
+        return await self.client.request(method, path, **kwargs)
+
+
+async def grant_account(
+    factory,  # noqa: ANN001 - async_sessionmaker
+    *,
+    email_prefix: str = "user",
+    must_change_password: bool = False,
+    department_id=None,  # noqa: ANN001
+    job_position_id=None,  # noqa: ANN001
+    is_managerial: bool = False,
+    clearance_level: str = "low",
+    role_extra: str | None = None,
+) -> dict:
+    """Create an employee, an account, and optionally a position, all committed.
+
+    Committed on purpose: the API reads these rows from a different session, so a
+    rolled-back fixture would be invisible to it. This is why the API test modules
+    that need a signed-in caller do not use the shared rolled-back session.
+    """
+    from uuid import uuid4
+
+    from app.core.security import hash_password
+
+    employee_id = uuid4()
+    user_id = uuid4()
+    username = f"{email_prefix}{uuid4().hex[:8]}"
+
+    async with factory() as session:
+        await session.execute(
+            text(
+                """
+                INSERT INTO employees (id, first_name, last_name, email, hire_date, status)
+                VALUES (:id, 'Ana', 'Martín', :email, '2024-01-15', 'active')
+                """
+            ),
+            {"id": employee_id, "email": f"{username}@empresa.es"},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO users (id, employee_id, username, password_hash,
+                                   must_change_password, is_active, session_epoch)
+                VALUES (:id, :employee_id, :username, :password_hash, :must_change, true, 1)
+                """
+            ),
+            {
+                "id": user_id,
+                "employee_id": employee_id,
+                "username": username,
+                "password_hash": hash_password("Str0ng!Password1"),
+                "must_change": must_change_password,
+            },
+        )
+
+        if department_id is not None and job_position_id is not None:
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO employee_assignments (id, employee_id, department_id,
+                                                      job_position_id, is_primary,
+                                                      is_part_time, start_date)
+                    VALUES (:id, :employee_id, :department_id, :job_position_id, true,
+                            false, '2024-01-15')
+                    """
+                ),
+                {
+                    "id": uuid4(),
+                    "employee_id": employee_id,
+                    "department_id": department_id,
+                    "job_position_id": job_position_id,
+                },
+            )
+        await session.commit()
+
+    if is_managerial and department_id is not None:
+        async with factory() as session:
+            await session.execute(
+                text("UPDATE job_positions SET is_managerial = true WHERE id = :id"),
+                {"id": job_position_id},
+            )
+            await session.commit()
+
+    if clearance_level != "low":
+        async with factory() as session:
+            await session.execute(
+                text("UPDATE departments SET clearance_level = :level WHERE id = :id"),
+                {"level": clearance_level, "id": department_id},
+            )
+            await session.commit()
+
+    return {
+        "user_id": str(user_id),
+        "employee_id": str(employee_id),
+        "username": username,
+        "password": "Str0ng!Password1",
+    }
+
+
+async def sign_in(client, account: dict) -> SignedIn:  # noqa: ANN001
+    response = await client.post(
+        "/api/v1/auth/login",
+        json={"username": account["username"], "password": account["password"]},
+    )
+    assert response.status_code == 200, response.text
+    return SignedIn(client, account)
