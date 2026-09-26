@@ -163,6 +163,11 @@ def wipe() -> None:
     Order matters: every foreign key in this schema is RESTRICT, so referencing
     rows go first. A probe that leaves rows behind stops being run, because the
     second run no longer measures the same thing as the first.
+
+    **This is destructive to the development database**, demo data included: the
+    probes drive the running stack, and that stack is pointed at development.
+    Reload the demo dataset afterwards with `python -m app.seed`, which is
+    idempotent and takes a few seconds.
     """
     for statement in (
         "DELETE FROM audit_log",
