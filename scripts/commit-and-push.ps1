@@ -18,6 +18,13 @@
 .PARAMETER MessageFile
     Path to a file containing the commit message.
 
+.PARAMETER Paths
+    Stage only these paths, instead of everything. Useful when more than one
+    person or agent is working in the tree at once: `git add -A` would sweep a
+    colleague's half-finished work into this commit, and a commit that contains
+    somebody else's unfinished changes cannot be reviewed or reverted as one
+    thing.
+
 .PARAMETER DryRun
     Show what would be committed without committing.
 #>
@@ -25,6 +32,8 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$MessageFile,
+
+    [string[]]$Paths,
 
     [switch]$DryRun
 )
@@ -62,7 +71,8 @@ if (-not (Test-Path $MessageFile)) {
 
 Push-Location (Join-Path $PSScriptRoot '..')
 try {
-    if (-not (Invoke-Git -Arguments @('add', '-A'))) {
+    $addArguments = if ($Paths) { @('add', '--') + $Paths } else { @('add', '-A') }
+    if (-not (Invoke-Git -Arguments $addArguments)) {
         throw 'git add failed'
     }
 
