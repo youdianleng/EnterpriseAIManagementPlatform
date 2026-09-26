@@ -48,6 +48,13 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
             "El departamento indicado no existe o está desactivado.",
         "errors.position_in_use":
             "El puesto tiene personal asignado; desactívalo en lugar de eliminarlo.",
+        "errors.account_not_found": "No se encontró la cuenta.",
+        "errors.account_username_taken": "Ese nombre de usuario ya está en uso.",
+        "errors.account_employee_has_account": "Esa persona ya tiene una cuenta.",
+        "errors.account_employee_not_active":
+            "No se puede crear una cuenta para una persona que ya no está en activo.",
+        "errors.account_already_in_state": "La cuenta ya está en ese estado.",
+        "errors.account_password_policy": "La contraseña no cumple la política de seguridad.",
         "errors.internal_error": "Se produjo un error interno. Inténtalo de nuevo más tarde.",
         "errors.service_unavailable": "El servicio no está disponible en este momento.",
     },
@@ -88,6 +95,13 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
             "The chosen department does not exist or is deactivated.",
         "errors.position_in_use":
             "The position has staff assigned; deactivate it instead of deleting it.",
+        "errors.account_not_found": "The account was not found.",
+        "errors.account_username_taken": "That username is already taken.",
+        "errors.account_employee_has_account": "That person already has an account.",
+        "errors.account_employee_not_active":
+            "An account cannot be created for someone who is no longer employed.",
+        "errors.account_already_in_state": "The account is already in that state.",
+        "errors.account_password_policy": "The password does not meet the security policy.",
         "errors.internal_error": "An internal error occurred. Please try again later.",
         "errors.service_unavailable": "The service is unavailable right now.",
     },

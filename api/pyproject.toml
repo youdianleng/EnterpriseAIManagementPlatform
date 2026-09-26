@@ -14,6 +14,7 @@ dependencies = [
     "alembic>=1.14",
     "pgvector>=0.3.6",
     "email-validator>=2.2",
+    "argon2-cffi>=23.1",
 ]
 
 [dependency-groups]

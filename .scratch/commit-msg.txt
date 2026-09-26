@@ -1,27 +1,35 @@
-feat(positions): job position catalogue
+feat(accounts): login identities with one-time passwords
 
-Ticket 08, first half. The role-assignment half needs a users table, which
-arrives with ticket 09, so it moves to 08b; the catalogue depends only on
-departments and assignments and is complete here.
+Ticket 09. An account is the login identity attached to an employee; the
+temporary password exists in exactly one response and nowhere else.
 
-- Position CRUD under a department, with a managerial flag that later derives
-  the manager role.
-- A code is unique within its department, not globally: codes describe a role
-  inside a team, so `manager` legitimately exists under several departments. A
-  partial unique index enforces it in the database as well.
-- A position is never hard-deleted while anything references it. Deactivation is
-  the supported way to retire a role: existing assignments keep resolving, new
-  ones are refused (the employee path already rejects an inactive position).
-- The catalogue list reports both counts in one query rather than an N+1 loop:
-  live assignments, which is what an operator looks for, and total references,
-  which is what blocks deletion.
+- Argon2id, not SHA-256. The originating answer for this ticket said the
+  temporary password should be "generated as a SHA-256 password". SHA-256 is a
+  fast general-purpose digest — cheap by design, which is the opposite of what a
+  password store needs. The design baseline specifies Argon2id, and a CHECK
+  constraint requires the `$argon2id$` prefix so a plaintext or foreign value
+  cannot be written even by a mistaken migration. The likely intent was about
+  generating the value: generation is `secrets`-based random, storage is Argon2id.
+- Generated passwords exclude characters that are misread when spoken or copied
+  by hand (0/O, 1/l/I, 5/S, 8/B, 2/Z) and are grouped in fours.
+- One account per employee, enforced by a UNIQUE constraint rather than only a
+  service check, so two concurrent administrators cannot both win.
+- Disabling and resetting advance `session_epoch` and record it in Redis.
+  Sessions will carry the epoch they were issued under, which makes revocation a
+  comparison instead of a key scan; ticket 10 issues them.
+- Account changes and their audit records share one transaction, so the trail
+  cannot disagree with the data. The audit writer redacts password-shaped fields
+  as a second line of defence.
+- The password policy lives in `core.security` and is published at
+  `/accounts/password-policy`, so the UI states the rule instead of restating it.
 
-Also fixed: deletion was decided on active assignments alone, but
-`employee_assignments.job_position_id` is RESTRICT. A position referenced only
-by history passed the check and then failed inside the database, turning a clear
-409 into a 500. It now counts every reference.
+Four defects fixed while verifying: bulk UPDATEs left loaded objects stale in the
+identity map, so a just-disabled account read as active; `session_epoch` was
+bumped after the account was read, so responses carried the old epoch; the
+password-change schema duplicated the length rule and produced a generic
+validation error instead of the catalogued policy error; and account responses
+had two different shapes.
 
-Probes: probe_positions covers 20 checks over real HTTP, and every probe now
-asserts it left no rows behind — an earlier version of probe_employees leaked
-department rows because it deleted employees before the departments that
-reference them.
+Audit scope: append-only is not yet enforced at the database level — the app
+still connects as the table owner. Ticket 13 adds the restricted role, and that
+is recorded in app/audit.py so the gap is not mistaken for a finished design.

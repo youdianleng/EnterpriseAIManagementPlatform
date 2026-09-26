@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
+from app.api.v1 import accounts as accounts_v1
 from app.api.v1 import departments as departments_v1
 from app.api.v1 import employees as employees_v1
 from app.api.v1 import positions as positions_v1
@@ -77,6 +78,7 @@ def create_app() -> FastAPI:
     app.include_router(departments_v1.router, prefix=API_PREFIX)
     app.include_router(employees_v1.router, prefix=API_PREFIX)
     app.include_router(positions_v1.router, prefix=API_PREFIX)
+    app.include_router(accounts_v1.router, prefix=API_PREFIX)
     if settings.is_development:
         app.include_router(debug.router, prefix=API_PREFIX)
 

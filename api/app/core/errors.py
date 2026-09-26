@@ -53,6 +53,14 @@ class ErrorCode(StrEnum):
     POSITION_DEPARTMENT_INVALID = "ERR_POS_003"
     POSITION_IN_USE = "ERR_POS_004"
 
+    # Accounts.
+    ACCOUNT_NOT_FOUND = "ERR_ACC_001"
+    ACCOUNT_USERNAME_TAKEN = "ERR_ACC_002"
+    ACCOUNT_EMPLOYEE_HAS_ACCOUNT = "ERR_ACC_003"
+    ACCOUNT_EMPLOYEE_NOT_ACTIVE = "ERR_ACC_004"
+    ACCOUNT_ALREADY_IN_STATE = "ERR_ACC_005"
+    ACCOUNT_PASSWORD_POLICY = "ERR_ACC_006"
+
     # Cross-cutting.
     INTERNAL_ERROR = "ERR_INTERNAL_001"
     SERVICE_UNAVAILABLE = "ERR_INTERNAL_002"
@@ -118,6 +126,16 @@ ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
         422, "errors.position_department_invalid"
     ),
     ErrorCode.POSITION_IN_USE: ErrorDefinition(409, "errors.position_in_use"),
+    ErrorCode.ACCOUNT_NOT_FOUND: ErrorDefinition(404, "errors.account_not_found"),
+    ErrorCode.ACCOUNT_USERNAME_TAKEN: ErrorDefinition(409, "errors.account_username_taken"),
+    ErrorCode.ACCOUNT_EMPLOYEE_HAS_ACCOUNT: ErrorDefinition(
+        409, "errors.account_employee_has_account"
+    ),
+    ErrorCode.ACCOUNT_EMPLOYEE_NOT_ACTIVE: ErrorDefinition(
+        422, "errors.account_employee_not_active"
+    ),
+    ErrorCode.ACCOUNT_ALREADY_IN_STATE: ErrorDefinition(409, "errors.account_already_in_state"),
+    ErrorCode.ACCOUNT_PASSWORD_POLICY: ErrorDefinition(422, "errors.account_password_policy"),
     ErrorCode.INTERNAL_ERROR: ErrorDefinition(500, "errors.internal_error", expose_detail=False),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorDefinition(
         503, "errors.service_unavailable", expose_detail=False
