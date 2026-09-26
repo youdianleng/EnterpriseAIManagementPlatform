@@ -1,33 +1,31 @@
-feat(web): design system, style guide and locale-aware formatting
+feat(db): migrations, pgvector schema and real Redis wiring
 
-Ticket 03. Establishes the component library every later screen composes from,
-plus the automated visual regression that keeps it honest.
+Ticket 04. Establishes the migration channel every later table goes through,
+and pins the two schema decisions that are expensive to reverse.
 
-- Components under web/lib/ui: Button, TextField, SelectField, Card, DataTable,
-  Alert, Dialog. Every field wires its own label/aria-describedby/aria-invalid,
-  because a caller that forgets htmlFor produces a field screen readers
-  announce as blank. Dialog wraps the native <dialog> element so focus
-  trapping and Escape-to-close come from the browser.
-- Design tokens applied from docs/architecture/frontend-design-system.md: 4px
-  spacing scale, 14px body, tabular numerals, semantic colour pairs, and
-  reduced-motion support. Buttons are sized by padding, never fixed width, so
-  longer Spanish labels cannot clip.
-- Style guide page in both languages: colours (foreground paired with its own
-  background, since the pair is what must be readable), typography, spacing,
-  buttons, alerts, forms, table, dialog. Adding a component means adding a
-  section here.
-- App shell: no heading of its own, so each page owns exactly one h1.
-- web/lib/format: locale-aware number, decimal, percent, date and duration
-  formatting. This exists because toLocaleString() without a locale follows the
-  browser, which made one page render "37,5" in a table and "1.5" in prose.
-  For hours and money an inconsistent decimal separator is a data-reading
-  hazard, so formatting now always takes the interface locale explicitly.
-- web/scripts/visual-check.mjs: Playwright checks across 320/768/1280 x es/en,
-  asserting one h1 per page, no skipped heading levels, no page-level
-  horizontal overflow, every control having an accessible name, decimal
-  separators being correct and internally consistent per language, and Spanish
-  text expansion staying within 25%. Writes screenshots for human review.
+- Alembic wired to application settings rather than alembic.ini, so a migration
+  run can never target a different database than the app. ALEMBIC_DATABASE_URL
+  overrides it, which is how tests migrate eam_test without touching config.
+- Migration 0001 creates the vector and ltree extensions and a throwaway
+  _vector_smoke table carrying the locked 1536-dimension column and its HNSW
+  cosine index. It creates no business tables on purpose: those arrive with the
+  tickets that build their behaviour.
+- app/core/constants.py holds EMBEDDING_DIMENSIONS. The migration keeps a
+  literal so it always describes what it applied, and a test asserts the two
+  agree — a pgvector column's dimension is schema, so drift would only surface
+  as a runtime insert failure.
+- app/db.py: lazy engine and session factory, get_session as the single place
+  the connect/rollback/close lifecycle lives. That is what later makes the RLS
+  context a one-line insertion rather than something every call site remembers.
+- app/cache.py and a lifespan that disposes the engine and closes Redis.
+- /ready now executes SELECT 1 against the pooled engine and pings Redis,
+  instead of reporting a configured DSN.
+- Tests run against a real PostgreSQL (eam_test, separate from development) with
+  an outer transaction rolled back per test, plus a real Redis flushed per test.
 
-Also fixed: the inherited .gitignore covered Python but not Node, so
-web/node_modules and build output were untracked-but-visible. The prod image
-now installs with --omit=dev so Playwright never ships.
+Measurement corrected a design decision: the doc claimed 3072 dimensions only
+cost index memory. In fact pgvector caps HNSW at 2000 dimensions for `vector`
+and 4000 for `halfvec`, so `vector(3072)` cannot be indexed at all. Measured on
+10k chunks, vector(1536) costs 95.5 MB / 0.9s index / 0.27ms query versus
+halfvec(3072) at 152.6 MB / 1.8s / 0.31ms. Chose vector(1536) and rewrote
+docs/DESIGN.md section 10.3; the probe stays in the repo to be re-run.

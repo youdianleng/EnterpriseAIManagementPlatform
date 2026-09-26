@@ -1,11 +1,16 @@
 """FastAPI application factory."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
+from app.cache import close_redis
 from app.config import get_settings
 from app.core.exception_handlers import register_exception_handlers
+from app.db import dispose_engine
 from app.logging import configure_logging, get_logger
 from app.middleware import (
     REQUEST_ID_HEADER,
@@ -17,22 +22,37 @@ from app.routers import app_info, debug, system
 API_PREFIX = "/api/v1"
 
 
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    settings = get_settings()
+    logger = get_logger(__name__)
+    logger.info("app_started", environment=settings.app_env, version=__version__)
+    try:
+        yield
+    finally:
+        # Release pooled connections so a restart never leaves the database
+        # holding sockets for a process that is gone.
+        await dispose_engine()
+        await close_redis()
+        logger.info("app_stopped")
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     configure_logging(settings)
-    logger = get_logger(__name__)
 
     app = FastAPI(
         title="Enterprise AI Management Platform API",
         version=__version__,
         docs_url="/docs" if settings.is_development else None,
         redoc_url=None,
+        lifespan=lifespan,
     )
     # Our envelope middleware replaces Starlette's default one; installing it
     # here clears the built-in before any other middleware is added.
     app.add_middleware(EnvelopeErrorMiddleware)
 
-    # Handlers first so every response, including framework-generated ones,
+    # Handlers next so every response, including framework-generated ones,
     # uses the same envelope.
     register_exception_handlers(app)
 
@@ -54,7 +74,6 @@ def create_app() -> FastAPI:
     if settings.is_development:
         app.include_router(debug.router, prefix=API_PREFIX)
 
-    logger.info("app_started", environment=settings.app_env, version=__version__)
     return app
 
 

@@ -10,11 +10,15 @@ dependencies = [
     "structlog>=24.4",
     "psycopg[binary]>=3.2",
     "redis>=5.2",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "alembic>=1.14",
+    "pgvector>=0.3.6",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.3",
+    "pytest-asyncio>=0.25",
     "httpx>=0.28",
     "ruff>=0.9",
 ]
@@ -26,6 +30,19 @@ target-version = "py313"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
+[tool.ruff.lint.isort]
+# `api/alembic/` is this project's migration directory, but `alembic` is also a
+# third-party package. Without this, the local directory wins and ruff demands
+# that `from alembic import ...` be grouped with first-party imports.
+known-first-party = ["app"]
+known-third-party = ["alembic"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+asyncio_mode = "auto"
+# Fixtures and tests must share one event loop per test. With a session-scoped
+# fixture loop, a connection pool built in that loop is then used from a
+# function-scoped test loop, which fails with "attached to a different loop".
+asyncio_default_fixture_loop_scope = "function"
+asyncio_default_test_loop_scope = "function"

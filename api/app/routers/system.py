@@ -8,13 +8,15 @@ dependencies, reporting each one individually.
 
 import asyncio
 from typing import Literal
-from urllib.parse import urlparse
 
 from fastapi import APIRouter, Response
 from pydantic import BaseModel
+from sqlalchemy import text
 
 from app import __version__
+from app.cache import get_redis
 from app.config import get_settings
+from app.db import get_engine
 
 router = APIRouter(tags=["system"])
 
@@ -57,53 +59,45 @@ async def ready(response: Response) -> ReadyResponse:
 
 
 async def _check_postgres() -> DependencyCheck:
-    """Open a throwaway connection; a configured DSN is not a healthy database."""
-    import psycopg
-
-    dsn = _to_libpq_dsn(get_settings().database_url)
+    """Run a statement; a configured DSN is not a healthy database."""
     try:
-        async with await asyncio.wait_for(
-            psycopg.AsyncConnection.connect(dsn), timeout=PROBE_TIMEOUT_SECONDS
-        ) as connection:
-            async with connection.cursor() as cursor:
-                await cursor.execute("SELECT 1")
-                await cursor.fetchone()
+        async with get_engine().connect() as connection:
+            await asyncio.wait_for(
+                connection.execute(text("SELECT 1")), timeout=PROBE_TIMEOUT_SECONDS
+            )
     except Exception as exc:
         return DependencyCheck(name="postgres", status="error", detail=_short(exc))
 
-    parsed = urlparse(get_settings().database_url)
     return DependencyCheck(
         name="postgres",
         status="ok",
-        detail=f"connected {parsed.hostname}:{parsed.port or 5432}{parsed.path}",
+        detail=f"connected {_target(get_settings().database_url)}",
     )
 
 
 async def _check_redis() -> DependencyCheck:
-    import redis.asyncio as redis
-
-    client = redis.from_url(get_settings().redis_url, socket_connect_timeout=PROBE_TIMEOUT_SECONDS)
     try:
-        await asyncio.wait_for(client.ping(), timeout=PROBE_TIMEOUT_SECONDS)
+        await asyncio.wait_for(get_redis().ping(), timeout=PROBE_TIMEOUT_SECONDS)
     except Exception as exc:
         return DependencyCheck(name="redis", status="error", detail=_short(exc))
-    finally:
-        await client.aclose()
 
-    parsed = urlparse(get_settings().redis_url)
     return DependencyCheck(
         name="redis",
         status="ok",
-        detail=f"connected {parsed.hostname}:{parsed.port or 6379}",
+        detail=f"connected {_target(get_settings().redis_url)}",
     )
 
 
-def _to_libpq_dsn(sqlalchemy_url: str) -> str:
-    """Strip the SQLAlchemy driver suffix so libpq accepts the DSN."""
-    return sqlalchemy_url.replace("postgresql+psycopg://", "postgresql://", 1)
+def _target(url: str) -> str:
+    """host:port/database, with credentials left out of the response."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    default_port = 6379 if parsed.scheme.startswith("redis") else 5432
+    return f"{parsed.hostname}:{parsed.port or default_port}{parsed.path}"
 
 
 def _short(exc: Exception) -> str:
     """First line only: readiness details must stay one line in JSON."""
-    text = str(exc).strip().splitlines()
-    return text[0][:200] if text else type(exc).__name__
+    text_lines = str(exc).strip().splitlines()
+    return text_lines[0][:200] if text_lines else type(exc).__name__

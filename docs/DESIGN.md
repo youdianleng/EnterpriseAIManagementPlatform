@@ -589,9 +589,26 @@ FORBIDDEN = {"content", "messages", "prompt", "completion", "query",
 
 用 `langgraph-checkpoint-postgres` 存在**同一个 Postgres** 的独立 schema（`langgraph`）中，**不引入 Redis checkpointer**。理由：Redis 用于缓存与会话（可丢），而 Agent 的 interrupt 状态**不可丢**（丢了员工确认到一半的草稿就没了）。
 
-### 10.3 嵌入维度与向量索引 → **已确认：1536 维**
+### 10.3 嵌入维度与向量索引 → **已确认：1536 维（实测后修正）**
 
-`text-embedding-3-large` 通过 `dimensions=1536` 参数降维输出，HNSW 索引，`vector_cosine_ops`。理由：3072 维在 1 万文档规模下收益很小但索引内存翻倍。**该维度写入 Alembic 迁移后不可更改**，换模型必须走全量重嵌任务（见风险登记）。
+**原文的前提是错的**，实施时实测纠正如下。
+
+原推荐理由是"3072 维在 1 万文档规模下收益很小但索引内存翻倍，需用 halfvec 才划算"。实测发现这不是"划不划算"的问题：
+
+| 方案 | 表大小 | 建索引 | 查询 p50 |
+|---|---|---|---|
+| `vector(1536)` + HNSW | 95.5 MB | 0.9 s | 0.27 ms |
+| `halfvec(1536)` + HNSW | 77.7 MB | 1.1 s | 0.27 ms |
+| `halfvec(3072)` + HNSW | 152.6 MB | 1.8 s | 0.31 ms |
+| `vector(3072)` + HNSW | **无法建索引** | — | — |
+
+**真正的硬约束**：pgvector 的 HNSW 索引对 `vector` 类型上限 2000 维、对 `halfvec` 上限 4000 维。因此 `vector(3072)` **根本建不了 HNSW 索引**——这不是性能取舍，是功能不可用。
+
+**最终决定**：`vector(1536)` + HNSW + `vector_cosine_ops`，通过 `text-embedding-3-large` 的 `dimensions=1536` 参数降维输出。选择理由从"省内存"变为"用普通 `vector` 类型即可存储 API 原样返回的值，无需每次写入做半精度转换"。
+
+**实现位置**：维度常量定义在 `api/app/core/constants.py`（`EMBEDDING_DIMENSIONS`），迁移中以字面量写入 DDL（迁移必须描述它当时实际应用的 schema），并由 `api/tests/test_database.py` 中的测试断言两者一致——因为 pgvector 的列维度是 schema 的一部分，常量与数据库不一致只会在运行时插入失败时才暴露。
+
+**实测脚本保留在仓库中**：`api/tests/tools/probe_vector_dimensions.py`，可随时重跑复核。
 
 ### 10.4 界面默认语言 → **已确认：跟随浏览器**
 

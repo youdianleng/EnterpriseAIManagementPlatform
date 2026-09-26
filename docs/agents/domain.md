@@ -14,7 +14,17 @@
 ## Consumer rules
 
 1. **Read `docs/DESIGN.md` before implementing anything.** It records 48 settled decisions; re-litigating them in code wastes a context window. Then read the matching section of `docs/architecture/codebase-design.md` for structure and `docs/architecture/frontend-design-system.md` for UI work.
-2. **Use the project's vocabulary exactly.** Non-negotiable terms:
+2. **Commands run inside the containers**, not on the host:
+
+   ```bash
+   docker compose exec -T api python -m pytest        # integration tests (real Postgres + Redis)
+   docker compose exec -T api sh -c "uvx ruff check app tests"
+   docker compose exec -T web npx tsc --noEmit
+   cd web && node scripts/visual-check.mjs            # Playwright; runs on the host
+   ```
+
+   The `tools/probe_*.py` scripts under `api/tests/tools/` are acceptance probes: each prints `[ok]`/`[FAIL]` per check and exits non-zero on failure. Run the relevant one when closing a ticket.
+3. **Use the project's vocabulary exactly.** Non-negotiable terms:
    - `business_date` — the Madrid-local calendar day an attendance event belongs to. Never derive it from a UTC timestamp at read time.
    - `clearance_level` — `low` / `medium` / `high`. Document classification, and a user attribute.
    - `PrefillForm` — the Agent's only output for state-changing intent. Never a DB write.
