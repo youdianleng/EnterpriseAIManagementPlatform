@@ -24,6 +24,7 @@ from app.core.security import (
     generate_temporary_password,
     hash_password,
 )
+from app.domain.access.principal import SYSTEM_ROLES
 from app.domain.account.errors import AccountErrorCode
 from app.domain.account.models import (
     AccountWithSecret,
@@ -134,6 +135,86 @@ class AccountService:
         )
         await self._repository.commit()
         return AccountWithSecret(account=account, temporary_password=temporary_password)
+
+    async def set_roles(
+        self,
+        user_id: UUID,
+        *,
+        roles: frozenset[str],
+        actor_user_id: UUID | None = None,
+        actor_roles: frozenset[str] = frozenset(),
+    ) -> UserAccount:
+        """Replace the roles an account holds.
+
+        Two rules, both of which exist because their absence is discovered at the
+        worst possible moment:
+
+        * **The set is fixed.** An unknown role is refused here rather than stored
+          and ignored later; the database would also refuse it, but a 422 that
+          names the role is a better answer than an integrity error.
+        * **The last administrator keeps the role.** Removing `admin` from the only
+          active administrator leaves a system nobody can administer, and the
+          person doing it is the one least able to notice.
+
+        Revocation is immediate: the permission snapshot is keyed by the roles the
+        account holds, so the next request builds a new one, and it is dropped from
+        the cache as well for anything that reads it by a different path.
+        """
+        account = await self.get(user_id)
+
+        unknown = roles - SYSTEM_ROLES
+        if unknown:
+            raise DomainError(
+                AccountErrorCode.ACCOUNT_ROLE_UNKNOWN,
+                detail=f"unknown role(s): {', '.join(sorted(unknown))}",
+            )
+        if not roles:
+            # An account with no roles can do nothing at all, not even read its own
+            # session. That is a lockout, not a permission decision.
+            raise DomainError(
+                AccountErrorCode.ACCOUNT_ROLE_UNKNOWN,
+                detail="an account must keep at least one role",
+            )
+
+        before = frozenset(account.roles)
+        if before == roles:
+            raise DomainError(
+                AccountErrorCode.ACCOUNT_ALREADY_IN_STATE,
+                detail="the account already holds exactly these roles",
+            )
+
+        if "admin" in before and "admin" not in roles:
+            if await self._repository.count_active_with_role("admin") <= 1:
+                raise DomainError(
+                    AccountErrorCode.ACCOUNT_LAST_ADMINISTRATOR,
+                    detail="this is the last active administrator",
+                )
+
+        updated = await self._repository.set_roles(user_id, roles=roles)
+        await self._invalidate_snapshot(user_id)
+        await record(
+            self._session,
+            action=AuditAction.ROLES_CHANGED,
+            entity_type="user",
+            entity_id=user_id,
+            actor_user_id=actor_user_id,
+            actor_roles=actor_roles,
+            before={"roles": sorted(before)},
+            after={"roles": sorted(roles)},
+        )
+        await self._repository.commit()
+        return updated
+
+    async def _invalidate_snapshot(self, user_id: UUID) -> None:
+        """Belt and braces: the cache key already changes with the roles.
+
+        The key carries the role set, so a stale entry can never be read again.
+        Dropping it anyway costs one Redis call on a rare operation and means the
+        guarantee does not depend on somebody remembering how the key is built.
+        """
+        from app.domain.access.snapshot import invalidate_user
+
+        await invalidate_user(user_id)
 
     async def set_active(
         self,

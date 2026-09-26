@@ -51,6 +51,12 @@ class AccountStateChange(StrictModel):
     reason: str | None = Field(default=None, max_length=500)
 
 
+class RoleAssignment(StrictModel):
+    """The complete set of roles the account should hold afterwards."""
+
+    roles: list[str] = Field(default_factory=list)
+
+
 class PasswordPolicyViolation(BaseModel):
     """Returned inside the error envelope so a client can render a fix."""
 

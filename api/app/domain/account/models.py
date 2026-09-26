@@ -18,6 +18,10 @@ class UserAccount:
     session_epoch: int
     last_login_at: datetime | None
     created_at: datetime
+    #: The roles the account holds. The *effective* roles — which add `manager`
+    #: when a held position is managerial — are the permission snapshot's, not
+    #: these; a caller that needs those asks the kernel's builder.
+    roles: frozenset[str] = frozenset({"employee"})
     #: Denormalised for display so a list does not need a second query per row.
     employee_full_name: str = ""
     employee_email: str = ""

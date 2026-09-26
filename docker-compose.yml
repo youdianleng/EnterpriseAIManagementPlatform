@@ -83,6 +83,10 @@ services:
       NODE_ENV: development
       # Browser-facing URL: the browser runs on the host, not inside the network.
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      # Server-facing URL, used by the Server Components that forward the
+      # session cookie. Inside this container "localhost" is the container, so
+      # the compose service name is the only address that resolves.
+      API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:8000}
       WATCHPACK_POLLING: "true"
     ports:
       - "${WEB_PORT:-3000}:3000"

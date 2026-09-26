@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app import __version__
 from app.api.v1 import accounts as accounts_v1
@@ -13,6 +14,7 @@ from app.api.v1 import auth as auth_v1
 from app.api.v1 import departments as departments_v1
 from app.api.v1 import employees as employees_v1
 from app.api.v1 import positions as positions_v1
+from app.api.v1 import roles as roles_v1
 from app.cache import close_redis
 from app.config import get_settings
 from app.core.exception_handlers import register_exception_handlers
@@ -34,6 +36,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     logger = get_logger(__name__)
     logger.info("app_started", environment=settings.app_env, version=__version__)
+    await _publish_role_catalogue(logger)
     try:
         yield
     finally:
@@ -42,6 +45,29 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await dispose_engine()
         await close_redis()
         logger.info("app_stopped")
+
+
+async def _publish_role_catalogue(logger) -> None:  # noqa: ANN001 - structlog logger
+    """Rewrite the published role tables from the catalogue in code.
+
+    On the owner connection, because the application's own role can only read
+    them (migration 0008). A failure here is logged and not fatal: the tables are
+    documentation, and refusing to start because a description could not be
+    refreshed would turn a cosmetic problem into an outage. The test that asserts
+    they agree is what makes drift visible.
+    """
+    from app.db import build_engine
+    from app.domain.access.catalogue import sync_role_catalogue
+
+    engine = build_engine(get_settings(), get_settings().database_url)
+    try:
+        factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+        async with factory() as session:
+            await sync_role_catalogue(session)
+    except Exception as exc:  # noqa: BLE001 - reported, never fatal
+        logger.warning("role_catalogue_not_published", error=str(exc))
+    finally:
+        await engine.dispose()
 
 
 def create_app() -> FastAPI:
@@ -89,6 +115,7 @@ def create_app() -> FastAPI:
     app.include_router(accounts_v1.router, prefix=API_PREFIX)
     app.include_router(auth_v1.router, prefix=API_PREFIX)
     app.include_router(audit_v1.router, prefix=API_PREFIX)
+    app.include_router(roles_v1.router, prefix=API_PREFIX)
     if settings.is_development:
         app.include_router(debug.router, prefix=API_PREFIX)
 

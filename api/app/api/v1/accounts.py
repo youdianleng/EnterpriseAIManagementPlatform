@@ -26,6 +26,7 @@ from app.api.v1.schemas.account import (
     AccountRead,
     AccountStateChange,
     PasswordPolicyRead,
+    RoleAssignment,
 )
 from app.cache import RedisSessionRevoker
 from app.core.security import MINIMUM_PASSWORD_LENGTH, REQUIRED_CHARACTER_CLASSES
@@ -39,6 +40,9 @@ router = APIRouter(prefix="/accounts", tags=["accounts"])
 # Only an administrator manages accounts; both guards read the session's
 # permission snapshot through the kernel.
 manage_accounts = require(Action.ACCOUNT_MANAGE, ResourceKind.ACCOUNT)
+#: A different authority from managing an account: creating a login and deciding
+#: what that login may do are not the same act, and the requirement says so.
+manage_roles = require(Action.ROLE_MANAGE, ResourceKind.ACCOUNT)
 read_accounts = require(Action.ACCOUNT_LIST, ResourceKind.ACCOUNT)
 
 
@@ -190,3 +194,30 @@ async def reset_password(
         actor_roles=principal.roles,
     )
     return _read(result.account, temporary_password=result.temporary_password)
+
+
+@router.put(
+    "/{account_id}/roles",
+    response_model=AccountRead,
+    summary="Replace the roles an account holds",
+    dependencies=[Depends(manage_roles)],
+)
+async def set_roles(
+    account_id: UUID,
+    payload: RoleAssignment,
+    principal: Principal = Depends(current_principal),
+    session: AsyncSession = Depends(db_session),
+) -> AccountRead:
+    """Administrator only, and immediate.
+
+    A replacement rather than grant/revoke pairs: the caller states the outcome it
+    wants, the audit record carries both sides, and two administrators doing the
+    same thing twice end up in the same place.
+    """
+    account = await _service(session).set_roles(
+        account_id,
+        roles=frozenset(payload.roles),
+        actor_user_id=principal.user_id,
+        actor_roles=principal.roles,
+    )
+    return _read(account)

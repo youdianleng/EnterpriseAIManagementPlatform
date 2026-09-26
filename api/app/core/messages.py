@@ -59,6 +59,10 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.account_invalid_credentials": "Usuario o contraseña incorrectos.",
         "errors.account_disabled": "Esta cuenta está desactivada. Contacta con soporte.",
         "errors.account_password_reused": "La nueva contraseña debe ser distinta de la actual.",
+        "errors.account_role_unknown": "El rol indicado no existe en el sistema.",
+        "errors.account_last_administrator": (
+            "No se puede retirar el rol al último administrador activo."
+        ),
         "errors.session_invalid": "Tu sesión ha caducado. Vuelve a iniciar sesión.",
         "errors.internal_error": "Se produjo un error interno. Inténtalo de nuevo más tarde.",
         "errors.service_unavailable": "El servicio no está disponible en este momento.",
@@ -66,7 +70,7 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
     "en": {
         "errors.validation_failed": "The submitted data is not valid.",
         "errors.invalid_request": "The request could not be processed.",
-    "errors.method_not_allowed": "This resource does not accept that method.",
+        "errors.method_not_allowed": "This resource does not accept that method.",
         "errors.unauthenticated": "You need to sign in.",
         "errors.forbidden": "You do not have permission for this action.",
         "errors.account_locked": "The account is temporarily locked.",
@@ -111,6 +115,10 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.account_invalid_credentials": "Incorrect username or password.",
         "errors.account_disabled": "This account is disabled. Please contact support.",
         "errors.account_password_reused": "The new password must differ from the current one.",
+        "errors.account_role_unknown": "That role does not exist in this system.",
+        "errors.account_last_administrator": (
+            "The last active administrator cannot lose the role."
+        ),
         "errors.session_invalid": "Your session has expired. Please sign in again.",
         "errors.internal_error": "An internal error occurred. Please try again later.",
         "errors.service_unavailable": "The service is unavailable right now.",

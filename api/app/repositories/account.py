@@ -36,6 +36,7 @@ def _to_domain(row: UserRow, employee: EmployeeRow | None = None) -> UserAccount
         employee_full_name=full_name,
         employee_email=email,
         clearance_level=row.clearance_level,
+        roles=frozenset(row.roles or ["employee"]),
     )
 
 
@@ -126,6 +127,34 @@ class PostgresAccountRepository:
             {"employee_id": employee_id},
         )
         return value
+
+    async def set_roles(self, user_id: UUID, *, roles: frozenset[str]) -> UserAccount:
+        """Write the role set. The database validates the values as well."""
+        await self._session.execute(
+            update(UserRow)
+            .where(UserRow.id == user_id)
+            .values(roles=sorted(roles))
+            .execution_options(synchronize_session="fetch")
+        )
+        await self._session.flush()
+        account = await self.get(user_id)
+        assert account is not None
+        return account
+
+    async def count_active_with_role(self, role: str) -> int:
+        """How many enabled accounts hold this role.
+
+        Counted in SQL rather than by loading accounts, because the caller is
+        deciding whether removing the role would leave nobody able to administer
+        the system, and that decision must not depend on what a page happened to
+        contain.
+        """
+        value = await self._session.scalar(
+            select(func.count())
+            .select_from(UserRow)
+            .where(UserRow.is_active.is_(True), UserRow.roles.contains([role]))
+        )
+        return int(value or 0)
 
     async def set_active(self, user_id: UUID, *, is_active: bool) -> UserAccount:
         # synchronize_session="fetch": a bulk UPDATE does not refresh objects

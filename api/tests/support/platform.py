@@ -29,6 +29,9 @@ from app.main import app
 CLEANUP_ORDER = (
     "DELETE FROM audit_log",
     "DELETE FROM users",
+    # After users, before the rest: published catalogue rows reference each other.
+    "DELETE FROM role_permissions",
+    "DELETE FROM roles",
     "DELETE FROM employee_assignments",
     "DELETE FROM employee_private",
     "DELETE FROM employees",

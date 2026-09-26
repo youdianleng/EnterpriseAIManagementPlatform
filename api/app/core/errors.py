@@ -66,6 +66,11 @@ class ErrorCode(StrEnum):
     ACCOUNT_INVALID_CREDENTIALS = "ERR_ACC_007"
     ACCOUNT_DISABLED = "ERR_ACC_008"
     ACCOUNT_PASSWORD_REUSED = "ERR_ACC_009"
+    #: A role outside the fixed set. A data error, not an extension point.
+    ACCOUNT_ROLE_UNKNOWN = "ERR_ACC_010"
+    #: Refusing to remove the last administrator: the alternative is a system
+    #: nobody can administer.
+    ACCOUNT_LAST_ADMINISTRATOR = "ERR_ACC_011"
 
     # Sessions.
     SESSION_INVALID = "ERR_SES_001"
@@ -151,6 +156,10 @@ ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
     ),
     ErrorCode.ACCOUNT_DISABLED: ErrorDefinition(403, "errors.account_disabled"),
     ErrorCode.ACCOUNT_PASSWORD_REUSED: ErrorDefinition(422, "errors.account_password_reused"),
+    ErrorCode.ACCOUNT_ROLE_UNKNOWN: ErrorDefinition(422, "errors.account_role_unknown"),
+    ErrorCode.ACCOUNT_LAST_ADMINISTRATOR: ErrorDefinition(
+        409, "errors.account_last_administrator"
+    ),
     # 401 rather than 403: the session is not merely unauthorised for this
     # resource, it is no longer a session at all, and the client should sign in.
     ErrorCode.SESSION_INVALID: ErrorDefinition(401, "errors.session_invalid"),

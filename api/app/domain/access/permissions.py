@@ -38,6 +38,11 @@ class Action(StrEnum):
     # Session administration.
     SESSION_READ_OWN = "session.read_own"
 
+    # Roles. Reading the catalogue is open to everyone signed in; changing who
+    # holds what is administration, and nothing else.
+    ROLE_READ = "role.read"
+    ROLE_MANAGE = "role.manage"
+
     # Compliance. Reading the audit trail is its own permission rather than a
     # property of being senior: an administrator configures the system, and the
     # reader who checks what they did must not be the same person.
@@ -128,6 +133,18 @@ RULES: dict[Action, ActionRule] = {
     Action.SESSION_READ_OWN: ActionRule(
         roles=frozenset({"admin", "hr", "finance", "it", "compliance", "employee"}),
         description="Anyone may inspect their own session.",
+    ),
+    Action.ROLE_READ: ActionRule(
+        roles=frozenset({"admin", "hr", "finance", "it", "compliance", "manager", "employee"}),
+        description="What each role may do is published, not secret.",
+    ),
+    Action.ROLE_MANAGE: ActionRule(
+        roles=frozenset({"admin"}),
+        description=(
+            "Granting and revoking roles is administration. It is deliberately a "
+            "different action from managing an account: creating a login and "
+            "deciding what that login may do are not the same authority."
+        ),
     ),
     Action.AUDIT_READ: ActionRule(
         roles=frozenset({"compliance"}),
