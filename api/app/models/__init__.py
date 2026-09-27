@@ -7,6 +7,14 @@ from app.models.employee import Employee, EmployeeAssignment, EmployeePrivate, J
 from app.models.notification import Notification, NotificationDelivery
 from app.models.org import Department
 from app.models.personnel import PersonnelChange
+from app.models.project import Project, ProjectTask
+from app.models.schedule import (
+    EmployeeScheduleOverride,
+    ExpectedHoursSnapshot,
+    Holiday,
+    WorkSchedule,
+    WorkScheduleDay,
+)
 
 __all__ = [
     "ApprovalDecision",
@@ -17,9 +25,16 @@ __all__ = [
     "Employee",
     "EmployeeAssignment",
     "EmployeePrivate",
+    "EmployeeScheduleOverride",
+    "ExpectedHoursSnapshot",
+    "Holiday",
     "JobPosition",
     "Notification",
     "NotificationDelivery",
     "PersonnelChange",
+    "Project",
+    "ProjectTask",
     "User",
+    "WorkSchedule",
+    "WorkScheduleDay",
 ]

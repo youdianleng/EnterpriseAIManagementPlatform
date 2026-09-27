@@ -150,6 +150,73 @@ class ErrorCode(StrEnum):
     #: approver's own approver — hides a configuration nobody repaired.
     PERSONNEL_APPROVER_TERMINATED = "ERR_PCH_008"
 
+    # Projects and their tasks (ticket 27). Two themes run through these codes: an
+    # *archived* project is a state the caller has to be told apart from "you may
+    # not", and a task's billable flag is never something the caller got wrong,
+    # because the caller never states it.
+    PROJECT_NOT_FOUND = "ERR_PRJ_001"
+    #: The code is the project's identity in a timesheet and on an invoice, so it
+    #: is unique for good rather than among live projects: reusing one would make
+    #: two projects share a name in a record that outlives both.
+    PROJECT_CODE_TAKEN = "ERR_PRJ_002"
+    PROJECT_DATES_INVALID = "ERR_PRJ_003"
+    PROJECT_DEPARTMENT_NOT_FOUND = "ERR_PRJ_004"
+    PROJECT_MANAGER_NOT_FOUND = "ERR_PRJ_005"
+    #: Archived: readable for ever, and closed to new time and to every change to
+    #: the project's own configuration. Its own code because the client shows a
+    #: different message from "you may not do that".
+    PROJECT_ARCHIVED = "ERR_PRJ_006"
+    #: Not active yet, so it may not receive time or new tasks. Distinct from
+    #: archived because it is a step on the way rather than an end state.
+    PROJECT_NOT_ACTIVE = "ERR_PRJ_007"
+    PROJECT_TASK_NOT_FOUND = "ERR_PRJ_008"
+    #: Unique within the project, not globally: `01` is a drawing number in one
+    #: project and means nothing in another.
+    PROJECT_TASK_CODE_TAKEN = "ERR_PRJ_009"
+    #: The task is switched off, or belongs to a project the caller may not record
+    #: time against. One code for the two, because a timesheet row against either
+    #: is the same mistake: time that no report can attribute.
+    PROJECT_TASK_NOT_RECORDABLE = "ERR_PRJ_010"
+    #: The caller is not the project's manager, and does not hold a role whose remit
+    #: is every project. The kernel's answer, relayed.
+    PROJECT_NOT_MANAGEABLE = "ERR_PRJ_011"
+    #: The task is switched off already. Its own code because "it is already off" is a
+    #: different answer from "I turned it off": a client about to tell somebody their
+    #: time can no longer be booked should not be told it just changed something.
+    PROJECT_TASK_ALREADY_INACTIVE = "ERR_PRJ_012"
+
+    # Work schedules, holidays and expected hours (ticket 22). Three themes: a
+    # *pattern* that does not state a pattern (`SCHEDULE_INVALID_DAY`), an
+    # administrative conflict with something that already exists (a second
+    # department schedule, an overlapping override), and a calendar file that
+    # cannot be trusted — the last one refused whole, because a half-imported
+    # holiday calendar is a payroll figure that is half wrong.
+    SCHEDULE_NOT_FOUND = "ERR_SCH_001"
+    SCHEDULE_CODE_TAKEN = "ERR_SCH_002"
+    #: A day whose window, break and expected minutes do not agree, a weekday given
+    #: twice, or a week that does not end after it starts.
+    SCHEDULE_INVALID_DAY = "ERR_SCH_003"
+    #: A department already has an active schedule, or the company already has a
+    #: default. Resolution has exactly one answer, and this is where a second one
+    #: is refused rather than resolved by whichever row a query returns first.
+    SCHEDULE_ALREADY_SET = "ERR_SCH_004"
+    #: A deactivated schedule cannot be given to somebody new. An override that
+    #: already points at one survives: withdrawing a part-time pattern must not
+    #: silently restore a full-time week.
+    SCHEDULE_INACTIVE = "ERR_SCH_005"
+    SCHEDULE_OVERRIDE_OVERLAPS = "ERR_SCH_006"
+    SCHEDULE_OVERRIDE_NOT_FOUND = "ERR_SCH_007"
+    #: A holiday with no region where one is required, a region where none belongs,
+    #: or a year that disagrees with its own date.
+    SCHEDULE_INVALID_HOLIDAY = "ERR_SCH_008"
+    SCHEDULE_HOLIDAY_NOT_FOUND = "ERR_SCH_009"
+    #: An import file that is not a holiday calendar. Refused row by row, with the
+    #: line numbers, and nothing written.
+    SCHEDULE_INVALID_HOLIDAY_FILE = "ERR_SCH_010"
+    #: That date, scope and region is already a holiday. An import updates it
+    #: instead; a person adding one by hand is told rather than silently overwriting.
+    SCHEDULE_HOLIDAY_EXISTS = "ERR_SCH_011"
+
     # Cross-cutting.
     INTERNAL_ERROR = "ERR_INTERNAL_001"
     SERVICE_UNAVAILABLE = "ERR_INTERNAL_002"
@@ -297,6 +364,48 @@ ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
     ErrorCode.PERSONNEL_APPROVER_TERMINATED: ErrorDefinition(
         409, "errors.personnel_approver_terminated"
     ),
+    ErrorCode.PROJECT_NOT_FOUND: ErrorDefinition(404, "errors.project_not_found"),
+    ErrorCode.PROJECT_CODE_TAKEN: ErrorDefinition(409, "errors.project_code_taken"),
+    ErrorCode.PROJECT_DATES_INVALID: ErrorDefinition(422, "errors.project_dates_invalid"),
+    ErrorCode.PROJECT_DEPARTMENT_NOT_FOUND: ErrorDefinition(
+        422, "errors.project_department_not_found"
+    ),
+    ErrorCode.PROJECT_MANAGER_NOT_FOUND: ErrorDefinition(422, "errors.project_manager_not_found"),
+    # 409, not 403: an archived project is a state, and the caller may well be its
+    # manager. Telling them apart is what lets the UI offer "restore" rather than
+    # "ask for access".
+    ErrorCode.PROJECT_ARCHIVED: ErrorDefinition(409, "errors.project_archived"),
+    ErrorCode.PROJECT_NOT_ACTIVE: ErrorDefinition(409, "errors.project_not_active"),
+    ErrorCode.PROJECT_TASK_NOT_FOUND: ErrorDefinition(404, "errors.project_task_not_found"),
+    ErrorCode.PROJECT_TASK_CODE_TAKEN: ErrorDefinition(409, "errors.project_task_code_taken"),
+    ErrorCode.PROJECT_TASK_NOT_RECORDABLE: ErrorDefinition(
+        422, "errors.project_task_not_recordable"
+    ),
+    ErrorCode.PROJECT_NOT_MANAGEABLE: ErrorDefinition(403, "errors.project_not_manageable"),
+    ErrorCode.PROJECT_TASK_ALREADY_INACTIVE: ErrorDefinition(
+        409, "errors.project_task_already_inactive"
+    ),
+    # 404 for the two lookups, 409 for the two conflicts with an existing decision,
+    # and 422 for the two the caller wrote wrong. `SCHEDULE_INACTIVE` is the odd one
+    # and deliberately a 422: nothing conflicts, the schedule simply is not in the
+    # catalogue any more, and the fix is to choose another one.
+    ErrorCode.SCHEDULE_NOT_FOUND: ErrorDefinition(404, "errors.schedule_not_found"),
+    ErrorCode.SCHEDULE_HOLIDAY_NOT_FOUND: ErrorDefinition(404, "errors.schedule_holiday_not_found"),
+    ErrorCode.SCHEDULE_OVERRIDE_NOT_FOUND: ErrorDefinition(
+        404, "errors.schedule_override_not_found"
+    ),
+    ErrorCode.SCHEDULE_CODE_TAKEN: ErrorDefinition(409, "errors.schedule_code_taken"),
+    ErrorCode.SCHEDULE_ALREADY_SET: ErrorDefinition(409, "errors.schedule_already_set"),
+    ErrorCode.SCHEDULE_OVERRIDE_OVERLAPS: ErrorDefinition(
+        409, "errors.schedule_override_overlaps"
+    ),
+    ErrorCode.SCHEDULE_INVALID_DAY: ErrorDefinition(422, "errors.schedule_invalid_day"),
+    ErrorCode.SCHEDULE_INACTIVE: ErrorDefinition(422, "errors.schedule_inactive"),
+    ErrorCode.SCHEDULE_INVALID_HOLIDAY: ErrorDefinition(422, "errors.schedule_invalid_holiday"),
+    ErrorCode.SCHEDULE_INVALID_HOLIDAY_FILE: ErrorDefinition(
+        422, "errors.schedule_invalid_holiday_file"
+    ),
+    ErrorCode.SCHEDULE_HOLIDAY_EXISTS: ErrorDefinition(409, "errors.schedule_holiday_exists"),
     # 403 with its own code so the client can route to the change-password screen
     # instead of showing a permission error.
     ErrorCode.PASSWORD_CHANGE_REQUIRED: ErrorDefinition(403, "errors.password_change_required"),

@@ -40,6 +40,7 @@ answer different questions.
 import itertools
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import date
 from uuid import UUID, uuid4
 
 import pytest
@@ -59,7 +60,7 @@ from app.domain.access.kernel import (
     ResourceKind,
     can,
 )
-from app.domain.access.permissions import SELF_ONLY_ACTIONS, Action
+from app.domain.access.permissions import PROJECT_ADMIN_ROLES, SELF_ONLY_ACTIONS, Action
 from app.domain.access.principal import SYSTEM_ROLES, Principal
 from tests.support.platform import Platform
 
@@ -184,6 +185,30 @@ DESIGN_GRANTS: dict[Action, frozenset[str]] = {
     # role may" and "nobody may do it for somebody else" are both true at once.
     Action.ATTENDANCE_CLOCK_OWN: EVERYONE,
     Action.ATTENDANCE_READ_OWN: EVERYONE,
+    # Projects (ticket 27). Reading the catalogue is what an employee needs in order
+    # to fill in a timesheet, and a catalogue only some roles may read is not a
+    # catalogue. What is *not* in this table is the second half of the rule: who may
+    # change which project is a fact about the row (its manager), and the named
+    # escalations in layer 4 assert it.
+    Action.PROJECT_READ: EVERYONE,
+    Action.PROJECT_TASK_READ: EVERYONE,
+    # Creating a project, and changing one. A project *manager* is a manager of
+    # their own project, so the role list keeps `manager` and the resource clause
+    # narrows it — the one shape in this catalogue where the role list alone is not
+    # the answer. §4.1's "administration and HR manage everything" is the privilege
+    # clause beside it.
+    Action.PROJECT_MANAGE: frozenset({"admin", "hr", "manager"}),
+    Action.PROJECT_TASK_MANAGE: frozenset({"admin", "hr", "manager"}),
+    # Schedules and holidays (ticket 22). Reading your own week is "their own data"
+    # a third time, and self-only through `SELF_ONLY_ACTIONS`; the holiday calendar
+    # is published like the organisation tree, because it is a fact about the
+    # country rather than personnel data. Maintaining either is HR and
+    # administration — the same pair that owns the department structure, and for the
+    # same reason: both are inputs to what the company owes somebody.
+    Action.SCHEDULE_READ_OWN: EVERYONE,
+    Action.SCHEDULE_MANAGE: frozenset({"admin", "hr"}),
+    Action.HOLIDAY_READ: EVERYONE,
+    Action.HOLIDAY_MANAGE: frozenset({"admin", "hr"}),
 }
 
 #: The resource each action acts on. A document is decided by §4.2 whatever the
@@ -220,7 +245,50 @@ KIND_FOR_ACTION: dict[Action, ResourceKind] = {
     # one the router names — carrying the *subject's* employee id as its owner.
     Action.ATTENDANCE_CLOCK_OWN: ResourceKind.EMPLOYEE,
     Action.ATTENDANCE_READ_OWN: ResourceKind.EMPLOYEE,
+    # Projects and their tasks. A task is decided as its project: it has no reach of
+    # its own, so the resource the router builds carries the project's department and
+    # the project's manager.
+    Action.PROJECT_READ: ResourceKind.PROJECT,
+    Action.PROJECT_MANAGE: ResourceKind.PROJECT,
+    Action.PROJECT_TASK_READ: ResourceKind.PROJECT,
+    Action.PROJECT_TASK_MANAGE: ResourceKind.PROJECT,
+    # Ticket 22 gives each of its two objects its own kind rather than sharing
+    # `department`: the kernel treats both through the ordinary department path
+    # (no branch of its own), and the kinds exist so the audit trail and the matrix
+    # say "schedule" and "holiday" instead of guessing at a third thing.
+    Action.SCHEDULE_READ_OWN: ResourceKind.EMPLOYEE,
+    Action.SCHEDULE_MANAGE: ResourceKind.SCHEDULE,
+    Action.HOLIDAY_READ: ResourceKind.HOLIDAY,
+    Action.HOLIDAY_MANAGE: ResourceKind.HOLIDAY,
 }
+
+#: Actions the catalogue decides by role alone, with no resource clause to apply.
+#:
+#: Every read here is one: the organisation's own directory, its structure, its
+#: published role catalogue, and — since ticket 27 — which projects are running and
+#: who runs them. What is withheld in this system is *content* (a document above your
+#: clearance, an employee's withheld fields, a salary), never the fact that a piece
+#: of structure exists.
+#:
+#: The list is written out rather than derived from the verb, because deriving it is
+#: how a read that *is* restricted would be swept in: `EMPLOYEE_READ` and
+#: `DOCUMENT_READ` are reads, and both have a resource rule the matrix asserts.
+RESOURCE_FREE_READS: frozenset[Action] = frozenset(
+    {
+        Action.DEPARTMENT_READ,
+        Action.POSITION_READ,
+        Action.EMPLOYEE_DIRECTORY,
+        Action.EMPLOYEE_LIST,
+        Action.EMPLOYEE_READ_OWN,
+        Action.ACCOUNT_LIST,
+        Action.SESSION_READ_OWN,
+        Action.ROLE_READ,
+        Action.AUDIT_READ,
+        Action.NOTIFICATION_READ_OWN,
+        Action.PROJECT_READ,
+        Action.PROJECT_TASK_READ,
+    }
+)
 
 ACTIONS = tuple(sorted(Action, key=str))
 
@@ -329,6 +397,17 @@ def design_says(role: str, action: Action, shape: tuple[str | None, str | None] 
     if action is Action.EMPLOYEE_READ_WITHHELD:
         return True
 
+    # A project, and the generated resource is one the caller does not manage: it
+    # names no manager, and the matrix's caller manages only what they manage — the
+    # same shape as the self-only refusal above, and true for the same reason. What
+    # the generated dimension *can* say is §4.1's second half: administration and HR
+    # name nobody on a project and manage it anyway. The manager's own case is not
+    # in this dimension and is asserted by name in layer 4.
+    if KIND_FOR_ACTION[action] is ResourceKind.PROJECT:
+        if action in RESOURCE_FREE_READS:
+            return True
+        return bool(held & PROJECT_ADMIN_ROLES)
+
     if KIND_FOR_ACTION[action] is ResourceKind.DOCUMENT:
         return design_says_document(held, clearance, department)
 
@@ -360,8 +439,12 @@ def test_the_generated_matrix_covers_every_dimension() -> None:
     assert len(cases) == len(SYSTEM_ROLES) * len(ACTIONS) * len(RESOURCE_SHAPES)
     # Literal on purpose: `len(ACTIONS)` would agree with itself however many
     # actions the catalogue grew, and the point is that adding one is a decision
-    # somebody makes here rather than something that happens.
-    assert len(cases) == 7 * 24 * 13
+    # somebody makes here rather than something that happens. Ticket 21 wrote 24;
+    # ticket 27 adds the four project actions; ticket 22 adds four more — reading
+    # your own week, maintaining schedules, reading the calendar, maintaining it —
+    # and the sum is asserted literally so that a fifth arrives as a failing test
+    # rather than as extra coverage.
+    assert len(cases) == 7 * 32 * 13
     assert 0 < permitted < len(cases), "the expectation answers the same way everywhere"
 
     discriminating = [
@@ -802,6 +885,79 @@ HTTP_MATRIX: tuple[tuple[str, str, Action | None], ...] = (
     ("POST", "/api/v1/attendance/clock", Action.ATTENDANCE_CLOCK_OWN),
     ("GET", "/api/v1/attendance/day", Action.ATTENDANCE_READ_OWN),
     ("GET", "/api/v1/attendance/range", Action.ATTENDANCE_READ_OWN),
+    # Projects (ticket 27). `manager` is in `project.manage`'s role list because a
+    # project manager manages *their* project, and the row above is somebody else's
+    # — which layer 4 asserts by name. Reading the catalogue is open to every role.
+    ("GET", "/api/v1/projects", Action.PROJECT_READ),
+    ("GET", "/api/v1/projects/selectable", Action.PROJECT_READ),
+    ("POST", "/api/v1/projects", Action.PROJECT_MANAGE),
+    ("GET", "/api/v1/projects/{project_id}", Action.PROJECT_READ),
+    ("PATCH", "/api/v1/projects/{project_id}", Action.PROJECT_MANAGE),
+    ("POST", "/api/v1/projects/{project_id}/tasks", Action.PROJECT_TASK_MANAGE),
+    ("PATCH", "/api/v1/projects/{project_id}/tasks/{task_id}", Action.PROJECT_TASK_MANAGE),
+    (
+        "POST",
+        "/api/v1/projects/{project_id}/tasks/{project_id}/deactivate",
+        Action.PROJECT_TASK_MANAGE,
+    ),
+    ("POST", "/api/v1/projects/{project_id}/record-time", Action.PROJECT_TASK_READ),
+    # Schedules and holidays (ticket 22). Reading your own week is self-service for
+    # every role and self-only (layer 4 asserts the refusal by name, as it does for
+    # attendance); the calendar is published; maintaining either is HR and
+    # administration. The patch and delete endpoints are absent deliberately: their
+    # paths name a row that does not exist in this fixture, so a 404 would be
+    # indistinguishable from the 200 the matrix expects — `test_schedules.py`
+    # asserts those three by role instead.
+    ("GET", "/api/v1/schedules", Action.SCHEDULE_MANAGE),
+    ("POST", "/api/v1/schedules", Action.SCHEDULE_MANAGE),
+    ("GET", "/api/v1/schedules/mine", Action.SCHEDULE_READ_OWN),
+    ("GET", "/api/v1/schedules/expected-hours", Action.SCHEDULE_READ_OWN),
+    (
+        "POST",
+        "/api/v1/schedules/expected-hours/snapshots",
+        Action.SCHEDULE_MANAGE,
+    ),
+    ("GET", "/api/v1/holidays", Action.HOLIDAY_READ),
+    ("POST", "/api/v1/holidays", Action.HOLIDAY_MANAGE),
+)
+
+
+def holiday_date(suffix: str) -> date:
+    """A holiday date derived from a fresh uuid, so two calls cannot collide.
+
+    The uniqueness rule is `(date, scope, region)`, so a fixed date would make the
+    second role that may add one receive a 409 — which the matrix would report as a
+    permission failure. Far-future years keep these rows away from the calendars the
+    other tests build.
+    """
+    return date(
+        2100 + int(suffix[0:2], 16) % 90,
+        1 + int(suffix[2:4], 16) % 12,
+        1 + int(suffix[4:6], 16) % 28,
+    )
+
+
+#: The routes whose body the matrix can make genuinely valid, so a permitted caller
+#: is expected to reach the *handler's* answer (200/201) rather than the 404 a row the
+#: matrix never created would produce.
+#:
+#: Everything else is checked for the refusal only. A body naming a row that does not
+#: exist cannot distinguish a wired endpoint from an unwired one — a 404 proves the
+#: guard let the caller through but says nothing about the handler — and
+#: `test_projects.py` asserts what those routes do with rows that exist.
+RESOURCE_FREE_ROUTES: frozenset[str] = frozenset(
+    {
+        "/api/v1/departments",
+        "/api/v1/positions",
+        "/api/v1/employees",
+        "/api/v1/employees/{subject}",
+        "/api/v1/accounts",
+        "/api/v1/attendance/clock",
+        "/api/v1/attendance/day",
+        "/api/v1/attendance/range",
+        "/api/v1/projects",
+        "/api/v1/projects/selectable",
+    }
 )
 
 
@@ -811,6 +967,11 @@ def http_payload(path: str, *, department: str, employee: str) -> dict:
     Deliberately valid — a real department, a real position, a real employee with
     no account yet — so a 403 can only mean the permission was refused. A payload
     that failed validation would make the two indistinguishable.
+
+    The bodies that name a *task* are the exception, and the exception is the point:
+    a task id cannot be invented, because it has to be a row in a project that
+    exists. Those routes are in `RESOURCE_FREE_ROUTES` below, so the matrix claims
+    nothing about their bodies — only that the guard lets a permitted caller past.
     """
     suffix = uuid4().hex[:8]
     return {
@@ -833,6 +994,55 @@ def http_payload(path: str, *, department: str, employee: str) -> dict:
         },
         "/api/v1/accounts": {"employee_id": employee, "username": f"mx{suffix}"},
         "/api/v1/attendance/clock": {"kind": "clock_in"},
+        # Ticket 27. `suffix` is fresh per call, so repeated runs of the matrix in
+        # one test cannot collide on the project code — which is unique for good.
+        "/api/v1/projects": {
+            "code": f"mx{suffix}",
+            "name_es": "Matriz",
+            "name_en": "Matrix",
+            "department_id": department,
+            "start_date": "2026-01-01",
+        },
+        "/api/v1/projects/{project_id}": {"name_es": "Matriz dos"},
+        "/api/v1/projects/{project_id}/tasks": {
+            "code": f"t{suffix}",
+            "name_es": "Tarea",
+            "name_en": "Task",
+        },
+        "/api/v1/projects/{project_id}/tasks/{task_id}": {"name_es": "Tarea dos"},
+        "/api/v1/projects/{project_id}/tasks/{project_id}/deactivate": {},
+        "/api/v1/projects/{project_id}/record-time": {"task_id": employee},
+        # Ticket 22. The schedule code is fresh per call for the same reason the
+        # project code is: it is unique for good. The schedule names no department
+        # and is not the default, so running the matrix once per role that may
+        # cannot collide with itself.
+        "/api/v1/schedules": {
+            "code": f"mx{suffix}",
+            "name_es": "Matriz",
+            "name_en": "Matrix",
+            "days": [
+                {
+                    "weekday": 0,
+                    "expected_minutes": 480,
+                    "start_time": "08:00",
+                    "end_time": "16:00",
+                }
+            ],
+        },
+        "/api/v1/schedules/expected-hours/snapshots": {
+            "year": 2026,
+            "month": 3,
+            "employee_id": employee,
+        },
+        # A holiday date nobody has used. A fixed one would collide on the second
+        # run — admin and then hr — and a 409 would read as a permission failure.
+        # The year is far enough out that nothing else in the suite touches it.
+        "/api/v1/holidays": {
+            "date": holiday_date(suffix).isoformat(),
+            "name_es": "Matriz",
+            "name_en": "Matrix",
+            "scope": "national",
+        },
     }[path]
 
 
@@ -854,19 +1064,14 @@ async def test_the_http_matrix_for(platform: Platform, role: str) -> None:
     failures: list[str] = []
 
     for method, template, action in HTTP_MATRIX:
-        path = template.format(subject=subject)
-        if action is None:
-            expected = 200
-        elif not may(role, action):
-            expected = 403
-        else:
-            expected = 201 if method == "POST" else 200
+        path = template.format(
+            subject=subject, project=subject, project_id=subject, task_id=subject
+        )
         payload = (
             http_payload(template, department=department, employee=accountless)
-            if method == "POST"
+            if method in {"POST", "PATCH", "PUT"}
             else None
         )
-
         response = (
             await actor.call(method, path, json=payload)
             if payload is not None
@@ -875,15 +1080,37 @@ async def test_the_http_matrix_for(platform: Platform, role: str) -> None:
         checked += 1
         label = f"role={role} {method} {path} (action={action or 'none'})"
 
-        if response.status_code != expected:
+        if action is not None and not may(role, action):
+            # The refusal, and its code: the client routes on the code, and an
+            # uncatalogued 403 is a client that cannot tell "you may not" from "that
+            # was malformed".
+            if response.status_code != 403:
+                failures.append(f"{label}: expected 403, got {response.status_code} — "
+                                f"{response.text[:300]}")
+            elif response.json().get("error", {}).get("code") != ErrorCode.FORBIDDEN.value:
+                failures.append(
+                    f"{label}: refused with {response.json()['error'].get('code')!r}, not "
+                    f"{ErrorCode.FORBIDDEN.value}"
+                )
+            continue
+
+        # Permitted: the guard let the call through, which is what this layer is
+        # about. A 403 or a 5xx would mean the endpoint is not wired to the kernel —
+        # and nothing else counts as a failure, because several routes name a row the
+        # matrix cannot create (the project id is a fresh uuid per row) and answer 404
+        # for a reason that has nothing to do with permission. `test_projects.py`
+        # asserts what those routes do with a row that exists.
+        expected = 200 if action is None else (201 if method == "POST" else 200)
+        if response.status_code == 403 or response.status_code >= 500:
+            failures.append(
+                f"{label}: expected the action to be permitted ({expected}), got "
+                f"{response.status_code} — {response.text[:300]}"
+            )
+        elif template in RESOURCE_FREE_ROUTES and response.status_code != expected:
             failures.append(
                 f"{label}: expected {expected}, got {response.status_code} — "
                 f"{response.text[:300]}"
             )
-        elif expected == 403:
-            code = response.json().get("error", {}).get("code")
-            if code != ErrorCode.FORBIDDEN.value:
-                failures.append(f"{label}: refused with {code!r}, not {ErrorCode.FORBIDDEN.value}")
 
     assert checked == len(HTTP_MATRIX)
     assert failures == [], "\n".join(failures)
@@ -893,7 +1120,9 @@ async def test_an_unauthenticated_request_reaches_no_endpoint(platform: Platform
     """No cookie at all: 401 with the session error code, never a list."""
     failures: list[str] = []
     for method, template, _action in HTTP_MATRIX:
-        path = template.format(subject=uuid4())
+        path = template.format(
+            subject=uuid4(), project=uuid4(), project_id=uuid4(), task_id=uuid4()
+        )
         response = await platform.client.request(method, path)
         if (response.status_code, response.json()["error"]["code"]) != (
             401,

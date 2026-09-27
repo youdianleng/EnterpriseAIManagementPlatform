@@ -24,37 +24,39 @@ from app.core.security import hash_password
 from app.db import build_engine
 from app.main import app
 
-#: Deleted in this order: every foreign key in the organisation schema is
-#: RESTRICT, so referencing rows go first.
-CLEANUP_ORDER = (
-    "DELETE FROM audit_log",
-    # Attendance references employees with ON DELETE RESTRICT, and a correction
-    # references the punch it corrects the same way, so corrections go first.
-    "DELETE FROM attendance_daily",
-    "DELETE FROM attendance_events WHERE correction_of_event_id IS NOT NULL",
-    "DELETE FROM attendance_events",
-    # A personnel change references its employee with ON DELETE RESTRICT, so it
-    # has to go before them. Its approval request is a plain column, not a foreign
-    # key, so the order against the engine's tables does not matter.
-    "DELETE FROM personnel_changes",
-    # Decisions first: they reference their request with ON DELETE RESTRICT, so
-    # the request cannot go until they have.
-    "DELETE FROM approval_decisions",
-    "DELETE FROM approval_steps",
-    "DELETE FROM approval_requests",
-    # Deliveries reference their notification, which references nothing else.
-    "DELETE FROM notification_deliveries",
-    "DELETE FROM notifications",
-    "DELETE FROM users",
-    # After users, before the rest: published catalogue rows reference each other.
-    "DELETE FROM role_permissions",
-    "DELETE FROM roles",
-    "DELETE FROM employee_assignments",
-    "DELETE FROM employee_private",
-    "DELETE FROM employees",
-    "DELETE FROM job_positions",
-    "UPDATE departments SET manager_employee_id = NULL",
-    "DELETE FROM departments",
+#: Every table the suite owns. `TRUNCATE ... CASCADE` takes these and anything that
+#: refers to them, so the list is "what the suite writes", not an order.
+#:
+#: It was an ordered list of DELETEs until ticket 27. That list had to be right
+#: about every foreign key — including the ones tickets still being written were
+#: adding — and when it was wrong the symptom appeared in an unrelated test on the
+#: next run, because PostgreSQL refused the wipe and the previous run's rows stayed.
+#: Two agents lost time to exactly that. A cascade cannot be wrong about an order.
+CLEANUP_TABLES = (
+    "audit_log",
+    "project_tasks",
+    "projects",
+    "attendance_daily",
+    "attendance_events",
+    "expected_hours_snapshots",
+    "employee_schedule_overrides",
+    "holidays",
+    "work_schedule_days",
+    "work_schedules",
+    "personnel_changes",
+    "approval_decisions",
+    "approval_steps",
+    "approval_requests",
+    "notification_deliveries",
+    "notifications",
+    "users",
+    "role_permissions",
+    "roles",
+    "employee_assignments",
+    "employee_private",
+    "employees",
+    "job_positions",
+    "departments",
 )
 
 
@@ -68,9 +70,27 @@ class Platform:
     accounts: dict = field(default_factory=dict)
 
     async def wipe(self) -> None:
+        """Empty every table the suite owns, in one statement.
+
+        `TRUNCATE ... CASCADE` rather than an ordered list of DELETEs, and the
+        difference is not only speed. A DELETE list is an ordering that has to be
+        right about every foreign key, including the ones added by a ticket
+        somebody is writing right now; the day it is wrong, or the day an
+        interrupted run leaves rows that a later partial wipe cannot clear, the
+        failure lands on the *next* test as a confusing fixture error — a suite
+        poisoned by state it did not create. CASCADE reads the foreign keys from
+        the catalog and truncates whatever refers to these tables, so there is no
+        order to get wrong and no stale row to trip over.
+
+        RESTART IDENTITY resets the sequences a test might otherwise inherit
+        (`audit_log.id` is the only bigserial today).
+        """
         async with self.factory() as session:
-            for statement in CLEANUP_ORDER:
-                await session.execute(text(statement))
+            await session.execute(
+                text(
+                    "TRUNCATE TABLE " + ", ".join(CLEANUP_TABLES) + " RESTART IDENTITY CASCADE"
+                )
+            )
             await session.commit()
 
     # --- data --------------------------------------------------------------

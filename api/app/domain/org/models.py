@@ -37,6 +37,11 @@ class Department:
     description_es: str | None
     description_en: str | None
     is_active: bool
+    #: ISO 3166-2, the region the department works in. Ticket 22 reads it to decide
+    #: which regional and local holidays apply to the people in it. Last, and
+    #: defaulted, because it is the one field a caller that has no opinion about
+    #: regions does not have to state.
+    region_code: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -79,6 +84,7 @@ class DepartmentInput:
     parent_id: UUID | None = None
     clearance_level: ClearanceLevel = ClearanceLevel.LOW
     cost_center: str | None = None
+    region_code: str | None = None
     description_es: str | None = None
     description_en: str | None = None
 
@@ -91,6 +97,7 @@ class DepartmentPatch:
     name_en: str | None = field(default=None)
     clearance_level: ClearanceLevel | None = field(default=None)
     cost_center: str | None = field(default=None)
+    region_code: str | None = field(default=None)
     description_es: str | None = field(default=None)
     description_en: str | None = field(default=None)
     is_active: bool | None = field(default=None)

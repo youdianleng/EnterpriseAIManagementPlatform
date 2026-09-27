@@ -59,12 +59,14 @@ from app.domain.attendance.models import (
     DayRecord,
     EventSource,
     EventType,
+    ExpectationSource,
     NewEvent,
     TimeSource,
     utc_now,
 )
 from app.domain.attendance.repository import AttendanceRepository
 from app.domain.errors import DomainError
+from app.domain.schedule.models import DayExpectation
 
 
 class AttendanceService:
@@ -80,9 +82,20 @@ class AttendanceService:
     midnight is not a test.
     """
 
-    def __init__(self, repository: AttendanceRepository, *, now: TimeSource = utc_now) -> None:
+    def __init__(
+        self,
+        repository: AttendanceRepository,
+        *,
+        now: TimeSource = utc_now,
+        expectations: ExpectationSource | None = None,
+    ) -> None:
         self._repository = repository
         self._now = now
+        # Optional, and that is deliberate: without it a day has no expectation,
+        # which is what ticket 21 shipped and what its tests still assert. The
+        # request path always supplies it; a caller that only wants the punch
+        # arithmetic does not have to.
+        self._expectations = expectations
 
     # --- clocking ----------------------------------------------------------
 
@@ -218,8 +231,14 @@ class AttendanceService:
 
         # One query for every day without a snapshot, however scattered: the gaps
         # in a month are usually the weekends, and a query per gap would turn a
-        # calendar view into thirty round trips.
+        # calendar view into thirty round trips. The expectations come in one pass
+        # for the same reason.
         events = await self._repository.events_by_date(employee_id, gaps[0], gaps[-1])
+        expected = (
+            await self._expectations.day_expectations(employee_id, gaps[0], gaps[-1])
+            if self._expectations is not None
+            else {}
+        )
         today = madrid_today(self._now())
         return [
             stored[day]
@@ -229,6 +248,7 @@ class AttendanceService:
                 business_date=day,
                 events=events.get(day, []),
                 today=today,
+                expected=expected.get(day),
             )
             for day in days
         ]
@@ -257,7 +277,21 @@ class AttendanceService:
             business_date=business_date,
             events=events,
             today=madrid_today(self._now()),
+            expected=await self._expectation(employee_id, business_date),
         )
+
+    async def _expectation(
+        self, employee_id: UUID, business_date: date
+    ) -> DayExpectation | None:
+        """What the schedule expected, or nothing when there is no scheduling module.
+
+        One query, and only for the day being derived: the range read fetches its
+        expectations in one pass of its own, because a month of days would otherwise
+        be a month of round trips.
+        """
+        if self._expectations is None:
+            return None
+        return await self._expectations.day_expectation(employee_id, business_date)
 
     async def _rebuild(self, employee_id: UUID, business_date: date) -> DayRecord:
         """Derive the day and write it, stamped with the moment it was rebuilt.

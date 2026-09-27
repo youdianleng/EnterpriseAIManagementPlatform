@@ -15,10 +15,13 @@ from app.api.v1 import audit as audit_v1
 from app.api.v1 import auth as auth_v1
 from app.api.v1 import departments as departments_v1
 from app.api.v1 import employees as employees_v1
+from app.api.v1 import holidays as holidays_v1
 from app.api.v1 import notifications as notifications_v1
 from app.api.v1 import personnel as personnel_v1
 from app.api.v1 import positions as positions_v1
+from app.api.v1 import projects as projects_v1
 from app.api.v1 import roles as roles_v1
+from app.api.v1 import schedules as schedules_v1
 from app.cache import close_redis
 from app.config import get_settings
 from app.core.exception_handlers import register_exception_handlers
@@ -136,6 +139,7 @@ def create_app() -> FastAPI:
     app.include_router(attendance_v1.router, prefix=API_PREFIX)
     app.include_router(departments_v1.router, prefix=API_PREFIX)
     app.include_router(employees_v1.router, prefix=API_PREFIX)
+    app.include_router(holidays_v1.router, prefix=API_PREFIX)
     app.include_router(positions_v1.router, prefix=API_PREFIX)
     app.include_router(accounts_v1.router, prefix=API_PREFIX)
     app.include_router(auth_v1.router, prefix=API_PREFIX)
@@ -143,6 +147,8 @@ def create_app() -> FastAPI:
     app.include_router(roles_v1.router, prefix=API_PREFIX)
     app.include_router(notifications_v1.router, prefix=API_PREFIX)
     app.include_router(personnel_v1.router, prefix=API_PREFIX)
+    app.include_router(projects_v1.router, prefix=API_PREFIX)
+    app.include_router(schedules_v1.router, prefix=API_PREFIX)
     if settings.is_development:
         app.include_router(debug.router, prefix=API_PREFIX)
 

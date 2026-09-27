@@ -70,6 +70,13 @@ class Department(Base):
         PGUUID(as_uuid=True), nullable=True
     )  # FK added with the employees table (ticket 07)
     cost_center: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: ISO 3166-2 code of the region this department works in (`ES-MD` for the
+    #: Community of Madrid). It is what decides which regional and local holidays
+    #: apply to the people in it (ticket 22, Q22): a public holiday is observed
+    #: where somebody works, and there is no per-employee region to ask instead.
+    #: Null means "not configured", and then only national holidays apply — an
+    #: honest answer rather than a guess at a region.
+    region_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
     description_es: Mapped[str | None] = mapped_column(Text, nullable=True)
     description_en: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

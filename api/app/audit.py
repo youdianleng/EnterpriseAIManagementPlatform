@@ -80,6 +80,17 @@ class AuditAction(StrEnum):
     ROLES_CHANGED = "user.roles_changed"
     CLEARANCE_CHANGED = "user.clearance_changed"
 
+    # Projects and their tasks (ticket 27). Archive and deactivate are their own
+    # actions rather than an update: each is the moment the record stops accepting
+    # new work, which is the change an incident review asks about, and neither is
+    # expressible as "some column moved".
+    PROJECT_CREATED = "project.created"
+    PROJECT_UPDATED = "project.updated"
+    PROJECT_ARCHIVED = "project.archived"
+    PROJECT_TASK_CREATED = "project_task.created"
+    PROJECT_TASK_UPDATED = "project_task.updated"
+    PROJECT_TASK_DEACTIVATED = "project_task.deactivated"
+
     # Later tickets, named now so the catalogue is the one place a reader has to
     # look to know what this system can tell them about itself.
     DOCUMENT_UPLOADED = "document.uploaded"  # 31
@@ -105,6 +116,25 @@ class AuditAction(StrEnum):
     #: Cancelling an approved-but-unapplied change: a state change somebody made,
     #: with a reason, and the row's own columns are not the trail for it.
     PERSONNEL_CHANGE_CANCELLED = "personnel_change.cancelled"  # 17
+    #: Work schedules and the holiday calendar (ticket 22). The two are the inputs
+    #: to every expected-hours figure, so a change to either changes what the
+    #: company owes somebody — which is why each is its own action rather than one
+    #: "configuration changed".
+    SCHEDULE_CREATED = "schedule.created"  # 22
+    SCHEDULE_UPDATED = "schedule.updated"  # 22
+    SCHEDULE_OVERRIDE_SET = "schedule.override_set"  # 22
+    SCHEDULE_OVERRIDE_REMOVED = "schedule.override_removed"  # 22
+    HOLIDAY_CREATED = "holiday.created"  # 22
+    HOLIDAY_UPDATED = "holiday.updated"  # 22
+    HOLIDAY_DELETED = "holiday.deleted"  # 22
+    #: One record per import, with the counts: a calendar loaded from a file is a
+    #: bulk change to a figure that reaches a payroll report, and "who loaded which
+    #: file, and what did it do" is the question asked afterwards.
+    HOLIDAYS_IMPORTED = "holiday.imported"  # 22
+    #: A month's expected hours frozen with the rules that produced them. Recorded
+    #: because the figure is evidence: the row says what it was measured against,
+    #: and this says when it was written and on whose instruction.
+    EXPECTED_HOURS_SNAPSHOTTED = "attendance.expected_hours_snapshotted"  # 22
     AGENT_ACTION_PROPOSED = "agent.action_proposed"  # 40
     AGENT_ACTION_CONFIRMED = "agent.action_confirmed"  # 41
     DATA_EXPORTED = "data.exported"  # 26, 47

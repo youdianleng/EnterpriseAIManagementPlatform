@@ -19,6 +19,12 @@ clock_ins in a row, is derivable rather than fatal: it becomes `incomplete` and 
 arithmetic stops at the point the shape stopped making sense. A derivation that
 raised on a malformed day would leave `recompute_day` unable to repair the very
 days that need repairing, and the record of a bad day would be its absence.
+
+**Ticket 22 hands it one more input, and it stays pure.** `expected` is the
+scheduling module's answer for the date — the minutes, the schedule and whether a
+holiday covers it — passed in as a value rather than fetched here, so this module
+still depends on nothing but its arguments and the day's arithmetic can still be
+tested with hand-built days.
 """
 
 from datetime import UTC, date, datetime
@@ -30,6 +36,7 @@ from app.domain.attendance.models import (
     DayStatus,
     EventType,
 )
+from app.domain.schedule.models import DayExpectation, ScheduleSource
 
 
 def derive(
@@ -38,19 +45,33 @@ def derive(
     business_date: date,
     events: list[AttendanceEvent],
     today: date,
+    expected: DayExpectation | None = None,
 ) -> DayRecord:
     """The day one person's events describe.
 
     `today` is passed in rather than read from a clock so that "a shift is still
     running" and "somebody forgot to clock out" — the same events, one day apart —
     are decided by the caller's calendar and the function stays pure.
+
+    `expected` is the scheduling module's answer for this date (ticket 22), and it
+    is optional: without it the derivation is exactly what ticket 21 shipped, and
+    `expected_minutes` stays null rather than claiming a figure nobody agreed to.
+
+    **A day nobody was expected to work is not an absence.** When there are no
+    punches, the expectation decides the status: a holiday, a rest day, or — only
+    when the schedule actually expected work, or when there is no schedule at all —
+    an absence. A Saturday that read `absent` ninety-six times a year would be a
+    working-time record telling a lie about somebody, in the direction that gets
+    complained about.
     """
     punches = [event for event in events if event.is_punch]
     if not punches:
         return DayRecord(
             employee_id=employee_id,
             business_date=business_date,
-            status=DayStatus.ABSENT,
+            status=_status_without_events(expected),
+            expected_minutes=_expected_minutes(expected),
+            snapshot_schedule_id=expected.schedule_id if expected is not None else None,
         )
 
     first_in: datetime | None = None
@@ -94,7 +115,50 @@ def derive(
         first_in=first_in,
         last_out=last_out,
         worked_minutes=worked_minutes,
+        expected_minutes=_expected_minutes(expected),
+        snapshot_schedule_id=expected.schedule_id if expected is not None else None,
     )
+
+
+def _status_without_events(expected: DayExpectation | None) -> DayStatus:
+    """What a day with no punches is, given what was expected of it.
+
+    Three answers, in this order:
+
+    * **No expectation at all** — no scheduling module, or nobody has configured a
+      pattern that reaches this person — is `absent`: "somebody was due, or nobody
+      said", which is the answer that claims the least.
+    * **A holiday** is a holiday, whatever the schedule says, because the calendar
+      is company-wide knowledge and does not depend on somebody having written a
+      pattern for this employee.
+    * **A schedule that expects nothing** is a rest day, not an absence.
+    """
+    if expected is None:
+        return DayStatus.ABSENT
+    if expected.is_holiday:
+        return DayStatus.HOLIDAY
+    if expected.source is ScheduleSource.NONE or expected.is_working_day:
+        return DayStatus.ABSENT
+    return DayStatus.NON_WORKING
+
+
+def _expected_minutes(expected: DayExpectation | None) -> int | None:
+    """The expectation, or null when there is none.
+
+    Zero and null are different answers and stay different all the way to the
+    client: zero is "the rules say nobody works today" — a holiday, or a rest day —
+    and null is "there are no rules for this person yet". A holiday reads as zero
+    even for somebody no schedule reaches, because the obligation the ticket is
+    about is to say what a day was, and "nobody works on the 2nd of April" is true
+    whether or not HR has written anybody's week down yet.
+    """
+    if expected is None:
+        return None
+    if expected.is_holiday:
+        return 0
+    if expected.source is ScheduleSource.NONE:
+        return None
+    return expected.expected_minutes
 
 
 def _with_effective_instants(

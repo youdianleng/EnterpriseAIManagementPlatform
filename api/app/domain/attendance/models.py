@@ -11,6 +11,16 @@ four-year record, and a client rendering a badge. A status is not a summary of t
 events; it is the answer to "was this day all right", and every member earns its
 place:
 
+* `absent` — no events at all, and the schedule expected work. Whether that is leave
+  or an unexplained absence is the leave module's question; what this module can
+  say is that somebody was expected and did not come.
+* `holiday` — no events, and a holiday row is why. The day was not expected of
+  anybody, so calling it an absence would be a working-time record asserting
+  something false about a person.
+* `non_working` — no events, and the schedule expects nothing on that weekday: a
+  Saturday, or a day HR has configured as a rest day. Same reasoning as `holiday`,
+  and a different fact — which is why it is a different status rather than one
+  "nothing was expected" member.
 * `working` — a shift is open and the day is today. The employee is at work, and
   the client counts from the open punch.
 * `ok` — the day's events pair into shifts with nothing left open.
@@ -20,17 +30,23 @@ place:
   shift to close, or two clock_ins in a row. The ordinary write path refuses both,
   so a day in this state arrived through a correction or a hand-written row, and
   the record says so rather than quietly computing a number nobody should trust.
-* `absent` — no events at all. Whether that is a holiday, leave or an absence is
-  ticket 22's question: this module can see that nobody punched and cannot see
-  why, and inventing a reason here would be the kind of guess a working-time
-  record must not contain.
+
+**Ticket 22 added the three schedule-derived members**, and the order of the three
+paragraphs above is the rule: an expectation of zero minutes is never an absence,
+and which kind of zero it was is what the record has to say. Before a schedule
+exists for somebody, `absent` keeps its ticket-21 meaning — nobody worked, and this
+module cannot see why — because `expected_minutes` is null and the honest answer is
+the one that claims the least.
 """
 
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
+from typing import Protocol
 from uuid import UUID
+
+from app.domain.schedule.models import DayExpectation
 
 
 class EventType(StrEnum):
@@ -70,6 +86,16 @@ class DayStatus(StrEnum):
     MISSING_OUT = "missing_out"
     INCOMPLETE = "incomplete"
     ABSENT = "absent"
+    #: Nobody was expected: a holiday (ticket 22's calendar).
+    HOLIDAY = "holiday"
+    #: Nobody was expected: a weekday the schedule does not work.
+    NON_WORKING = "non_working"
+
+
+#: The statuses that mean "this day was not expected of anybody", and therefore
+#: that `absent` would be a false statement. Named as a set because the derivation
+#: asks the question once and a second spelling of it would drift.
+NOT_EXPECTED_STATUSES = frozenset({DayStatus.HOLIDAY, DayStatus.NON_WORKING})
 
 
 #: How long a shift may last. A clock_out further from the open clock_in than this
@@ -167,11 +193,14 @@ class DayRecord:
     first_in: datetime | None = None
     last_out: datetime | None = None
     worked_minutes: int = 0
-    #: Null until ticket 22 puts a schedule behind the department. Frozen into the
-    #: snapshot when it arrives, so a reader four years from now sees what the day
-    #: was measured against rather than what it would be measured against today.
+    #: What the schedule expected of this day, in minutes. Null means no schedule
+    #: reaches this person — which is not the same as zero, and the difference is
+    #: the whole reason ticket 21 could leave the column empty without lying.
     expected_minutes: int | None = None
     overtime_minutes: int | None = None
+    #: The schedule the expectation came from, frozen with it (DESIGN §3.2, §8.1):
+    #: four years from now the question is "what was this day measured against",
+    #: and the schedule table will by then say something else.
     snapshot_schedule_id: UUID | None = None
     recomputed_at: datetime | None = None
 
@@ -184,16 +213,44 @@ class DayRecord:
     def has_events(self) -> bool:
         return self.status is not DayStatus.ABSENT
 
+    @property
+    def was_expected(self) -> bool:
+        """Whether anybody was due. False for a holiday and for a rest day."""
+        return self.status not in NOT_EXPECTED_STATUSES
+
 
 #: The service's time source. Typed here so a caller reading the constructor knows
 #: what it is being handed.
 TimeSource = Callable[[], datetime]
 
 
+class ExpectationSource(Protocol):
+    """What the attendance module asks the scheduling module, and nothing else.
+
+    A Protocol rather than the concrete `ScheduleService` so the dependency is
+    stated as the two questions this module has — "what does one day expect" and
+    "what does this range expect" — instead of as the whole scheduling surface.
+    Ticket 21's tests build an `AttendanceService` with no source at all and keep
+    working: a day then has no expectation, which is exactly what the column said
+    before ticket 22 existed.
+    """
+
+    async def day_expectation(self, employee_id: UUID, business_date: date) -> DayExpectation:
+        """The rules for one of somebody's days."""
+        ...
+
+    async def day_expectations(
+        self, employee_id: UUID, from_date: date, to_date: date
+    ) -> dict[date, DayExpectation]:
+        """The same for an inclusive range, grouped by date."""
+        ...
+
+
 __all__ = [
     "CLOCK_SKEW",
     "MAX_RANGE_DAYS",
     "MAX_SHIFT",
+    "NOT_EXPECTED_STATUSES",
     "PUNCH_EVENT_TYPES",
     "TERMINATED_STATUS",
     "AttendanceEvent",
@@ -201,6 +258,7 @@ __all__ = [
     "DayStatus",
     "EventSource",
     "EventType",
+    "ExpectationSource",
     "NewEvent",
     "TimeSource",
     "utc_now",

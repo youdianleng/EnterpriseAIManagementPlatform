@@ -24,9 +24,11 @@ from app.domain.approval.errors import ApprovalErrorCode
 from app.domain.org.errors import OrgErrorCode
 from app.domain.personnel.errors import PersonnelErrorCode
 from app.domain.position.errors import PositionErrorCode
+from app.domain.project.errors import ProjectErrorCode
+from app.domain.schedule.errors import ScheduleErrorCode
 
 #: Alias class -> the catalogue value prefixes it owns.
-#
+#:
 # The alias name is the catalogue name, so there is nothing to strip and nothing
 # to remember per domain.
 ALIASES: dict[type, tuple[str, ...]] = {
@@ -35,6 +37,8 @@ ALIASES: dict[type, tuple[str, ...]] = {
     OrgErrorCode: ("ERR_ORG_",),
     PersonnelErrorCode: ("ERR_PCH_",),
     PositionErrorCode: ("ERR_POS_",),
+    ProjectErrorCode: ("ERR_PRJ_",),
+    ScheduleErrorCode: ("ERR_SCH_",),
 }
 
 

@@ -14,7 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.audit import bind_actor
 from app.core.errors import AppError, ErrorCode
 from app.db import get_session
-from app.domain.access.kernel import Action, ResourceKind, apply_rls_context, can
+from app.domain.access.kernel import (
+    Action,
+    Resource,
+    ResourceKind,
+    apply_rls_context,
+    can,
+)
 from app.domain.access.principal import Principal
 from app.domain.access.snapshot import invalidate_user, resolve_principal
 
@@ -98,6 +104,33 @@ def require_public() -> None:
     something that happens by omission.
     """
     return None
+
+
+async def require_own(
+    request: Request,
+    principal: Principal,
+    action: Action,
+    kind: ResourceKind,
+    subject: UUID,
+) -> None:
+    """The caller's own record, or a refusal that is recorded.
+
+    Not a `require()` dependency, because the resource is named by the *request*
+    rather than by the route — the employee a punch or a schedule read is about
+    comes out of the body or the query string, and a dependency runs before the
+    route has parsed either. It makes the same call, records the same refusal and
+    raises the same catalogued code, so there is one convention for "you may not do
+    that" rather than one per router that needed it.
+    """
+    decision = can(principal, action, Resource(kind, owner_employee_id=subject))
+    if decision.allowed:
+        return
+
+    await audit_refusal(request, principal, action, decision, kind)
+    raise AppError(
+        ErrorCode.FORBIDDEN,
+        detail=f"{action} for employee {subject}: {decision.primary_reason}",
+    )
 
 
 async def audit_refusal(

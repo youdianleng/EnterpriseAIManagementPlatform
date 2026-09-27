@@ -29,6 +29,7 @@ from uuid import UUID
 
 from app.domain.access.permissions import (
     DOCUMENT_CROSS_DEPARTMENT_ROLES,
+    PROJECT_ADMIN_ROLES,
     SELF_ONLY_ACTIONS,
     Action,
     roles_may,
@@ -37,6 +38,13 @@ from app.domain.access.permissions import (
 from app.domain.access.principal import Principal
 
 CLEARANCE_RANK = {"low": 0, "medium": 1, "high": 2}
+
+#: The statuses a project has while it may receive new time (ticket 27). Written
+#: here rather than imported from the project module, for the reason the snapshot
+#: builder spells out the clearance order: the kernel is the outside of the project
+#: module's boundary, and a decision function that imported the thing it decides
+#: about would be one refactor away from deciding with it.
+PROJECT_ACTIVE_STATUS = "active"
 
 
 class ResourceKind(StrEnum):
@@ -48,6 +56,20 @@ class ResourceKind(StrEnum):
     POSITION = "position"
     ACCOUNT = "account"
     AUDIT_LOG = "audit_log"
+    #: A project, as a thing that is managed and a thing that time is recorded
+    #: against. Tasks are decided as this kind too, carrying their project's
+    #: department and manager: a task has no reach of its own, and giving it a kind
+    #: would mean a second copy of a rule whose answer is always "whatever its
+    #: project says".
+    PROJECT = "project"
+    #: A weekly pattern, and a day nobody works (ticket 22). Two kinds rather than
+    #: one because they are two tables and two authorities — they simply happen to
+    #: share a rule ("HR and administration, and reading is published"), which is
+    #: why neither is given a branch of its own below: the department and clearance
+    #: path is the whole answer for both, and a branch would be a place for the two
+    #: to drift apart later.
+    SCHEDULE = "schedule"
+    HOLIDAY = "holiday"
 
 
 @dataclass(slots=True, frozen=True)
@@ -74,6 +96,15 @@ class Resource:
     #: document module looks up, never a request parameter: it grants reading, but
     #: it does not lift the clearance ceiling.
     explicit_grant: bool = False
+    #: The employee a project names as its manager (ticket 27), a fact the project
+    #: module looks up from the row and the caller passes in.
+    #:
+    #: **Not `owner_employee_id`.** Managing a project is not owning it, and the two
+    #: are not interchangeable anywhere the kernel already uses ownership: a manager
+    #: is not a reason to return `IS_OWNER`, which is what the self-only actions
+    #: grant, and a project manager who arrived at `can()` as an owner would inherit
+    #: every future rule that reads ownership. One field, one meaning.
+    manager_employee_id: UUID | None = None
 
 
 class Reason(StrEnum):
@@ -99,6 +130,8 @@ class Reason(StrEnum):
     EXPLICIT_GRANT = "explicit_grant"
     DOCUMENT_EXCEPTION_ROLE = "document_exception_role"
     PRIVILEGED_ROLE_REQUIRED = "privileged_role_required"
+    MANAGES_OWN_PROJECT = "manages_own_project"
+    NOT_PROJECT_MANAGER = "not_project_manager"
 
 
 @dataclass(slots=True, frozen=True)
@@ -145,6 +178,8 @@ class FilterSpec:
         "explicit_grant_employee_id",
         "company_kb_cross_department",
         "include_company_kb",
+        "manager_employee_id",
+        "statuses",
     )
 
     def __init__(
@@ -159,6 +194,8 @@ class FilterSpec:
         include_company_kb: bool,
         explicit_grant_employee_id: UUID | None = None,
         company_kb_cross_department: bool = False,
+        manager_employee_id: UUID | None = None,
+        statuses: frozenset[str] = frozenset(),
     ) -> None:
         if _token is not _FILTER_TOKEN:
             raise TypeError(
@@ -177,14 +214,31 @@ class FilterSpec:
         #: department. Company documents only: a personal upload stays bounded by
         #: ownership and by the share clause whatever the role.
         self.company_kb_cross_department = company_kb_cross_department
+        #: Projects are reached by having been *named their manager*, which is the
+        #: one way to reach a row whose department is not yours. Carried as the
+        #: caller's own employee id, so a store can write the clause in the same
+        #: query; `None` means projects are not reached this way at all — which is
+        #: true of every kind but this one.
+        self.manager_employee_id = manager_employee_id
+        #: The *only* statuses that count as reachable, as a membership test rather
+        #: than a lower bound. Empty means the kind is not filtered by status.
+        #:
+        #: It is what makes `allow_all` safe to hand to administration for
+        #: projects: `allow_all` there says "no department restriction", and an
+        #: archived project has to stay out of a *recording* filter even for the
+        #: person who may edit it. A bound reading "active or later" would let every
+        #: status added to the project module in future leak in silently; a closed
+        #: set leaks nothing until it is named here.
+        self.statuses = statuses
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         if self.allow_all:
-            return f"<FilterSpec {self.kind} allow_all>"
+            return f"<FilterSpec {self.kind} allow_all statuses={sorted(self.statuses)}>"
         return (
             f"<FilterSpec {self.kind} departments={len(self.department_ids)} "
             f"clearance<={sorted(self.clearance_levels)} own={self.own_employee_id is not None} "
-            f"cross_dept={self.company_kb_cross_department}>"
+            f"manages={self.manager_employee_id is not None} "
+            f"cross_dept={self.company_kb_cross_department} statuses={sorted(self.statuses)}>"
         )
 
 
@@ -247,6 +301,17 @@ def _can_on_resource(principal: Principal, action: Action, resource: Resource) -
     # clearance — which for a document is somebody else's private upload.
     if resource.kind is ResourceKind.DOCUMENT:
         return _can_read_document(principal, resource)
+
+    # Projects have a resource rule, and it is not the department path below.
+    # "A project manager manages their own project; administration and HR manage
+    # all of them" is a statement about *who was named on the row*, and the rule
+    # below decides it the other way round: it would allow any project in a
+    # department the caller works in, which is every colleague's project. The rule
+    # lives here rather than in the router because a route that tested
+    # `project.manager_employee_id == principal.employee_id` itself would be the
+    # second place permission is decided, and the first one to be forgotten.
+    if resource.kind is ResourceKind.PROJECT:
+        return _can_on_project(principal, action, resource)
 
     # Self-only actions, decided before anything else can widen them. Ownership is
     # the whole rule here rather than a clause of it, so this branch sits above the
@@ -317,6 +382,48 @@ def _can_on_resource(principal: Principal, action: Action, resource: Resource) -
 
     # No department and no ownership: the role check above is the whole answer.
     return Decision(True, tuple(reasons), "role permits and nothing further restricts")
+
+
+def _can_on_project(principal: Principal, action: Action, resource: Resource) -> Decision:
+    """A project: who may read it, and who may change it.
+
+    **Reading is the catalogue's answer.** A project catalogue is published — what is
+    running, for which client, under whose management — so a role the action admits
+    reads every project, and there is no resource clause to apply. The fields that
+    would need one are a timesheet's, and a timesheet is not this table (ticket 28).
+
+    **Changing is a fact about the row.** Either the caller was named the project's
+    manager, or the caller holds a role with an organisation-wide remit
+    (`PROJECT_ADMIN_ROLES`). Nothing else reaches it, which is why this does not fall
+    through to the department path below: a colleague's project is in your
+    department, and "in my department" must not be read as "mine to edit".
+
+    A resource naming no manager is refused rather than allowed, for the reason the
+    self-only branch gives: "we cannot tell that it is yours" is a refusal, and a
+    decision function whose default on missing information is "yes" is how a
+    filter-free query gets written. Administration and HR are above it, because
+    their remit genuinely does not depend on the row.
+    """
+    if action in {Action.PROJECT_READ, Action.PROJECT_TASK_READ}:
+        return Decision(True, (Reason.ROLE_PERMITS,), "the project catalogue is published")
+
+    if bool(principal.roles & PROJECT_ADMIN_ROLES):
+        return Decision(
+            True, (Reason.IS_PRIVILEGED,), "administration and HR manage every project"
+        )
+
+    if (
+        resource.manager_employee_id is not None
+        and resource.manager_employee_id == principal.employee_id
+    ):
+        return Decision(True, (Reason.MANAGES_OWN_PROJECT,), "the principal manages this project")
+
+    return Decision(
+        False,
+        (Reason.NOT_PROJECT_MANAGER,),
+        f"{action} is for the project's own manager; manager="
+        f"{resource.manager_employee_id or 'unset'}, caller={principal.employee_id}",
+    )
 
 
 def _clearance_ok(principal: Principal, resource: Resource) -> bool:
@@ -458,6 +565,36 @@ def filter_for(principal: Principal, kind: ResourceKind) -> FilterSpec:
             include_company_kb=False,
         )
 
+    if kind is ResourceKind.PROJECT:
+        # The projects time may be recorded against (ticket 27, consumed by the
+        # timesheet in ticket 28). Three clauses, all of them conjunctive — this is
+        # not a union of alternatives the way a document's four clauses are, so
+        # every field of the spec must be applied:
+        #
+        # * `statuses` is `{active}`. A draft project is not running yet and an
+        #   archived one is finished; neither accepts new time. It is carried even
+        #   for administration, so the one field a store must not skip is the one
+        #   that survives `allow_all`.
+        # * `allow_all` is administration's and HR's, and it means "no department
+        #   restriction" rather than "every row" — the status clause above is what
+        #   keeps that honest.
+        # * `department_ids` and `manager_employee_id` are the two ways a project is
+        #   in reach, and for everybody else they are the whole answer:
+        #   `department_id IN reachable OR manager_employee_id = me`. A store that
+        #   wrote only the first would take a project away from the manager who
+        #   runs it the moment it moved to another department.
+        return FilterSpec(
+            _token=_FILTER_TOKEN,
+            kind=kind,
+            allow_all=bool(principal.roles & PROJECT_ADMIN_ROLES),
+            department_ids=principal.department_ids,
+            clearance_levels=frozenset(CLEARANCE_RANK),
+            own_employee_id=principal.employee_id,
+            include_company_kb=False,
+            manager_employee_id=principal.employee_id,
+            statuses=frozenset({PROJECT_ACTIVE_STATUS}),
+        )
+
     # Structure and administration are organisation-wide for anyone whose role
     # passed the action check; the filter records that rather than pretending
     # otherwise.
@@ -553,6 +690,7 @@ def department_scope_ids(spec: FilterSpec) -> frozenset[UUID] | None:
 
 __all__ = [
     "CLEARANCE_RANK",
+    "PROJECT_ACTIVE_STATUS",
     "Decision",
     "FilterSpec",
     "Reason",

@@ -62,6 +62,30 @@ class Action(StrEnum):
     ATTENDANCE_CLOCK_OWN = "attendance.clock_own"
     ATTENDANCE_READ_OWN = "attendance.read_own"
 
+    # Projects and their tasks (ticket 27). Reading is what an employee needs to
+    # fill in a timesheet; managing is what a project manager does to their own
+    # project. The restriction that makes the second sentence true is a
+    # *resource-level* rule — `PROJECT_ADMIN_ROLES` below and the project branch of
+    # the kernel's `_can_on_resource` — not a narrower role list here, because the
+    # same role may manage one project and be refused another.
+    PROJECT_READ = "project.read"
+    PROJECT_MANAGE = "project.manage"
+    #: A task is managed through its project, so these two decide who may write a
+    #: task and share the project branch: a task resource carries its project's
+    #: department and its project's manager.
+    PROJECT_TASK_READ = "project_task.read"
+    PROJECT_TASK_MANAGE = "project_task.manage"
+
+    # Work schedules, holidays and expected hours (ticket 22). Four acts rather
+    # than one, because they have four different answers to "who": reading your own
+    # week is self-service and self-only, the holiday calendar is published to
+    # everybody the way the department tree is, and maintaining either the patterns
+    # or the calendar is HR and administration.
+    SCHEDULE_READ_OWN = "schedule.read_own"
+    SCHEDULE_MANAGE = "schedule.manage"
+    HOLIDAY_READ = "holiday.read"
+    HOLIDAY_MANAGE = "holiday.manage"
+
     # Documents and the knowledge base. Fleshed out in tickets 12 and 31; present
     # here so the document module has an action to ask about from the start.
     DOCUMENT_READ = "document.read"
@@ -192,6 +216,65 @@ RULES: dict[Action, ActionRule] = {
             "action and nobody else's."
         ),
     ),
+    # §4.1 gives an employee "their own data" and, since a timesheet is filled in
+    # against a project, the projects they may book against. Every role holds
+    # `employee`, so the list is everyone; *which* projects is decided by the
+    # resource and by `filter_for`, not here.
+    Action.PROJECT_READ: ActionRule(
+        roles=frozenset({"admin", "hr", "finance", "it", "compliance", "manager", "employee"}),
+        description="Reading a project and its tasks; which ones is a resource question.",
+    ),
+    # `manager` is listed because a project manager is by definition a manager of
+    # *their* project, and the role list cannot say "their own" — the kernel's
+    # project branch does, and `PROJECT_ADMIN_ROLES` below names the two roles the
+    # restriction does not apply to.
+    Action.PROJECT_MANAGE: ActionRule(
+        roles=frozenset({"admin", "hr", "manager"}),
+        description=(
+            "Creating a project, and changing one. Creation has no resource to "
+            "restrict, so any manager may create one; changing an existing project "
+            "is limited to its own manager unless the holder is administration or HR."
+        ),
+    ),
+    Action.PROJECT_TASK_READ: ActionRule(
+        roles=frozenset({"admin", "hr", "finance", "it", "compliance", "manager", "employee"}),
+        description="The tasks of a project the caller may already read.",
+    ),
+    Action.PROJECT_TASK_MANAGE: ActionRule(
+        roles=frozenset({"admin", "hr", "manager"}),
+        description="Adding a task to a project, and maintaining the ones it has.",
+    ),
+    Action.SCHEDULE_READ_OWN: ActionRule(
+        roles=frozenset({"employee"}),
+        description=(
+            "Reading your own week and your own expected hours. Self-only through "
+            "`SELF_ONLY_ACTIONS`, like your own attendance: HR reading somebody's "
+            "expected hours is a different act and will arrive as its own action "
+            "(ticket 24), not as a wider version of this one."
+        ),
+    ),
+    Action.SCHEDULE_MANAGE: ActionRule(
+        roles=frozenset({"admin", "hr"}),
+        description=(
+            "Writing the weekly patterns, and the per-employee overrides with dates "
+            "on them. This is the input to every expected-hours figure, which is why "
+            "it is HR and administration and nobody else."
+        ),
+    ),
+    Action.HOLIDAY_READ: ActionRule(
+        roles=frozenset({"admin", "hr", "finance", "it", "compliance", "manager", "employee"}),
+        description=(
+            "The public holiday calendar. Published like the organisation tree: it is "
+            "a fact about the country, not personnel data, and everyone plans around it."
+        ),
+    ),
+    Action.HOLIDAY_MANAGE: ActionRule(
+        roles=frozenset({"admin", "hr"}),
+        description=(
+            "Importing and editing the days nobody works. A holiday moves a month's "
+            "expected hours, so it is the same authority as the schedule itself."
+        ),
+    ),
     Action.DOCUMENT_READ: ActionRule(
         roles=frozenset({"admin", "hr", "finance", "it", "compliance", "employee"}),
         description="Reading a document; clearance and department decide which ones.",
@@ -229,16 +312,34 @@ DOCUMENT_CROSS_DEPARTMENT_ROLES = frozenset({"hr", "compliance"})
 
 #: Actions about the caller's own material, and nothing else.
 #:
-#: For these two, ownership is not a convenience the kernel grants on the way to
+#: For these, ownership is not a convenience the kernel grants on the way to
 #: deciding — it *is* the decision. A punch belongs to the person who made it, and
-#: no role reaches somebody else's through this action: not a manager for their
-#: report, not HR for the company, and not an administrator either. Ticket 24 adds
-#: the actions that read a report's day and the company's, each with its own
-#: resource rule, which is what stops "HR may see attendance" from arriving as a
-#: quiet widening of "I may see my own".
+#: so does their week and the hours it expects of them; no role reaches somebody
+#: else's through these actions: not a manager for their report, not HR for the
+#: company, and not an administrator either. Ticket 24 adds the actions that read a
+#: report's day and the company's, each with its own resource rule, which is what
+#: stops "HR may see attendance" from arriving as a quiet widening of "I may see my
+#: own".
 SELF_ONLY_ACTIONS: frozenset[Action] = frozenset(
-    {Action.ATTENDANCE_CLOCK_OWN, Action.ATTENDANCE_READ_OWN}
+    {
+        Action.ATTENDANCE_CLOCK_OWN,
+        Action.ATTENDANCE_READ_OWN,
+        Action.SCHEDULE_READ_OWN,
+    }
 )
+
+#: Roles that manage *every* project, not only the ones they manage themselves.
+#:
+#: Administration and HR, and no third role, because those are the two §4.1 gives
+#: the organisation-wide remit: administration configures the system, HR keeps the
+#: record of who worked on what. Finance reads projects (a timesheet is what it
+#: exports) and does not manage them, so it is deliberately absent — the same
+#: distinction `DOCUMENT_CROSS_DEPARTMENT_ROLES` above draws for finance.
+#:
+#: Stated as its own constant rather than as "is privileged" for the reason that
+#: one is: the two sets are not the same, and a rule that read the wrong one would
+#: hand project management to finance and to compliance.
+PROJECT_ADMIN_ROLES = frozenset({"admin", "hr"})
 
 
 def roles_may(action: Action, roles: frozenset[str]) -> bool:

@@ -164,6 +164,8 @@ tests/             unit / integration（真实 Postgres）/ e2e（Playwright）
 | `leave_requests` | `id`, `employee_id`, `leave_type_id`, `start_date`, `end_date`, `business_days_count`, `reason`, `status`, `approval_request_id`, `attachment_path` | 按工作日粒度 |
 | `overtime_records` | `id`, `employee_id`, `business_date`, `minutes`, `reason`, `pre_approved_by`, `approval_request_id`, `month_bucket`(YYYY-MM), `exported_at` | 月底导出给财务（Q12） |
 
+> **实现注记（票据 22）：** 五处与上表不同，均为有意为之。**作息挂在部门上、以部门为粒度定位日历，地区则落在 `departments.region_code`（ISO 3166-2，如 `ES-MD`）**：节假日按"国籍 + 工作地"生效，所以某人的地区来自**当日生效的主职位所属部门**——调岗当天就换成新自治区的日历，而兼职覆盖不会改变它（覆盖改的是工时，不是工作地点）。人身上不加地区字段：那会是一份和办公地点迟早对不上的手工副本。**`work_schedules` 增 `code` 与 `is_active`，`work_schedule_days` 每周几一行**；`expected_minutes` 由数据库 CHECK 校验（上班日必须等于 `end_time - start_time - break_minutes`，休息日三者皆空），**不是**由窗口推导——四年后读者应直接读到当时的数字，而一段对不上的窗口是数据错误，不该被静默推导掉；`weekly_hours` 相反，是服务按天求和写回的派生值，一份和写两遍必然对不上。**覆盖带生效期且不允许重叠**（`btree_gist` 排他约束），否则"三月按什么算"会有两个答案。**新增 `expected_hours_snapshots`：每人每月一条追加式记录（`REVOKE UPDATE, DELETE`），`inputs` JSONB 冻结当日逐日的作息 id、窗口、分钟数、来源与所引用的节假日行**——月度应出勤的月度级快照，与 `attendance_daily` 的逐日快照互补；重算只追加新 revision，旧 revision 永远可读。**`attendance_daily.status` 增加 `holiday` 与 `non_working`**：票据 21 的五个值只覆盖"从打卡能看出来的事"，而零工时的日子不是缺勤——`late` 仍留给票据 23（它需要阈值，不只是作息）。
+
 ### 3.3 项目与工时（6 张表）
 
 | 表 | 关键字段 | 说明 |

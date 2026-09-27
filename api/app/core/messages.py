@@ -135,6 +135,64 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
             "empresa. Recursos Humanos debe asignar antes una persona responsable a "
             "quien dependa de ella."
         ),
+        "errors.project_not_found": "No se encontró el proyecto.",
+        "errors.project_code_taken": "Ya existe un proyecto con ese código.",
+        "errors.project_dates_invalid":
+            "La fecha de fin no puede ser anterior a la de inicio.",
+        "errors.project_department_not_found":
+            "El departamento indicado no existe o está desactivado.",
+        "errors.project_manager_not_found":
+            "La persona responsable indicada no existe o no está en activo.",
+        "errors.project_archived": (
+            "El proyecto está archivado: se conserva para consulta, pero no admite "
+            "cambios ni nuevas horas."
+        ),
+        "errors.project_not_active": (
+            "El proyecto todavía no está activo: actívalo antes de añadir tareas o "
+            "imputar horas."
+        ),
+        "errors.project_task_not_found": "No se encontró la tarea.",
+        "errors.project_task_code_taken": "Ya existe una tarea con ese código en el proyecto.",
+        "errors.project_task_not_recordable": (
+            "No se pueden imputar horas a esta tarea: está desactivada, o su proyecto "
+            "no está activo o queda fuera de tu ámbito."
+        ),
+        "errors.project_not_manageable": (
+            "Solo la persona responsable del proyecto, Administración o Recursos "
+            "Humanos pueden gestionarlo."
+        ),
+        "errors.project_task_already_inactive": "La tarea ya está desactivada.",
+        "errors.schedule_not_found": "No se encontró el horario.",
+        "errors.schedule_holiday_not_found": "No se encontró ese festivo.",
+        "errors.schedule_override_not_found": "No se encontró esa excepción de horario.",
+        "errors.schedule_code_taken": "Ya existe un horario con ese código.",
+        "errors.schedule_already_set": (
+            "Ese ámbito ya tiene un horario activo: modifica el existente en lugar de "
+            "crear un segundo, porque solo uno puede aplicarse."
+        ),
+        "errors.schedule_override_overlaps": (
+            "Esta persona ya tiene una excepción de horario que cubre alguno de esos "
+            "días: ajusta las fechas o termina antes la anterior."
+        ),
+        "errors.schedule_invalid_day": (
+            "El horario no es válido: las horas previstas de un día deben coincidir con "
+            "su franja horaria menos el descanso, y cada día de la semana puede "
+            "aparecer una sola vez."
+        ),
+        "errors.schedule_inactive": (
+            "Ese horario está desactivado: elige uno activo."
+        ),
+        "errors.schedule_invalid_holiday": (
+            "El festivo no es válido: los autonómicos y locales indican su región, los "
+            "nacionales no, y el año debe coincidir con la fecha."
+        ),
+        "errors.schedule_invalid_holiday_file": (
+            "El archivo de festivos no se pudo leer: revisa las columnas y las fechas "
+            "de las líneas indicadas. No se importó ninguna."
+        ),
+        "errors.schedule_holiday_exists": (
+            "Esa fecha ya está marcada como festivo con ese ámbito y esa región."
+        ),
         "errors.internal_error": "Se produjo un error interno. Inténtalo de nuevo más tarde.",
         "errors.service_unavailable": "El servicio no está disponible en este momento.",
     },
@@ -254,6 +312,59 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.personnel_approver_terminated": (
             "This cannot be filed: the person who has to approve it has left the "
             "company. HR has to assign an approver to their reports first."
+        ),
+        "errors.project_not_found": "The project was not found.",
+        "errors.project_code_taken": "A project with that code already exists.",
+        "errors.project_dates_invalid": "The end date cannot precede the start date.",
+        "errors.project_department_not_found":
+            "The chosen department does not exist or is deactivated.",
+        "errors.project_manager_not_found":
+            "The chosen project manager does not exist or is no longer employed.",
+        "errors.project_archived": (
+            "This project is archived: it stays readable, and accepts neither changes "
+            "nor new time."
+        ),
+        "errors.project_not_active": (
+            "This project is not active yet: activate it before adding tasks or "
+            "recording time."
+        ),
+        "errors.project_task_not_found": "The task was not found.",
+        "errors.project_task_code_taken": "A task with that code already exists in the project.",
+        "errors.project_task_not_recordable": (
+            "Time cannot be recorded against this task: it is deactivated, or its "
+            "project is not active or is outside your scope."
+        ),
+        "errors.project_not_manageable": (
+            "Only the project's own manager, administration or HR can manage it."
+        ),
+        "errors.project_task_already_inactive": "That task is already switched off.",
+        "errors.schedule_not_found": "The work schedule was not found.",
+        "errors.schedule_holiday_not_found": "That holiday was not found.",
+        "errors.schedule_override_not_found": "That schedule override was not found.",
+        "errors.schedule_code_taken": "A schedule with that code already exists.",
+        "errors.schedule_already_set": (
+            "That scope already has an active schedule: edit it instead of adding a "
+            "second one, because only one can apply."
+        ),
+        "errors.schedule_override_overlaps": (
+            "This person already has a schedule override covering some of those days: "
+            "adjust the dates, or end the earlier one first."
+        ),
+        "errors.schedule_invalid_day": (
+            "That schedule is not valid: a day's expected minutes must equal its "
+            "window less its break, and each weekday may appear once."
+        ),
+        "errors.schedule_inactive": "That schedule is deactivated: choose an active one.",
+        "errors.schedule_invalid_holiday": (
+            "That holiday is not valid: regional and local holidays name their region, "
+            "national ones do not, and the year has to match the date."
+        ),
+        "errors.schedule_invalid_holiday_file": (
+            "The holiday file could not be read: check the columns and the dates on the "
+            "lines named. None of it was imported."
+        ),
+        "errors.schedule_holiday_exists": (
+            "That date is already a holiday with that scope and region."
         ),
         "errors.internal_error": "An internal error occurred. Please try again later.",
         "errors.service_unavailable": "The service is unavailable right now.",

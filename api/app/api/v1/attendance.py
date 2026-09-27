@@ -32,9 +32,8 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.deps import audit_refusal, current_principal, db_session, require
-from app.core.errors import AppError, ErrorCode
-from app.domain.access import Action, Principal, Resource, ResourceKind, can
+from app.api.v1.deps import current_principal, db_session, require, require_own
+from app.domain.access import Action, Principal, ResourceKind
 from app.domain.attendance.business_day import madrid_today
 from app.domain.attendance.models import (
     AttendanceEvent,
@@ -44,7 +43,9 @@ from app.domain.attendance.models import (
     EventType,
 )
 from app.domain.attendance.service import AttendanceService
+from app.domain.schedule.service import ScheduleService
 from app.repositories.attendance import PostgresAttendanceRepository
+from app.repositories.schedule import PostgresScheduleRepository
 
 router = APIRouter(prefix="/attendance", tags=["attendance"])
 
@@ -116,7 +117,16 @@ class RangeRead(BaseModel):
 
 
 def _service(session: AsyncSession) -> AttendanceService:
-    return AttendanceService(PostgresAttendanceRepository(session))
+    """The module, with the schedule behind it (ticket 22).
+
+    Building both here rather than in the service is what keeps the attendance
+    module's interface at four operations: it is handed something that answers
+    "what did the schedule expect", and it never learns what a schedule is.
+    """
+    return AttendanceService(
+        PostgresAttendanceRepository(session),
+        expectations=ScheduleService(PostgresScheduleRepository(session), session),
+    )
 
 
 def _event(event: AttendanceEvent) -> EventRead:
@@ -147,22 +157,10 @@ async def _require_self(
 ) -> None:
     """The caller's own record, or a refusal that is recorded.
 
-    Not a `require()` dependency, because the resource is named by the request
-    rather than by the route: the employee a punch is for comes out of the body. It
-    makes the same call, records the same refusal and raises the same catalogued
-    code, so there is one convention for "you may not do that" rather than two.
+    Delegates to the shared helper in `deps`, which is where the convention lives
+    now that two routers need it (ticket 22 reads somebody's own week the same way).
     """
-    decision = can(
-        principal, action, Resource(ResourceKind.EMPLOYEE, owner_employee_id=subject)
-    )
-    if decision.allowed:
-        return
-
-    await audit_refusal(request, principal, action, decision, ResourceKind.EMPLOYEE)
-    raise AppError(
-        ErrorCode.FORBIDDEN,
-        detail=f"{action} for employee {subject}: {decision.primary_reason}",
-    )
+    await require_own(request, principal, action, ResourceKind.EMPLOYEE, subject)
 
 
 @router.post(

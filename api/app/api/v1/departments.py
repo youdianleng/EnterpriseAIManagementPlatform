@@ -100,6 +100,7 @@ async def create_department(
             parent_id=payload.parent_id,
             clearance_level=payload.clearance_level,
             cost_center=payload.cost_center,
+            region_code=payload.region_code,
             description_es=payload.description_es,
             description_en=payload.description_en,
         )

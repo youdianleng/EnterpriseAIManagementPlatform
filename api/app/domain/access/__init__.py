@@ -2,6 +2,7 @@
 
 from app.domain.access.kernel import (
     CLEARANCE_RANK,
+    PROJECT_ACTIVE_STATUS,
     Decision,
     FilterSpec,
     Reason,
@@ -12,7 +13,14 @@ from app.domain.access.kernel import (
     department_scope_ids,
     filter_for,
 )
-from app.domain.access.permissions import RULES, Action, ActionRule, roles_may, rule_for
+from app.domain.access.permissions import (
+    PROJECT_ADMIN_ROLES,
+    RULES,
+    Action,
+    ActionRule,
+    roles_may,
+    rule_for,
+)
 from app.domain.access.principal import PRIVILEGED_ROLES, SYSTEM_ROLES, Principal
 from app.domain.access.snapshot import (
     SNAPSHOT_TTL_SECONDS,
@@ -26,6 +34,8 @@ from app.domain.access.snapshot import (
 __all__ = [
     "CLEARANCE_RANK",
     "PRIVILEGED_ROLES",
+    "PROJECT_ACTIVE_STATUS",
+    "PROJECT_ADMIN_ROLES",
     "RULES",
     "SNAPSHOT_TTL_SECONDS",
     "SYSTEM_ROLES",

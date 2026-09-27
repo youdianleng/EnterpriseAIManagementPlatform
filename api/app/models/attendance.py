@@ -150,7 +150,8 @@ class AttendanceDaily(Base):
     __tablename__ = "attendance_daily"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('working', 'ok', 'missing_out', 'incomplete', 'absent')",
+            "status IN ('working', 'ok', 'missing_out', 'incomplete', 'absent', "
+            "'holiday', 'non_working')",
             name="ck_attendance_daily_status",
         ),
         CheckConstraint(
@@ -176,16 +177,16 @@ class AttendanceDaily(Base):
     #: table is evidence, and a number that keeps growing while it is stored is a
     #: number nobody can read back with confidence.
     worked_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    #: Null until ticket 22 puts a schedule behind the department. The snapshot is
-    #: the place the expectation is frozen, so it is a column here from the start
-    #: and a computation later, not a computation the reader has to redo.
+    #: The minutes the schedule expected of this day, and the schedule that said so
+    #: (ticket 22). Null together, and null means no schedule reaches this person:
+    #: zero is "the rules say nobody works today" and is a different answer.
     expected_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     #: Null for the same reason: overtime is the difference against an expectation.
     overtime_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
-    #: The schedule version this day was computed under (DESIGN §3.2). No foreign
-    #: key: ticket 22 adds `schedules`, and a snapshot that has to survive four
-    #: years must not be rewritten by a later edit to the schedule it names.
+    #: The schedule this day was computed under (DESIGN §3.2). No foreign key: a
+    #: snapshot that has to survive four years must not be rewritten — or made
+    #: undeletable — by a later edit to the schedule it names.
     snapshot_schedule_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     recomputed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

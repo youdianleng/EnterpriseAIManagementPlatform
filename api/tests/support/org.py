@@ -80,6 +80,7 @@ class InMemoryDepartmentRepository:
             depth=depth,
             clearance_level=data.clearance_level,
             cost_center=data.cost_center,
+            region_code=data.region_code,
             manager_employee_id=None,
             description_es=data.description_es,
             description_en=data.description_en,

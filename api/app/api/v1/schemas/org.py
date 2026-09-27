@@ -19,6 +19,9 @@ class DepartmentCreate(StrictModel):
     parent_id: UUID | None = None
     clearance_level: ClearanceLevel = ClearanceLevel.LOW
     cost_center: str | None = Field(default=None, max_length=64)
+    #: ISO 3166-2 (`ES-MD`). Decides which regional and local holidays apply to
+    #: the people in this department (ticket 22); null means national only.
+    region_code: str | None = Field(default=None, max_length=16)
     description_es: str | None = None
     description_en: str | None = None
 
@@ -30,6 +33,7 @@ class DepartmentUpdate(StrictModel):
     name_en: str | None = Field(default=None, min_length=1, max_length=160)
     clearance_level: ClearanceLevel | None = None
     cost_center: str | None = Field(default=None, max_length=64)
+    region_code: str | None = Field(default=None, max_length=16)
     description_es: str | None = None
     description_en: str | None = None
     is_active: bool | None = None
@@ -59,6 +63,7 @@ class DepartmentRead(BaseModel):
     depth: int
     clearance_level: ClearanceLevel
     cost_center: str | None
+    region_code: str | None
     manager_employee_id: UUID | None
     description_es: str | None
     description_en: str | None
