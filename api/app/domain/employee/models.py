@@ -18,6 +18,12 @@ class EmploymentStatus(StrEnum):
     TERMINATED = "terminated"
 
 
+#: The one status that removes somebody from every list of people: the directory,
+#: a department's headcount and the pool of possible approvers. Named once, in
+#: SQL as well as in Python, so the three exclusions cannot drift apart.
+TERMINATED_STATUS = EmploymentStatus.TERMINATED.value
+
+
 @dataclass(slots=True, frozen=True)
 class Employee:
     id: UUID

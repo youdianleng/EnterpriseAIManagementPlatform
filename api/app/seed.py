@@ -632,10 +632,14 @@ async def verify() -> int:
                     text(
                         """
                         SELECT d.code, d.name_es, d.depth,
-                               count(a.id) FILTER (WHERE a.end_date IS NULL) AS people,
+                               count(a.id) FILTER (
+                                   WHERE a.end_date IS NULL
+                                     AND e.status <> 'terminated'
+                               ) AS people,
                                d.manager_employee_id IS NOT NULL AS has_manager
                         FROM departments d
                         LEFT JOIN employee_assignments a ON a.department_id = d.id
+                        LEFT JOIN employees e ON e.id = a.employee_id
                         GROUP BY d.code, d.name_es, d.depth, d.manager_employee_id,
                                  d.path
                         ORDER BY d.path::text
@@ -647,10 +651,12 @@ async def verify() -> int:
                 await session.execute(
                     text(
                         """
-                        SELECT p.code, p.title_es, p.is_managerial, count(a.id) AS people
+                        SELECT p.code, p.title_es, p.is_managerial,
+                               count(a.id) FILTER (WHERE e.status <> 'terminated') AS people
                         FROM job_positions p
                         LEFT JOIN employee_assignments a
                                ON a.job_position_id = p.id AND a.end_date IS NULL
+                        LEFT JOIN employees e ON e.id = a.employee_id
                         GROUP BY p.code, p.title_es, p.is_managerial
                         ORDER BY p.code
                         """

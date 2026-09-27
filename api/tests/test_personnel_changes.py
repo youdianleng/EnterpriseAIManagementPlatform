@@ -776,10 +776,17 @@ async def test_a_salary_change_is_applied_to_the_change_itself(
     assert await platform.scalar("SELECT to_regclass('salary_records')") is None
 
 
-async def test_a_termination_sets_the_date_and_leaves_the_account_alone(
+async def test_a_termination_sets_the_date_and_finishes_the_account(
     platform: Platform, cast: Cast
 ) -> None:
-    """Ticket 18 owns the account half; this stops at the employee record."""
+    """The employee record and the login, in one transaction (ticket 18).
+
+    This used to stop at the employee row and assert that the account was left
+    alone, because the account half was ticket 18's work. It is not any more: the
+    full checklist — the epoch, the Redis revocation, the directory and the
+    approver refusal — is `tests/test_termination.py`, and what this asserts is
+    that the termination itself still lands and now carries the account with it.
+    """
     admin = await platform.admin()
     account = await admin.post(
         "/api/v1/accounts",
@@ -811,8 +818,10 @@ async def test_a_termination_sets_the_date_and_leaves_the_account_alone(
     )
     assert await platform.scalar(
         "SELECT is_active FROM users WHERE employee_id = :id", {"id": cast.subject}
-    ) is True, "disabling the login is ticket 18's job, not this one's"
-    assert (await read(cast.hr, change_id))["state"] == ChangeState.APPLIED.value
+    ) is False, "the leaver's login is disabled by the change that terminates them"
+    applied = await read(cast.hr, change_id)
+    assert applied["state"] == ChangeState.APPLIED.value
+    assert applied["applied_values"]["account_disabled"] is True
 
 
 # --- cancellation ------------------------------------------------------------

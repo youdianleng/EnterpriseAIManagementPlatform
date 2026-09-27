@@ -103,6 +103,29 @@ class ErrorCode(StrEnum):
     # saying which one it was would turn the endpoint into an existence oracle.
     NOTIFICATION_NOT_YOURS = "ERR_NTF_001"
 
+    # Attendance: the append-only punch stream and the day derived from it
+    # (ticket 21). The punches a state machine refuses are separated from the
+    # requests that are simply malformed, so a client can tell "you already
+    # clocked in" from "that was not a clock" without reading the message.
+    #: A shift is already open. One at a time: a second clock_in is a double click
+    #: or a stale tab, not the start of a second shift.
+    ATTENDANCE_ALREADY_CLOCKED_IN = "ERR_ATT_001"
+    #: No shift this punch could close — none is open, or the only one that is
+    #: began longer ago than a shift may last (`attendance.MAX_SHIFT`).
+    ATTENDANCE_NO_OPEN_SHIFT = "ERR_ATT_002"
+    #: The instant is in the future. Working time records what happened.
+    ATTENDANCE_EVENT_IN_FUTURE = "ERR_ATT_003"
+    #: A terminated employee's record is closed; a missed punch on it is a
+    #: correction, not a new punch (ticket 18 owns what termination does).
+    ATTENDANCE_EMPLOYEE_TERMINATED = "ERR_ATT_004"
+    #: `clock` was asked to append a correction. A correction restates an event
+    #: that exists, with a target and a reason, and arrives through the correction
+    #: flow (ticket 24) rather than from a clock button.
+    ATTENDANCE_CORRECTION_NOT_A_PUNCH = "ERR_ATT_005"
+    #: An inverted range, or one longer than this module will answer in a single
+    #: request. Refused rather than answered with an empty list.
+    ATTENDANCE_RANGE_INVALID = "ERR_ATT_006"
+
     # Personnel changes: one document for 入转调离, five change types (ticket 17).
     PERSONNEL_CHANGE_NOT_FOUND = "ERR_PCH_001"
     #: The payload is missing, empty, names a field its change type does not
@@ -121,6 +144,11 @@ class ErrorCode(StrEnum):
     #: effective date. Reported by the job; whatever the change had already
     #: written is rolled back, so it leaves no half-applied state.
     PERSONNEL_CHANGE_APPLY_FAILED = "ERR_PCH_007"
+    #: The document's approval route resolves to somebody who has left, so no
+    #: decision can ever be taken on it. Refused at submission, naming the people
+    #: HR has to reassign (ticket 18); the alternative — falling back to the
+    #: approver's own approver — hides a configuration nobody repaired.
+    PERSONNEL_APPROVER_TERMINATED = "ERR_PCH_008"
 
     # Cross-cutting.
     INTERNAL_ERROR = "ERR_INTERNAL_001"
@@ -228,6 +256,23 @@ ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
         409, "errors.approval_previously_rejected"
     ),
     ErrorCode.NOTIFICATION_NOT_YOURS: ErrorDefinition(403, "errors.notification_not_yours"),
+    # 409 for the two punches the state machine refuses — the request was fine and
+    # the stream says no — and 422 for the two the caller got wrong. Terminated is
+    # the conflict: nobody refused the caller anything, their record is closed.
+    ErrorCode.ATTENDANCE_ALREADY_CLOCKED_IN: ErrorDefinition(
+        409, "errors.attendance_already_clocked_in"
+    ),
+    ErrorCode.ATTENDANCE_NO_OPEN_SHIFT: ErrorDefinition(409, "errors.attendance_no_open_shift"),
+    ErrorCode.ATTENDANCE_EVENT_IN_FUTURE: ErrorDefinition(
+        422, "errors.attendance_event_in_future"
+    ),
+    ErrorCode.ATTENDANCE_EMPLOYEE_TERMINATED: ErrorDefinition(
+        409, "errors.attendance_employee_terminated"
+    ),
+    ErrorCode.ATTENDANCE_CORRECTION_NOT_A_PUNCH: ErrorDefinition(
+        400, "errors.attendance_correction_not_a_punch"
+    ),
+    ErrorCode.ATTENDANCE_RANGE_INVALID: ErrorDefinition(422, "errors.attendance_range_invalid"),
     ErrorCode.PERSONNEL_CHANGE_NOT_FOUND: ErrorDefinition(
         404, "errors.personnel_change_not_found"
     ),
@@ -248,6 +293,9 @@ ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
     ),
     ErrorCode.PERSONNEL_CHANGE_APPLY_FAILED: ErrorDefinition(
         409, "errors.personnel_change_apply_failed"
+    ),
+    ErrorCode.PERSONNEL_APPROVER_TERMINATED: ErrorDefinition(
+        409, "errors.personnel_approver_terminated"
     ),
     # 403 with its own code so the client can route to the change-password screen
     # instead of showing a permission error.

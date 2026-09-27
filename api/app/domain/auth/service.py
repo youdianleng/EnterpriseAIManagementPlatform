@@ -102,22 +102,22 @@ class AuthService:
         )
 
         # The same generic failure for an unknown username and a wrong password:
-        # distinguishing them tells an attacker which usernames exist.
+        # distinguishing them tells an attacker which usernames exist. The *reason*
+        # is not sendable either, and for the same reason — a `detail` is rendered
+        # into the response body, so "unknown username" beside "password mismatch"
+        # is the distinction the shared code exists to remove. Both reasons are in
+        # the audit record the helper above writes.
         if account_row is None or stored_hash is None:
             await self._register_failure(
                 username, reason="unknown_username", ip_address=ip_address, user_agent=user_agent
             )
-            raise DomainError(
-                AccountErrorCode.ACCOUNT_INVALID_CREDENTIALS, detail="unknown username"
-            )
+            raise DomainError(AccountErrorCode.ACCOUNT_INVALID_CREDENTIALS, detail=None)
 
         if not verify_password(stored_hash, password):
             await self._register_failure(
                 username, reason="password_mismatch", ip_address=ip_address, user_agent=user_agent
             )
-            raise DomainError(
-                AccountErrorCode.ACCOUNT_INVALID_CREDENTIALS, detail="password mismatch"
-            )
+            raise DomainError(AccountErrorCode.ACCOUNT_INVALID_CREDENTIALS, detail=None)
 
         if not account_row.is_active:
             await record(
@@ -130,9 +130,11 @@ class AuthService:
                 user_agent=user_agent,
             )
             await self._db.commit()
-            raise DomainError(
-                AccountErrorCode.ACCOUNT_DISABLED, detail="account is disabled"
-            )
+            # No detail, and that is the point of the line: "account is disabled"
+            # in a response body is a sentence about a *particular* account, which
+            # is one fact more than "these credentials cannot sign in". The reason
+            # goes in the audit record above, where the reader is entitled to it.
+            raise DomainError(AccountErrorCode.ACCOUNT_DISABLED, detail=None)
 
         await self._throttle.clear(username)
         session = await self._sessions.create(

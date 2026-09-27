@@ -8,12 +8,14 @@ the query rather than of the serialiser.
 from datetime import date
 from uuid import UUID
 
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import delete, func, select, text, true, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, selectinload
 
+from app.domain.employee.approver_gap import ApproverGap
 from app.domain.employee.models import (
+    TERMINATED_STATUS,
     Assignment,
     AssignmentInput,
     DirectoryEntry,
@@ -134,7 +136,15 @@ class PostgresEmployeeRepository:
         department_ids: frozenset[UUID] | None = None,
         include_terminated: bool = False,
     ) -> list[DirectoryEntry]:
-        """One row per employee, showing their primary (or first active) position."""
+        """One row per employee, showing their primary (or first active) position.
+
+        A leaver is out of the list **by an explicit condition**, not by the
+        accident that their assignments happen to have ended: if the applier or a
+        migration ever left one active, the default read must still not show them.
+        `include_terminated` is the one caller that asks for them — the
+        administrative view that has to be able to look somebody up after they
+        have gone (`docs/DESIGN.md` §7.6).
+        """
         statement = (
             select(
                 EmployeeRow.id,
@@ -158,7 +168,7 @@ class PostgresEmployeeRepository:
             .where(AssignmentRow.end_date.is_(None))
         )
         if not include_terminated:
-            statement = statement.where(EmployeeRow.status != EmploymentStatus.TERMINATED.value)
+            statement = statement.where(EmployeeRow.status != TERMINATED_STATUS)
         if department_ids is not None:
             if not department_ids:
                 return []
@@ -237,6 +247,83 @@ class PostgresEmployeeRepository:
                 select(func.count()).select_from(EmployeeRow).where(EmployeeRow.id == employee_id)
             )
         )
+
+    async def terminated_approvers(self) -> list[ApproverGap]:
+        """Every active employee whose approval route resolves to a leaver.
+
+        **The route is the engine's rule, written once more in SQL**: the manager
+        on the *primary* active assignment, and the department's manager when the
+        position names nobody (`ApprovalService._resolve_level_one`, DESIGN
+        §3.4/D12). It is written again here rather than asked of the engine because
+        the question is the other way round — not "who approves this person" but
+        "everybody now pointing at somebody who has left" — and asking per employee
+        would be a hundred round trips for one page of HR's work. `LATERAL` with
+        `LIMIT 1` is what makes "the primary one" mean the same row the engine
+        reads: an employee with a second, non-primary assignment is not thereby
+        given a second approver.
+
+        Both halves are constrained. The *employee* is active and holds a position,
+        because somebody already gone is a record being kept rather than a route to
+        repair, and an employee with no position has no route at all — that is
+        `ERR_APR_003`'s question and it predates this ticket. The *approver* is
+        terminated, which is what makes the route dead: a terminated account cannot
+        sign in, so nobody can decide the first level.
+        """
+        approver = aliased(EmployeeRow)
+        primary = (
+            select(
+                AssignmentRow.department_id,
+                AssignmentRow.manager_employee_id,
+            )
+            .where(
+                AssignmentRow.employee_id == EmployeeRow.id,
+                AssignmentRow.end_date.is_(None),
+            )
+            .order_by(AssignmentRow.is_primary.desc(), AssignmentRow.start_date)
+            .limit(1)
+            .lateral("primary_assignment")
+        )
+        statement = (
+            select(
+                EmployeeRow.id,
+                EmployeeRow.first_name,
+                EmployeeRow.last_name,
+                approver.id,
+                approver.first_name,
+                approver.last_name,
+                DepartmentRow.code,
+                DepartmentRow.name_es,
+                primary.c.manager_employee_id.is_not(None).label("named_on_position"),
+            )
+            # Explicit, because the LATERAL below introduces a second FROM: without
+            # it SQLAlchemy cannot tell which one the department joins from.
+            .select_from(EmployeeRow)
+            .join(primary, true())
+            .join(DepartmentRow, DepartmentRow.id == primary.c.department_id)
+            .join(
+                approver,
+                approver.id
+                == func.coalesce(primary.c.manager_employee_id, DepartmentRow.manager_employee_id),
+            )
+            .where(
+                EmployeeRow.status != TERMINATED_STATUS,
+                approver.status == TERMINATED_STATUS,
+            )
+            .order_by(DepartmentRow.code, EmployeeRow.last_name, EmployeeRow.first_name)
+        )
+        rows = (await self._session.execute(statement)).all()
+        return [
+            ApproverGap(
+                employee_id=row[0],
+                employee_name=f"{row[1]} {row[2]}",
+                approver_employee_id=row[3],
+                approver_name=f"{row[4]} {row[5]}",
+                department_code=row[6],
+                department_name=row[7],
+                named_on_position=row[8],
+            )
+            for row in rows
+        ]
 
     # --- writes ------------------------------------------------------------
 

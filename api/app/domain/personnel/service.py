@@ -24,8 +24,28 @@ is a local terminal state. The engine's request is deliberately left alone: it i
 the record of the approval that had already happened, and an approval arriving
 after the cancellation changes nothing because the applier reads the change's own
 terminal flags first.
+
+**A termination is the one change with a second half.** Applying it writes the
+employee record and then finishes the account — disabled, epoch bumped, Redis
+sessions revoked through `SessionRevoker` — because "disabled" that takes effect at
+cookie expiry is not what the word means. Both halves are one transaction, nothing
+historical is deleted, and the account row survives as a disabled identity rather
+than being removed. Re-hiring is a separate act with its own document: a `join`,
+which creates a new person, because the leaver's record and its ended assignments
+are what the retention rules are talking about.
+
+**A route that ends at a leaver is refused, not reassigned.** `submit` reads
+`approver_coverage` before it asks the engine for a route, and the same rows are
+what `approver_gaps` reports — the module docstring there carries the argument for
+choosing a refusal over a fallback to the approver's own approver.
+
+The account repository and the session revoker are **required** constructor
+arguments rather than optional ones, and that is a decision about the failure mode:
+a service built without them would apply a termination and leave a working login
+behind the leaver, silently, on the one day it matters.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -37,6 +57,8 @@ from app.audit import AuditAction, record
 from app.core.errors import ErrorCode
 from app.domain.access.kernel import apply_rls_context
 from app.domain.access.principal import Principal
+from app.domain.account.models import SessionRevoker
+from app.domain.account.repository import AccountRepository
 from app.domain.approval.models import ApprovalStatus, DecisionKind, SubmitContext
 from app.domain.approval.service import ApprovalService
 from app.domain.employee.models import (
@@ -51,6 +73,7 @@ from app.domain.employee.repository import EmployeeRepository
 from app.domain.employee.service import EmployeeService
 from app.domain.errors import DomainError
 from app.domain.org.repository import DepartmentRepository
+from app.domain.personnel.approver_coverage import ApproverGap, describe
 from app.domain.personnel.errors import PersonnelErrorCode
 from app.domain.personnel.models import (
     ApplyFailure,
@@ -110,6 +133,8 @@ class PersonnelChangeService:
         employees: EmployeeService,
         directory: EmployeeRepository,
         departments: DepartmentRepository,
+        accounts: AccountRepository,
+        revoker: SessionRevoker,
     ) -> None:
         self._repository = repository
         self._session = session
@@ -121,6 +146,13 @@ class PersonnelChangeService:
         self._employees = employees
         self._directory = directory
         self._departments = departments
+        # The account half of a termination (ticket 18). Required, not optional:
+        # applying a termination without them would leave a working login behind a
+        # leaver, and that is not a configuration this module should be able to be
+        # built into — a missing argument is a `TypeError` at startup rather than a
+        # quiet omission on the day somebody leaves.
+        self._accounts = accounts
+        self._revoker = revoker
 
     # --- reads -------------------------------------------------------------
 
@@ -182,6 +214,12 @@ class PersonnelChangeService:
         button: HR colleagues share the work, and the engine's rules — who
         approves first, and that nobody approves their own request — are about the
         person the route resolves for.
+
+        A route that ends at somebody who has left is refused here, before the
+        engine is asked. This is the one moment the document is still the
+        requester's to correct, and the refusal names the people HR has to
+        reassign — see `approver_coverage` for why falling back to the approver's
+        own approver was rejected instead.
         """
         change = await self._require(change_id)
         state = await self._state_of(change)
@@ -190,6 +228,7 @@ class PersonnelChangeService:
                 PersonnelErrorCode.PERSONNEL_CHANGE_NOT_DRAFT,
                 detail=f"change {change_id} is {state}",
             )
+        await self._require_live_approvers()
 
         request_id = await self._approvals.submit(
             ENTITY_TYPE, change.id, change.created_by_employee_id, SubmitContext()
@@ -199,6 +238,34 @@ class PersonnelChangeService:
         )
         await self._repository.commit()
         return await self.get(change.id)
+
+    async def approver_gaps(self) -> Sequence[ApproverGap]:
+        """Every active employee whose first-level approver has left.
+
+        HR's half of the refusal above: "the system said no and nobody knows who
+        to fix" is not an acceptable outcome, so the same rows that refuse a
+        submission are readable on their own — the applier job prints them on
+        every pass, which is how a gap nobody tripped over still reaches somebody.
+        """
+        return await self._directory.terminated_approvers()
+
+    async def _require_live_approvers(self) -> None:
+        """Refuse a document whose first level can never be decided.
+
+        Raised for the whole company's gaps rather than for this change's own
+        route, because the fix is the same act and HR needs the complete list to
+        do it once. A company with no gaps — the ordinary case — pays one indexed
+        query per submission.
+        """
+        gaps = await self.approver_gaps()
+        if not gaps:
+            return
+        raise DomainError(
+            PersonnelErrorCode.PERSONNEL_APPROVER_TERMINATED,
+            detail=(
+                f"{len(gaps)} employee(s) have a terminated approver: {describe(gaps)}"
+            ),
+        )
 
     async def decide(
         self,
@@ -478,14 +545,20 @@ class PersonnelChangeService:
         )
 
     async def _apply_termination(self, change: PersonnelChange) -> _Applied:
-        """Set the termination date and the status, and stop there.
+        """Write the termination, then finish the account.
 
-        **The account half belongs to ticket 18**: disabling the login, ending its
-        Redis sessions and dropping the person out of the directory's pickers is
-        one ticket's work with one test suite of its own. Until it lands, somebody
-        whose termination has taken effect keeps a working login — which is why
-        the applied audit record names the employee, so the trail ticket 18 needs
-        is already there.
+        Two halves, one transaction, and the order matters: the record is written
+        first and the login finishes after it, so a failure anywhere leaves both
+        the employee and their account as they were — the rollback takes the
+        epoch bump with it, and no session is lost over a change that never took
+        effect.
+
+        **Nothing historical is touched.** Attendance, timesheets, leave, salary
+        and approvals do not exist yet (tickets 21–47); what exists is the employee
+        row, its assignments including the ended ones, the personnel changes,
+        notifications and the audit trail, and this method deletes none of them.
+        The account row is *disabled*, never removed, so the login identity the
+        audit trail refers to survives.
         """
         values = change.values
         employee_id = _subject_of(change)
@@ -496,12 +569,64 @@ class PersonnelChangeService:
                 status=EmploymentStatus(values["status"]),
             ),
         )
-        return _Applied(
-            values={
-                "termination_date": values["termination_date"].isoformat(),
-                "status": values["status"],
-            }
+        applied = {
+            "termination_date": values["termination_date"].isoformat(),
+            "status": values["status"],
+        }
+        applied.update(await self._finish_account(change, employee_id))
+        return _Applied(values=applied)
+
+    async def _finish_account(
+        self, change: PersonnelChange, employee_id: UUID
+    ) -> dict[str, Any]:
+        """Disable the login, end every session, and say so in the trail.
+
+        Drives the account repository rather than `AccountService`, because the
+        account service commits: this write belongs to the change's transaction,
+        and a service that ended it would leave a disabled login behind a
+        termination that then failed to apply.
+
+        A leaver with no account is a normal outcome, not a failure: not everybody
+        has a login. What the audit record carries either way is the account id the
+        trail needs — absent when there was none, so "nobody had a login" and "we
+        forgot to disable it" cannot look alike.
+
+        `is_active` is the guard against a second, manual disable: disabling an
+        already-disabled account is a conflict, and the epoch and the revocation
+        are then already done.
+        """
+        account = await self._accounts.get_by_employee(employee_id)
+        if account is None:
+            return {"account_id": None, "account_disabled": False}
+        if not account.is_active:
+            return {"account_id": str(account.id), "account_disabled": False}
+
+        await self._accounts.set_active(account.id, is_active=False)
+        # Order, and it is the account service's: the epoch is bumped in the
+        # database first, because that is the value every future session check
+        # reads, and only then is Redis told. A revocation that runs ahead of a
+        # rolled-back bump is harmless — the database is what `resolve_session`
+        # compares against — while the reverse would leave live sessions behind a
+        # disabled account.
+        epoch = await self._accounts.bump_session_epoch(account.id)
+        await self._revoker.revoke_all(account.id, epoch=epoch)
+        await record(
+            self._session,
+            action=AuditAction.ACCOUNT_DEACTIVATED,
+            entity_type="user",
+            entity_id=account.id,
+            initiated_by="system",
+            before={"is_active": True},
+            after={
+                "is_active": False,
+                "session_epoch": epoch,
+                "sessions_revoked": True,
+                "employee_id": str(employee_id),
+                "personnel_change_id": str(change.id),
+            },
+            reason=f"termination effective {change.effective_date}",
         )
+        return {"account_id": str(account.id), "account_disabled": True}
 
     async def _publish_authority(self, change: PersonnelChange) -> None:
         """Say who this change is being applied as, for the database's policies.

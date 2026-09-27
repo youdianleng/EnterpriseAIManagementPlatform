@@ -35,6 +35,7 @@ from app.api.v1.schemas.personnel import (
     PersonnelChangePage,
     PersonnelChangeRead,
 )
+from app.cache import RedisSessionRevoker
 from app.domain.access import Action, Principal, ResourceKind
 from app.domain.approval.service import ApprovalService
 from app.domain.employee.service import EmployeeService
@@ -47,6 +48,7 @@ from app.domain.personnel.models import (
     PersonnelChangeView,
 )
 from app.domain.personnel.service import PersonnelChangeService
+from app.repositories.account import PostgresAccountRepository
 from app.repositories.approval import PostgresApprovalRepository
 from app.repositories.employee import PostgresEmployeeRepository
 from app.repositories.notification import PostgresNotificationRepository
@@ -79,6 +81,13 @@ def _service(session: AsyncSession) -> PersonnelChangeService:
     approver and a decision tells the requester. Wrapping it here rather than
     asking each caller to notify afterwards is the whole reason that decorator
     exists: a caller cannot forget a step it does not have to remember.
+
+    The account repository and the Redis revoker are the termination's second half
+    (ticket 18): applied on the effective date, a termination disables the login
+    and ends its sessions. `RedisSessionRevoker` writes to Redis rather than to the
+    database, so it is not part of the change's transaction and does not need to
+    be — the epoch bump is, and the database is what a session check compares
+    against.
     """
     approvals = PostgresApprovalRepository(session)
     return PersonnelChangeService(
@@ -99,6 +108,8 @@ def _service(session: AsyncSession) -> PersonnelChangeService:
         ),
         directory=PostgresEmployeeRepository(session),
         departments=PostgresDepartmentRepository(session),
+        accounts=PostgresAccountRepository(session),
+        revoker=RedisSessionRevoker(),
     )
 
 

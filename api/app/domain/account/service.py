@@ -5,8 +5,11 @@ Three rules matter and all three are enforced here rather than at the edge:
 * One account per employee. The database has a unique constraint on
   `employee_id`; the service checks first so the caller gets a readable conflict
   instead of an integrity error.
-* No account for someone who has left. Created employees only, and an account is
-  deactivated when its employee is not active.
+* No account for someone who has left. Created employees only, an account is
+  deactivated when its employee is not active, and it cannot be switched back on
+  either: reactivating a leaver's login is the same act as creating one for them,
+  by another door. Re-hiring goes through a `join` personnel change, which is a
+  decision somebody makes rather than a side effect of an administration screen.
 * Disabling an account ends its sessions immediately. Setting `is_active` alone
   would leave a session that was issued a minute earlier working until it
   expired, which is not what "disabled" means.
@@ -205,6 +208,29 @@ class AccountService:
         await self._repository.commit()
         return updated
 
+    # --- internals ---------------------------------------------------------
+
+    async def _require_employed(self, employee_id: UUID) -> None:
+        """A leaver's login does not come back; a returning colleague gets a new one.
+
+        The mirror of `create`'s check, and the reason it is needed: `create`
+        refuses an account for somebody whose record says `terminated`, and
+        re-enabling the login they already had would be the same act by another
+        door — leaving the system with an active account for somebody who does not
+        work here. Re-hiring is an explicit act with a document behind it, so an
+        administrator who switches a leaver's account back on is turned towards
+        that instead of being silently obeyed.
+        """
+        status = await self._repository.employee_status(employee_id)
+        if status in INACTIVE_EMPLOYEE_STATUSES:
+            raise DomainError(
+                AccountErrorCode.ACCOUNT_EMPLOYEE_NOT_ACTIVE,
+                detail=(
+                    f"employee {employee_id} is {status}; a return is a join change, "
+                    "not a reactivated login"
+                ),
+            )
+
     async def _invalidate_snapshot(self, user_id: UUID) -> None:
         """Belt and braces: the cache key already changes with the roles.
 
@@ -231,6 +257,8 @@ class AccountService:
                 AccountErrorCode.ACCOUNT_ALREADY_IN_STATE,
                 detail=f"account is already {'active' if is_active else 'disabled'}",
             )
+        if is_active:
+            await self._require_employed(account.employee_id)
 
         await self._repository.set_active(user_id, is_active=is_active)
 

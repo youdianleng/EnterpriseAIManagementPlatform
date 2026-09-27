@@ -85,6 +85,29 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.notification_not_yours": (
             "Esa notificación no está dirigida a ti."
         ),
+        "errors.attendance_already_clocked_in": (
+            "Ya tienes una jornada abierta. Ficha la salida antes de volver a fichar "
+            "la entrada."
+        ),
+        "errors.attendance_no_open_shift": (
+            "No hay ninguna jornada abierta que esta salida pueda cerrar: ficha la "
+            "entrada primero."
+        ),
+        "errors.attendance_event_in_future": (
+            "No se puede registrar un fichaje con una hora futura."
+        ),
+        "errors.attendance_employee_terminated": (
+            "El registro de jornada de esta persona está cerrado: un fichaje que falta "
+            "se corrige con una solicitud de corrección."
+        ),
+        "errors.attendance_correction_not_a_punch": (
+            "Una corrección no es un fichaje: indica el fichaje que corrige y el motivo, "
+            "y se registra mediante el flujo de corrección."
+        ),
+        "errors.attendance_range_invalid": (
+            "El rango de fechas no es válido: la fecha inicial no puede ser posterior a "
+            "la final, ni el rango superar los cuatro años."
+        ),
         "errors.personnel_change_not_found": "No se encontró la solicitud de cambio.",
         "errors.personnel_change_invalid_payload": (
             "El detalle del cambio no es válido: indica los campos y sus valores "
@@ -106,6 +129,11 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.personnel_change_apply_failed": (
             "El cambio no se pudo aplicar: el registro al que se refiere ya no existe "
             "o ya no admite este cambio. No se aplicó ninguna de sus partes."
+        ),
+        "errors.personnel_approver_terminated": (
+            "No se puede presentar: la persona que debe aprobarlo ya no está en la "
+            "empresa. Recursos Humanos debe asignar antes una persona responsable a "
+            "quien dependa de ella."
         ),
         "errors.internal_error": "Se produjo un error interno. Inténtalo de nuevo más tarde.",
         "errors.service_unavailable": "El servicio no está disponible en este momento.",
@@ -182,6 +210,25 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.approval_previously_rejected":
             "The request was rejected and cannot be submitted again.",
         "errors.notification_not_yours": "That notification is not addressed to you.",
+        "errors.attendance_already_clocked_in": (
+            "You already have a shift open. Clock out before clocking in again."
+        ),
+        "errors.attendance_no_open_shift": (
+            "There is no open shift for this clock-out to close: clock in first."
+        ),
+        "errors.attendance_event_in_future": "A punch cannot be recorded for a future time.",
+        "errors.attendance_employee_terminated": (
+            "This person's working-time record is closed: a missing punch is fixed with "
+            "a correction request."
+        ),
+        "errors.attendance_correction_not_a_punch": (
+            "A correction is not a punch: name the event it corrects and the reason, and "
+            "it is recorded through the correction flow."
+        ),
+        "errors.attendance_range_invalid": (
+            "That date range is not valid: the start cannot be after the end, and a "
+            "single range cannot exceed four years."
+        ),
         "errors.personnel_change_not_found": "The personnel change was not found.",
         "errors.personnel_change_invalid_payload": (
             "The change detail is not valid: name the fields with their previous and "
@@ -203,6 +250,10 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.personnel_change_apply_failed": (
             "The change could not be applied: the record it refers to no longer exists "
             "or no longer accepts it. None of its parts were applied."
+        ),
+        "errors.personnel_approver_terminated": (
+            "This cannot be filed: the person who has to approve it has left the "
+            "company. HR has to assign an approver to their reports first."
         ),
         "errors.internal_error": "An internal error occurred. Please try again later.",
         "errors.service_unavailable": "The service is unavailable right now.",

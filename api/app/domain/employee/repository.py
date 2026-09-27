@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from typing import Protocol
 from uuid import UUID
 
+from app.domain.employee.approver_gap import ApproverGap
 from app.domain.employee.models import (
     Assignment,
     AssignmentInput,
@@ -66,6 +67,15 @@ class EmployeeRepository(Protocol):
     async def set_primary(self, employee_id: UUID, assignment_id: UUID) -> None: ...
 
     async def employee_exists(self, employee_id: UUID) -> bool: ...
+
+    async def terminated_approvers(self) -> list[ApproverGap]:
+        """Active employees whose approval route resolves to somebody terminated.
+
+        On this interface rather than the approval module's, because it is a
+        question about people and their positions — the engine answers who
+        approves *one* person, and this answers who is now pointing at a leaver.
+        """
+        ...
 
     async def commit(self) -> None: ...
 

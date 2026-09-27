@@ -18,6 +18,9 @@ class PersonnelErrorCode:
     PERSONNEL_CHANGE_ALREADY_APPLIED = ErrorCode.PERSONNEL_CHANGE_ALREADY_APPLIED
     PERSONNEL_CHANGE_NOT_CANCELLABLE = ErrorCode.PERSONNEL_CHANGE_NOT_CANCELLABLE
     PERSONNEL_CHANGE_APPLY_FAILED = ErrorCode.PERSONNEL_CHANGE_APPLY_FAILED
+    #: No decision can ever be taken on the document: its first level resolves to
+    #: somebody who has left (ticket 18).
+    PERSONNEL_APPROVER_TERMINATED = ErrorCode.PERSONNEL_APPROVER_TERMINATED
     #: Grouped here because a caller of this module reasons about "why was this
     #: change refused", not about which enum a code happens to live in.
     EMPLOYEE_NOT_FOUND = ErrorCode.EMPLOYEE_NOT_FOUND
