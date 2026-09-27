@@ -98,6 +98,43 @@ class Action(StrEnum):
     HOLIDAY_READ = "holiday.read"
     HOLIDAY_MANAGE = "holiday.manage"
 
+    # Leave (ticket 25). Six actions, and the split is the same one ticket 24 drew
+    # for attendance, for the same reason: filing your own leave and reading it are
+    # self-service and self-only, a manager reaches their reports, HR reaches the
+    # company, and maintaining the catalogue is administration's. Nothing here is a
+    # wider version of anything else — a manager reading their report's leave does not
+    # inherit the employee's own action, and HR reading the company's does not inherit
+    # the manager's.
+    #:
+    #: The type catalogue is published, like the holiday calendar: it is a fact about
+    #: what the company offers rather than personnel data, and a client needs it to
+    #: render the form.
+    LEAVE_TYPE_READ = "leave.type_read"
+    LEAVE_TYPE_MANAGE = "leave.type_manage"
+    #: Your own balances and your own requests. Self-only through
+    #: `SELF_ONLY_ACTIONS`: nobody reads somebody else's balance through this action.
+    LEAVE_READ_OWN = "leave.read_own"
+    #: Filing a request about yourself. Its own action rather than part of the read,
+    #: because asking for time off is the act that spends an allowance and an
+    #: installation may well want to hand it out separately.
+    LEAVE_REQUEST_OWN = "leave.request_own"
+    #: A manager's reach: their reports' leave, which is what approving it needs. The
+    #: resource rule is the reporting relationship — see `LEAVE_CROSS_ACTIONS` — and
+    #: deliberately not the department, because a manager and a colleague share one.
+    LEAVE_READ_REPORT = "leave.read_report"
+    #: HR's reach: the company's leave. HR owns the personnel file and the working-time
+    #: record, and leave is part of both.
+    LEAVE_READ_ALL = "leave.read_all"
+    #: Reading the *file* a request refers to — a sick note, in the ordinary case —
+    #: rather than the request. HR alone, and its own action because "may decide this
+    #: leave" and "may read the medical proof attached to it" are different
+    #: authorities: a manager approves the absence and is refused the note.
+    LEAVE_ATTACHMENT_READ = "leave.attachment_read"
+    #: Setting somebody's yearly entitlement or the days carried over from last year.
+    #: A figure, not a document: it belongs with the catalogue rather than with the
+    #: approval chain.
+    LEAVE_BALANCE_MANAGE = "leave.balance_manage"
+
     # Weekly timesheets (ticket 28). Three acts, all of them self-only, because the
     # ticket says so in as many words: filling in somebody else's hours is a 403.
     # Separating them is what will let ticket 29 give a manager "read my report's
@@ -373,11 +410,81 @@ RULES: dict[Action, ActionRule] = {
             "away without touching the writing."
         ),
     ),
+    # Leave (ticket 25). Six actions, and the readings are recorded rather than left
+    # to the reader, exactly as ticket 24 recorded its four.
+    Action.LEAVE_TYPE_READ: ActionRule(
+        roles=frozenset({"admin", "hr", "finance", "it", "compliance", "manager", "employee"}),
+        description=(
+            "The leave type catalogue. Published like the holiday calendar: it is what "
+            "the company offers rather than personnel data, and the form that files a "
+            "request is rendered from it."
+        ),
+    ),
+    Action.LEAVE_TYPE_MANAGE: ActionRule(
+        roles=frozenset({"admin", "hr"}),
+        description=(
+            "Adding a kind of leave, and changing whether it is paid, needs proof or "
+            "spends the annual allowance. The same pair that maintains the schedules: "
+            "these flags decide what a leave costs somebody."
+        ),
+    ),
+    Action.LEAVE_READ_OWN: ActionRule(
+        roles=frozenset({"employee"}),
+        description=(
+            "Your own balances, their history and your own requests. Self-only through "
+            "`SELF_ONLY_ACTIONS`: the Spanish working-time obligation gives the employee "
+            "their own record, and nobody else's is reachable through this action."
+        ),
+    ),
+    Action.LEAVE_REQUEST_OWN: ActionRule(
+        roles=frozenset({"employee"}),
+        description=(
+            "Asking for your own time off. Its own action rather than part of the read, "
+            "because it is the act that spends an allowance — an installation may want "
+            "to hand the two out separately, and filing is what the balance check "
+            "guards."
+        ),
+    ),
+    Action.LEAVE_READ_REPORT: ActionRule(
+        roles=frozenset({"manager"}),
+        description=(
+            "Reading the leave of the people who report to you, and of nobody else. The "
+            "role list says which *kind* of caller; `LEAVE_CROSS_ACTIONS` beside the "
+            "self-only set says the resource rule, which is the reporting relationship "
+            "itself — a manager reads their reports and is refused a colleague in their "
+            "own department, which is the escalation the department clause would allow."
+        ),
+    ),
+    Action.LEAVE_READ_ALL: ActionRule(
+        roles=frozenset({"hr"}),
+        description=(
+            "Reading anybody's leave. HR keeps the personnel file and the working-time "
+            "record, and a leave is in both: it is what the absence is explained by and "
+            "what the payroll month is adjusted for."
+        ),
+    ),
+    Action.LEAVE_ATTACHMENT_READ: ActionRule(
+        roles=frozenset({"hr"}),
+        description=(
+            "Reading the file a request refers to — a sick note, in the ordinary case. "
+            "HR alone, which is the design's §8 rule and the reason it is an action of "
+            "its own: a manager approves the absence and is refused the medical proof, "
+            "and the request's payload reports this list rather than hardcoding it."
+        ),
+    ),
+    Action.LEAVE_BALANCE_MANAGE: ActionRule(
+        roles=frozenset({"admin", "hr"}),
+        description=(
+            "Setting somebody's yearly entitlement, or the days carried over from last "
+            "year. A figure rather than a document, which is why it does not go down "
+            "the approval chain: the allowance is granted, and what is filed against it "
+            "is what gets approved."
+        ),
+    ),
     Action.DOCUMENT_READ: ActionRule(
         roles=frozenset({"admin", "hr", "finance", "it", "compliance", "employee"}),
         description="Reading a document; clearance and department decide which ones.",
-    ),
-    Action.DOCUMENT_LIST: ActionRule(
+    ),    Action.DOCUMENT_LIST: ActionRule(
         roles=frozenset({"admin", "hr", "finance", "it", "compliance", "employee"}),
     ),
     Action.DOCUMENT_UPLOAD: ActionRule(
@@ -428,6 +535,11 @@ SELF_ONLY_ACTIONS: frozenset[Action] = frozenset(
         Action.TIMESHEET_READ_OWN,
         Action.TIMESHEET_WRITE_OWN,
         Action.TIMESHEET_SUBMIT_OWN,
+        # Ticket 25's two: your own leave, and asking for more of it. HR and a
+        # manager are refused somebody else's through them and reach it through their
+        # own actions instead.
+        Action.LEAVE_READ_OWN,
+        Action.LEAVE_REQUEST_OWN,
     }
 )
 
@@ -449,12 +561,34 @@ ATTENDANCE_CROSS_ACTIONS: frozenset[Action] = frozenset(
     }
 )
 
-#: The roles whose reach over somebody else's attendance is the whole company
-#: rather than their own reports. HR, and deliberately not "is privileged": finance
-#: and compliance are privileged for *personnel files* (§4.1) and reading somebody's
-#: hours is not what either of them was given, so the two sets are stated separately
-#: and cannot be confused.
-ATTENDANCE_COMPANY_ROLES: frozenset[str] = frozenset({"hr"})
+#: The same two reaches over somebody else's *leave* (ticket 25), and they are the
+#: same shape for the same reason: a manager reads their reports' leave because
+#: approving it is theirs, HR reads the company's because the personnel file is, and
+#: neither is decided by the department — a manager and a colleague share one.
+#:
+#: Stated as its own set rather than folded into the attendance one, so that adding a
+#: sixth attendance action or a third leave action is a decision somebody makes in one
+#: of the two lists rather than something that happens to both.
+LEAVE_CROSS_ACTIONS: frozenset[Action] = frozenset(
+    {
+        Action.LEAVE_READ_REPORT,
+        Action.LEAVE_READ_ALL,
+    }
+)
+
+#: The roles whose reach over somebody else's personnel record — their hours, their
+#: leave — is the whole company rather than their own reports.
+#:
+#: HR, and deliberately not "is privileged": finance and compliance are privileged for
+#: *personnel files* (§4.1) and reading somebody's hours or their leave is not what
+#: either of them was given, so the two sets are stated separately and cannot be
+#: confused.
+COMPANY_RECORD_ROLES: frozenset[str] = frozenset({"hr"})
+
+#: Ticket 24's name for the same set, kept because the attendance surface reads it and
+#: so does the permission matrix. One value today, and the alias is what says so —
+#: two literals would be two things to change.
+ATTENDANCE_COMPANY_ROLES: frozenset[str] = COMPANY_RECORD_ROLES
 
 #: Roles that manage *every* project, not only the ones they manage themselves.
 #:

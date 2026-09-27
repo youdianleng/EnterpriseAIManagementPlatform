@@ -156,6 +156,20 @@ class AuditAction(StrEnum):
     ATTENDANCE_CORRECTION_REQUESTED = "attendance_correction.requested"  # 24
     ATTENDANCE_CORRECTION_UPDATED = "attendance_correction.updated"  # 24
     ATTENDANCE_CORRECTION_APPLIED = "attendance_correction.applied"  # 24
+    #: Leave (ticket 25). Six actions, and the middle moment is the engine's here
+    #: too: filing writes `approval.submitted` and each decision writes
+    #: `approval.decided`, keyed on the request's own id. What this module records
+    #: itself is the catalogue it maintains, the allowance it adjusts, the balance
+    #: movement an approval or a rejection caused, and the requester's withdrawal —
+    #: the last one because an approved leave withdrawn before it starts is an act
+    #: the engine never sees, and a leave that suppresses an absence with no record
+    #: of who stopped it is exactly what an incident review asks about.
+    LEAVE_TYPE_CREATED = "leave_type.created"  # 25
+    LEAVE_TYPE_UPDATED = "leave_type.updated"  # 25
+    LEAVE_BALANCE_ADJUSTED = "leave_balance.adjusted"  # 25
+    LEAVE_REQUEST_DRAFTED = "leave_request.drafted"  # 25
+    LEAVE_REQUEST_SETTLED = "leave_request.settled"  # 25
+    LEAVE_REQUEST_WITHDRAWN = "leave_request.withdrawn"  # 25
     AGENT_ACTION_PROPOSED = "agent.action_proposed"  # 40
     AGENT_ACTION_CONFIRMED = "agent.action_confirmed"  # 41
     DATA_EXPORTED = "data.exported"  # 26, 47

@@ -25,8 +25,8 @@ corrected is brought up to date; it is idempotent, so nothing is written twice.
 
 **Nobody is reminded about a day with no anomalies**, and a holiday, a rest day and
 a day of approved leave produce none: the rules are in
-`domain/attendance/anomalies.py`, and the leave half is the seam ticket 25 fills
-(`AnomalyRepository`'s `LeaveLookup`, which answers `False` until then).
+`domain/attendance/anomalies.py`, and the leave half is ticket 25's `LeaveCalendar`,
+which the endpoints build the same way.
 
 **Both notifications are digest candidates** (ticket 20): the reminder is raised
 in-app immediately and its email row waits at `pending`, so an employee opening the
@@ -49,14 +49,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db import dispose_engine, get_session_factory
+from app.domain.approval.service import ApprovalService
 from app.domain.attendance.anomalies import AnomalyReminderReport, AnomalyScanReport
 from app.domain.attendance.anomaly_service import AnomalyService
 from app.domain.attendance.business_day import madrid_today
 from app.domain.attendance.notify import AnomalyReminder
+from app.domain.leave.service import LeaveCalendar, LeaveService
+from app.domain.notification.approval import ApprovalNotifier
 from app.domain.notification.service import NotificationService
 from app.domain.schedule.service import ScheduleService
 from app.logging import configure_logging, get_logger
+from app.repositories.approval import PostgresApprovalRepository
 from app.repositories.attendance import PostgresAnomalyRepository
+from app.repositories.leave import PostgresLeaveRepository
 from app.repositories.notification import PostgresNotificationRepository
 from app.repositories.schedule import PostgresScheduleRepository
 
@@ -69,22 +74,50 @@ def previous_day(today: date) -> date:
 
 
 def anomaly_service(session: AsyncSession) -> AnomalyService:
-    """The module, with the scheduling module behind it.
+    """The module, with the scheduling module and the leave calendar behind it.
 
     Built here rather than inside the service, exactly as the attendance endpoints
-    build it: the scan asks "what did the schedule expect", and it never learns what
-    a schedule is.
+    build it: the scan asks "what did the schedule expect" and "is this person on
+    leave", and it never learns what a schedule or a leave request is. The leave half
+    is ticket 25's `LeaveLookup`, which replaces ticket 23's `AssumeNoLeave`; the
+    endpoints build the same object, so a day a correction re-examines and a day the
+    nightly pass examines are judged against the same calendar.
     """
     return AnomalyService(
         PostgresAnomalyRepository(session),
         expectations=ScheduleService(PostgresScheduleRepository(session), session),
+        leave=LeaveCalendar(PostgresLeaveRepository(session)),
+    )
+
+
+def leave_service(session: AsyncSession) -> LeaveService:
+    """The leave module, wired as the leave endpoints wire it."""
+    approvals = PostgresApprovalRepository(session)
+    return LeaveService(
+        PostgresLeaveRepository(session),
+        session,
+        expectations=ScheduleService(PostgresScheduleRepository(session), session),
+        approvals=ApprovalNotifier(
+            engine=ApprovalService(approvals, session),
+            notifications=NotificationService(PostgresNotificationRepository(session), session),
+            approvals=approvals,
+        ),
+        annual_leave_days=get_settings().annual_leave_days,
     )
 
 
 async def scan_day(business_date: date) -> AnomalyScanReport:
-    """Phase one: record what this day is missing, for everybody it was owed by."""
+    """Phase one: record what this day is missing, for everybody it was owed by.
+
+    **Balances are settled first.** A leave the engine approved and a crash left
+    unsettled is not yet *in force* as far as the calendar is concerned, and the pass
+    would flag the day as an absence for somebody who is away. The settle is
+    idempotent and touches only documents whose engine answer is already in, so the
+    ordinary case is one indexed query and nothing written.
+    """
     factory = get_session_factory()
     async with factory() as session:
+        await leave_service(session).settle_decided()
         report = await anomaly_service(session).scan(business_date)
     for failure in report.failed:
         logger.error(

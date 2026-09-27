@@ -28,9 +28,10 @@ from enum import StrEnum
 from uuid import UUID
 
 from app.domain.access.permissions import (
-    ATTENDANCE_COMPANY_ROLES,
     ATTENDANCE_CROSS_ACTIONS,
+    COMPANY_RECORD_ROLES,
     DOCUMENT_CROSS_DEPARTMENT_ROLES,
+    LEAVE_CROSS_ACTIONS,
     PROJECT_ADMIN_ROLES,
     SELF_ONLY_ACTIONS,
     Action,
@@ -78,6 +79,11 @@ class ResourceKind(StrEnum):
     #: self-only branch below and nothing else, which is exactly what the ticket
     #: asks for: reading or writing somebody else's week is refused for every role.
     TIMESHEET = "timesheet"
+    #: A kind of leave (ticket 25): the catalogue row that says whether a leave is
+    #: paid, needs proof or spends the annual allowance. Its own kind because it is
+    #: not a person's record and not a schedule — it is the organisation's list of
+    #: what it offers, decided by catalogue and by role alone.
+    LEAVE_TYPE = "leave_type"
 
 
 @dataclass(slots=True, frozen=True)
@@ -347,14 +353,15 @@ def _can_on_resource(principal: Principal, action: Action, resource: Resource) -
             f"owner={resource.owner_employee_id or 'unset'}",
         )
 
-    # Somebody else's attendance (ticket 24), decided before the generic path can
-    # reach it. The path below would answer a manager's read of a colleague with the
-    # department clause — they share a department — and that is precisely the
-    # escalation the ticket refuses: a managerial position reaches its own reports,
-    # not its team's records. HR's remit, by contrast, does not depend on the row at
-    # all, which is why it is a role check here and not a second resource clause.
-    if action in ATTENDANCE_CROSS_ACTIONS:
-        return _can_on_attendance(principal, action, resource)
+    # Somebody else's personnel record (ticket 24, extended by ticket 25 to leave),
+    # decided before the generic path can reach it. The path below would answer a
+    # manager's read of a colleague with the department clause — they share a
+    # department — and that is precisely the escalation the tickets refuse: a
+    # managerial position reaches its own reports, not its team's records. HR's remit,
+    # by contrast, does not depend on the row at all, which is why it is a role check
+    # here and not a second resource clause.
+    if action in ATTENDANCE_CROSS_ACTIONS or action in LEAVE_CROSS_ACTIONS:
+        return _can_on_record(principal, action, resource)
 
     reasons: list[Reason] = [Reason.ROLE_PERMITS]
 
@@ -448,30 +455,30 @@ def _can_on_project(principal: Principal, action: Action, resource: Resource) ->
     )
 
 
-def _can_on_attendance(
-    principal: Principal, action: Action, resource: Resource
-) -> Decision:
-    """Somebody else's attendance record: two reaches, and nothing else.
+def _can_on_record(principal: Principal, action: Action, resource: Resource) -> Decision:
+    """Somebody else's personnel record — their hours, their leave — two reaches, and
+    nothing else.
 
-    **HR's is the company.** The working-time record is a personnel record, and
-    §4.1 gives HR the personnel file; the four-year obligation the Spanish rules
-    impose is kept for exactly this reading. Nothing about the row enters into it,
-    which is why the check is a role and not a clause.
+    **HR's is the company.** The working-time record is a personnel record and §4.1
+    gives HR the personnel file; the four-year obligation the Spanish rules impose is
+    kept for exactly this reading, and a leave is part of the same file. Nothing about
+    the row enters into it, which is why the check is a role and not a clause.
 
     **A manager's is their reports.** `principal.reports_employee_ids` is built from
-    the assignments that name this person as the approver — the same relationship
-    the approval route is resolved from — so "my report" means here what it means
-    everywhere else. A resource that names nobody, or names somebody who does not
-    report to the caller, is refused: "we cannot tell that they report to you" is a
-    refusal, not a permission, for the reason the self-only branch gives.
+    the assignments that name this person as the approver — the same relationship the
+    approval route is resolved from — so "my report" means here what it means
+    everywhere else, and it is what makes approving their leave possible at all. A
+    resource that names nobody, or names somebody who does not report to the caller,
+    is refused: "we cannot tell that they report to you" is a refusal, not a
+    permission, for the reason the self-only branch gives.
 
     **The department is not part of this rule, deliberately.** A manager and a
     colleague share a department, and the generic path below would read that as
-    permission; these actions exist because the ticket refuses that reading by name.
+    permission; these actions exist because the tickets refuse that reading by name.
     """
-    if bool(principal.roles & ATTENDANCE_COMPANY_ROLES):
+    if bool(principal.roles & COMPANY_RECORD_ROLES):
         return Decision(
-            True, (Reason.IS_PRIVILEGED,), "hr reaches the whole company's working-time record"
+            True, (Reason.IS_PRIVILEGED,), "hr reaches the whole company's record"
         )
 
     if (

@@ -46,6 +46,9 @@ CLEANUP_TABLES = (
     "holidays",
     "work_schedule_days",
     "work_schedules",
+    "leave_balance_entries",
+    "leave_requests",
+    "leave_balances",
     "personnel_changes",
     "approval_decisions",
     "approval_steps",
@@ -63,6 +66,25 @@ CLEANUP_TABLES = (
     "employees",
     "job_positions",
     "departments",
+)
+
+#: The leave catalogue's starter rows, which are *reference data* rather than
+#: anything a test wrote: migration 0019 seeds them so an installation is usable
+#: without anybody running SQL, and every installation keeps them. They are the one
+#: thing this wipe leaves behind, which is why `leave_types` is deliberately absent
+#: from `CLEANUP_TABLES` — truncating it would take the catalogue away from every
+#: test that runs afterwards. What the wipe does remove is whatever a test *added*,
+#: because a code left behind is the next run's "that code is taken" — the failure
+#: mode this file's docstring is about.
+#:
+#: A migration that seeds a fifth starter type belongs in this list; the ids are
+#: written as literals so that a rename in the migration shows up here as a
+#: disappearing row rather than as silent agreement.
+STARTER_LEAVE_TYPE_IDS = (
+    "1f0f5d5e-0001-4000-8000-000000000001",
+    "1f0f5d5e-0001-4000-8000-000000000002",
+    "1f0f5d5e-0001-4000-8000-000000000003",
+    "1f0f5d5e-0001-4000-8000-000000000004",
 )
 
 
@@ -89,12 +111,24 @@ class Platform:
         order to get wrong and no stale row to trip over.
 
         RESTART IDENTITY resets the sequences a test might otherwise inherit
-        (`audit_log.id` is the only bigserial today).
+        (`audit_log.id` is the only bigserial today — the leave ledger's `seq` is the
+        second, and it is reset for the same reason).
         """
         async with self.factory() as session:
             await session.execute(
                 text(
                     "TRUNCATE TABLE " + ", ".join(CLEANUP_TABLES) + " RESTART IDENTITY CASCADE"
+                )
+            )
+            # The catalogue stays; what a test added to it does not. See
+            # `STARTER_LEAVE_TYPE_IDS`. The balances and requests that referred to a
+            # removed type went with the truncate above, so the delete cannot be
+            # blocked by a foreign key.
+            await session.execute(
+                text(
+                    "DELETE FROM leave_types WHERE id NOT IN ("
+                    + ", ".join(f"'{value}'::uuid" for value in STARTER_LEAVE_TYPE_IDS)
+                    + ")"
                 )
             )
             await session.commit()

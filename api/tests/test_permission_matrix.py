@@ -63,6 +63,8 @@ from app.domain.access.kernel import (
 from app.domain.access.permissions import (
     ATTENDANCE_COMPANY_ROLES,
     ATTENDANCE_CROSS_ACTIONS,
+    COMPANY_RECORD_ROLES,
+    LEAVE_CROSS_ACTIONS,
     PROJECT_ADMIN_ROLES,
     SELF_ONLY_ACTIONS,
     Action,
@@ -227,6 +229,22 @@ DESIGN_GRANTS: dict[Action, frozenset[str]] = {
     Action.SCHEDULE_MANAGE: frozenset({"admin", "hr"}),
     Action.HOLIDAY_READ: EVERYONE,
     Action.HOLIDAY_MANAGE: frozenset({"admin", "hr"}),
+    # Leave (ticket 25). "Their own data" a fifth time, and the same reading as
+    # attendance: §4.1 gives an employee their own record, a manager their reports'
+    # leave (which is what approving it needs) and HR the company's, and the design's
+    # §8 note that a sick leave is special-category data is what narrows the *file*
+    # attached to one — `leave.attachment_read` is HR alone, and a manager who approves
+    # the absence is refused the medical proof. Maintaining the catalogue and granting
+    # an allowance are HR's and administration's, because those four flags and that
+    # figure are what a leave costs somebody.
+    Action.LEAVE_TYPE_READ: EVERYONE,
+    Action.LEAVE_TYPE_MANAGE: frozenset({"admin", "hr"}),
+    Action.LEAVE_READ_OWN: EVERYONE,
+    Action.LEAVE_REQUEST_OWN: EVERYONE,
+    Action.LEAVE_READ_REPORT: frozenset({"manager"}),
+    Action.LEAVE_READ_ALL: frozenset({"hr"}),
+    Action.LEAVE_ATTACHMENT_READ: frozenset({"hr"}),
+    Action.LEAVE_BALANCE_MANAGE: frozenset({"admin", "hr"}),
     # Weekly timesheets (ticket 28). "Their own data" a fourth time, and self-only
     # through `SELF_ONLY_ACTIONS`: §4.1 gives an employee their own record, and 代填 —
     # filling in somebody else's hours — is a refusal the ticket states by name. The
@@ -301,6 +319,19 @@ KIND_FOR_ACTION: dict[Action, ResourceKind] = {
     Action.TIMESHEET_READ_OWN: ResourceKind.TIMESHEET,
     Action.TIMESHEET_WRITE_OWN: ResourceKind.TIMESHEET,
     Action.TIMESHEET_SUBMIT_OWN: ResourceKind.TIMESHEET,
+    # Leave (ticket 25). The catalogue is its own kind — it is the organisation's list
+    # of what it offers rather than anybody's record, and the kernel's generic path
+    # decides it by role alone. Everything else about a leave is a fact about a
+    # *person*, so the resource is the employee whose leave it is, exactly as the
+    # attendance actions carry the subject.
+    Action.LEAVE_TYPE_READ: ResourceKind.LEAVE_TYPE,
+    Action.LEAVE_TYPE_MANAGE: ResourceKind.LEAVE_TYPE,
+    Action.LEAVE_READ_OWN: ResourceKind.EMPLOYEE,
+    Action.LEAVE_REQUEST_OWN: ResourceKind.EMPLOYEE,
+    Action.LEAVE_READ_REPORT: ResourceKind.EMPLOYEE,
+    Action.LEAVE_READ_ALL: ResourceKind.EMPLOYEE,
+    Action.LEAVE_ATTACHMENT_READ: ResourceKind.EMPLOYEE,
+    Action.LEAVE_BALANCE_MANAGE: ResourceKind.EMPLOYEE,
 }
 
 #: Actions the catalogue decides by role alone, with no resource clause to apply.
@@ -328,6 +359,10 @@ RESOURCE_FREE_READS: frozenset[Action] = frozenset(
         Action.NOTIFICATION_READ_OWN,
         Action.PROJECT_READ,
         Action.PROJECT_TASK_READ,
+        # The leave catalogue, published like the holiday calendar: which kinds of
+        # leave a company offers is not personnel data, and the form that files a
+        # request is rendered from it (ticket 25).
+        Action.LEAVE_TYPE_READ,
     }
 )
 
@@ -438,6 +473,13 @@ def design_says(role: str, action: Action, shape: tuple[str | None, str | None] 
     if action in ATTENDANCE_CROSS_ACTIONS:
         return bool(frozenset({role, "employee"}) & ATTENDANCE_COMPANY_ROLES)
 
+    # The same two reaches over somebody else's *leave* (ticket 25), and the generated
+    # resource names no owner and this dimension contains no reports — so a manager
+    # reaches nothing here while HR's remit does not depend on the row at all. The
+    # manager's own case is asserted by name in layer 4.
+    if action in LEAVE_CROSS_ACTIONS:
+        return bool(frozenset({role, "employee"}) & COMPANY_RECORD_ROLES)
+
     held = frozenset({role, "employee"})
     clearance, department = shape
 
@@ -493,10 +535,12 @@ def test_the_generated_matrix_covers_every_dimension() -> None:
     # your own week, maintaining schedules, reading the calendar, maintaining it —
     # ticket 28 adds three for the weekly timesheet (read your own week, write it,
     # file it), ticket 24 adds four for attendance corrections (a report's record,
-    # the company's record, your own correction, HR's), and the sum is asserted
-    # literally so that a fourth arrives as a failing test rather than as extra
-    # coverage.
-    assert len(cases) == 7 * 39 * 13
+    # the company's record, your own correction, HR's), ticket 25 adds eight for leave
+    # (the catalogue and maintaining it, your own balances and your own requests, a
+    # report's leave, the company's, the attachment behind a sick note, and granting
+    # an allowance), and the sum is asserted literally so that a fifth arriving as a
+    # failing test rather than as extra coverage.
+    assert len(cases) == 7 * 47 * 13
     assert 0 < permitted < len(cases), "the expectation answers the same way everywhere"
 
     discriminating = [
@@ -1016,6 +1060,36 @@ HTTP_MATRIX: tuple[tuple[str, str, Action | None], ...] = (
     ("DELETE", "/api/v1/timesheets/entries/{task_id}", Action.TIMESHEET_WRITE_OWN),
     ("POST", "/api/v1/timesheets/copy-previous", Action.TIMESHEET_WRITE_OWN),
     ("POST", "/api/v1/timesheets/submit", Action.TIMESHEET_SUBMIT_OWN),
+    # Leave (ticket 25). The catalogue is published and maintaining it is HR's and
+    # administration's. Everything about a person's own leave is self-only at the role
+    # level — every role holds `employee` — and which of the three reads applies is a
+    # fact about the caller and the subject, so the kernel is asked inside the handler
+    # and these rows record the action a request about *the caller* performs. The
+    # manager's reach over a report, HR's over the company, and the refusals in between
+    # are asserted by name in `test_leave.py`.
+    ("GET", "/api/v1/leave/types", Action.LEAVE_TYPE_READ),
+    ("POST", "/api/v1/leave/types", Action.LEAVE_TYPE_MANAGE),
+    # The code in the path is one that does not exist, deliberately: patching a *seeded*
+    # type would change the catalogue for every test that runs afterwards — the starter
+    # rows are reference data the suite keeps — and a 404 for a permitted caller is what
+    # this layer expects of a row it never created anyway.
+    ("PATCH", "/api/v1/leave/types/{code}", Action.LEAVE_TYPE_MANAGE),
+    ("GET", "/api/v1/leave/balances", Action.LEAVE_READ_OWN),
+    # The year and the type are literal here and the person is the row's subject: the
+    # matrix needs a path it can build, and HR reaching a real employee's balance is
+    # exactly the permission this row asserts.
+    ("PUT", "/api/v1/leave/balances/{subject}/2026/annual", Action.LEAVE_BALANCE_MANAGE),
+    ("POST", "/api/v1/leave/requests", Action.LEAVE_REQUEST_OWN),
+    ("GET", "/api/v1/leave/requests", Action.LEAVE_READ_OWN),
+    ("GET", "/api/v1/leave/requests/{request_id}", Action.LEAVE_READ_OWN),
+    ("POST", "/api/v1/leave/requests/{request_id}/submit", Action.LEAVE_REQUEST_OWN),
+    (
+        "POST",
+        "/api/v1/leave/requests/{request_id}/decide",
+        Action.SESSION_READ_OWN,
+    ),
+    ("POST", "/api/v1/leave/requests/{request_id}/withdraw", Action.LEAVE_REQUEST_OWN),
+    ("GET", "/api/v1/leave/calendar", Action.LEAVE_READ_OWN),
 )
 
 
@@ -1121,6 +1195,27 @@ def http_payload(path: str, *, department: str, employee: str) -> dict:
         "/api/v1/attendance/corrections/{correction_id}": {"reason": "Matriz dos"},
         "/api/v1/attendance/corrections/{correction_id}/submit": {},
         "/api/v1/attendance/corrections/{correction_id}/decide": {"decision": "approve"},
+        # Leave (ticket 25). The type code is fresh per call for the reason the project
+        # and schedule codes are: it is an identity, and a second role creating it would
+        # otherwise get a 409 that reads like a permission failure. The request is about
+        # the caller, and the dates are far enough out that no other row in the suite
+        # overlaps them — a person with an approved leave already covering a date is
+        # refused a second request over it, which is a 409 and not this layer's subject.
+        "/api/v1/leave/types": {
+            "code": f"mx{suffix}",
+            "name_es": "Matriz",
+            "name_en": "Matrix",
+        },
+        "/api/v1/leave/types/{code}": {"is_active": False},
+        "/api/v1/leave/balances/{subject}/2026/annual": {"entitled_days": 30},
+        "/api/v1/leave/requests": {
+            "leave_type": "annual",
+            "start_date": "2027-07-05",
+            "end_date": "2027-07-06",
+        },
+        "/api/v1/leave/requests/{request_id}/submit": {},
+        "/api/v1/leave/requests/{request_id}/decide": {"decision": "approve"},
+        "/api/v1/leave/requests/{request_id}/withdraw": {},
         # Ticket 27. `suffix` is fresh per call, so repeated runs of the matrix in
         # one test cannot collide on the project code — which is unique for good.
         "/api/v1/projects": {
@@ -1211,6 +1306,8 @@ async def test_the_http_matrix_for(platform: Platform, role: str) -> None:
             project_id=subject,
             task_id=subject,
             correction_id=subject,
+            request_id=subject,
+            code="no-such-type",
         )
         payload = (
             http_payload(template, department=department, employee=accountless)
@@ -1219,8 +1316,16 @@ async def test_the_http_matrix_for(platform: Platform, role: str) -> None:
         )
         # The timesheet surface names its week in the query string, as ticket 21's
         # routes do for a surface that answers about the caller: the week is a date
-        # rather than a row id, and this is the one layer that has to supply it.
-        params = {"week": MATRIX_WEEK_START.isoformat()} if "/timesheets/" in path else None
+        # rather than a row id, and this is the one layer that has to supply it. The
+        # leave calendar is the same shape — a range of dates.
+        params: dict | None = None
+        if "/timesheets/" in path:
+            params = {"week": MATRIX_WEEK_START.isoformat()}
+        elif "/leave/calendar" in path:
+            params = {
+                "from_date": MATRIX_WEEK_START.isoformat(),
+                "to_date": (MATRIX_WEEK_START + timedelta(days=6)).isoformat(),
+            }
         response = (
             await actor.call(method, path, json=payload, params=params)
             if payload is not None
@@ -1271,7 +1376,7 @@ async def test_an_unauthenticated_request_reaches_no_endpoint(platform: Platform
     for method, template, _action in HTTP_MATRIX:
         path = template.format(
             subject=uuid4(), project=uuid4(), project_id=uuid4(), task_id=uuid4(),
-            correction_id=uuid4(),
+            correction_id=uuid4(), request_id=uuid4(), code="annual",
         )
         response = await platform.client.request(method, path)
         if (response.status_code, response.json()["error"]["code"]) != (
@@ -1484,6 +1589,50 @@ async def test_a_manager_cannot_read_a_non_reports_attendance(
     assert visible == {first}, (
         f"a manager's context read {sorted(visible)} of employees {sorted({first, second})}"
     )
+
+
+async def test_a_manager_cannot_read_a_non_reports_leave_nor_the_note_behind_it() -> None:
+    """Prevents "may approve the absence" being read as "may read the sick note".
+
+    Ticket 25's two lines, and the design's §8 is why they are two: a manager decides
+    the leave through the reporting relationship, and the *file* attached to it is HR's
+    alone — a diagnosis in a manager's hands is the disclosure the AEPD position is
+    about. HR reaches somebody's leave through `leave.read_all` and never through the
+    employee's own action, which is what makes the self-only half a refusal rather than
+    a role check.
+    """
+    report = Resource(
+        ResourceKind.EMPLOYEE, department_id=OTHER_DEPARTMENT, owner_employee_id=REPORT_EMPLOYEE
+    )
+    stranger = Resource(
+        ResourceKind.EMPLOYEE, department_id=OTHER_DEPARTMENT, owner_employee_id=OTHER_EMPLOYEE
+    )
+    manager = principal("manager", reports=(REPORT_EMPLOYEE,))
+
+    assert can(manager, Action.LEAVE_READ_REPORT, report).allowed
+    refused = can(manager, Action.LEAVE_READ_REPORT, stranger)
+    assert refused.denied, f"a manager read a non-report's leave: {refused.detail}"
+    assert refused.primary_reason is Reason.NOT_MANAGER_OF_SUBJECT
+
+    # The note is not the leave: a manager is refused it by role, for their own report.
+    note = can(manager, Action.LEAVE_ATTACHMENT_READ, report)
+    assert note.denied, f"a manager read the attachment: {note.detail}"
+    assert note.primary_reason is Reason.ROLE_LACKS_PERMISSION
+    assert can(principal("hr"), Action.LEAVE_ATTACHMENT_READ, stranger).allowed
+
+    # HR reaches the company's leave through its own action, not through the
+    # employee's — which stays self-only for every role. The control is the first
+    # line: the same action *is* allowed for the caller's own record, so the refusal
+    # below is ownership and not a role list that happens to exclude HR.
+    own = Resource(ResourceKind.EMPLOYEE, owner_employee_id=MY_EMPLOYEE)
+    assert can(principal("hr"), Action.LEAVE_READ_OWN, own).allowed
+    refused_own = can(principal("hr"), Action.LEAVE_READ_OWN, stranger)
+    assert refused_own.denied, "HR read somebody else's leave through the own action"
+    assert refused_own.primary_reason is Reason.NOT_OWNER
+    assert can(principal("employee"), Action.LEAVE_READ_OWN, own).allowed
+    assert can(principal("admin"), Action.LEAVE_READ_ALL, own).denied
+    assert can(principal("employee"), Action.LEAVE_REQUEST_OWN, stranger).denied
+    assert can(principal("hr"), Action.LEAVE_BALANCE_MANAGE, stranger).allowed
 
 
 async def test_an_ordinary_employee_cannot_read_somebody_elses_salary(

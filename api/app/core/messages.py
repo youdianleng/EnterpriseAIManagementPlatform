@@ -253,6 +253,41 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.timesheet_copy_source_invalid": (
             "La semana anterior no tiene horas que copiar."
         ),
+        "errors.leave_type_not_found": "Ese tipo de permiso no existe.",
+        "errors.leave_request_not_found": "No se encontró esa solicitud de permiso.",
+        "errors.leave_type_code_taken": "Ya existe un tipo de permiso con ese código.",
+        "errors.leave_type_inactive": "Ese tipo de permiso ya no se ofrece. Elige otro.",
+        "errors.leave_type_invalid": (
+            "El tipo de permiso necesita un código y un nombre en los dos idiomas."
+        ),
+        "errors.leave_request_invalid": (
+            "La solicitud de permiso no es válida: revisa las fechas, el tipo y el "
+            "justificante."
+        ),
+        "errors.leave_request_not_draft": (
+            "Esta solicitud ya no se puede modificar en su estado actual."
+        ),
+        "errors.leave_request_overlaps": (
+            "Ya tienes una solicitud de permiso que cubre alguno de esos días."
+        ),
+        "errors.leave_balance_insufficient": (
+            "No tienes saldo suficiente para esos días. Revisa los días disponibles."
+        ),
+        "errors.leave_already_started": (
+            "El permiso ya ha comenzado y no se puede anular. Recursos Humanos puede "
+            "corregir el registro mediante el flujo de corrección de fichajes."
+        ),
+        "errors.leave_not_withdrawable": "Esta solicitud ya no se puede anular.",
+        "errors.leave_submission_refused": (
+            "No se pudo enviar la solicitud a aprobación. Revisa su estado e inténtalo de nuevo."
+        ),
+        "errors.leave_attachment_required": (
+            "Este tipo de permiso necesita un justificante. Adjunta la referencia del "
+            "fichero guardado."
+        ),
+        "errors.leave_settle_failed": (
+            "La solicitud se resolvió y el saldo no se pudo actualizar. Se reintentará."
+        ),
         "errors.internal_error": "Se produjo un error interno. Inténtalo de nuevo más tarde.",
         "errors.service_unavailable": "El servicio no está disponible en este momento.",
     },
@@ -480,6 +515,39 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         ),
         "errors.timesheet_copy_source_invalid": (
             "The previous week has no hours to copy."
+        ),
+        "errors.leave_type_not_found": "There is no such leave type.",
+        "errors.leave_request_not_found": "That leave request does not exist.",
+        "errors.leave_type_code_taken": "A leave type with that code already exists.",
+        "errors.leave_type_inactive": "That leave type is no longer offered. Choose another.",
+        "errors.leave_type_invalid": (
+            "A leave type needs a code and a name in both languages."
+        ),
+        "errors.leave_request_invalid": (
+            "That leave request is not valid: check the dates, the type and the attachment."
+        ),
+        "errors.leave_request_not_draft": (
+            "This request cannot be changed in its current state."
+        ),
+        "errors.leave_request_overlaps": (
+            "You already have a leave request covering one of those days."
+        ),
+        "errors.leave_balance_insufficient": (
+            "You do not have enough days left for this request. Check your remaining days."
+        ),
+        "errors.leave_already_started": (
+            "This leave has already started and cannot be withdrawn. HR can correct the "
+            "record through the attendance correction flow."
+        ),
+        "errors.leave_not_withdrawable": "This request can no longer be withdrawn.",
+        "errors.leave_submission_refused": (
+            "The request could not be filed for approval. Check its state and try again."
+        ),
+        "errors.leave_attachment_required": (
+            "This leave type requires an attachment. Send the reference of the stored file."
+        ),
+        "errors.leave_settle_failed": (
+            "The request was decided and its balance could not be updated. It will be retried."
         ),
         "errors.internal_error": "An internal error occurred. Please try again later.",
         "errors.service_unavailable": "The service is unavailable right now.",

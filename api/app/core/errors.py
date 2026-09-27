@@ -281,10 +281,59 @@ class ErrorCode(StrEnum):
     #: that is final. Carries the engine's own code in the detail.
     TIMESHEET_SUBMISSION_REFUSED = "ERR_TSH_013"
 
+    # Leave: the type catalogue, the year's allowance, and the request that spends
+    # it (ticket 25). Four themes, and the boundary between them is what a client
+    # shows. The request itself is unusable (`..._INVALID`); the *catalogue* is the
+    # caller's to maintain and they collided with it (`TYPE_CODE_TAKEN`); the
+    # document is not in a state that admits the act (`REQUEST_NOT_DRAFT`,
+    # `NOT_WITHDRAWABLE`, `ALREADY_STARTED`) — a 409 and not a 403, because the
+    # caller owns the document and is being told what its state is; and the year's
+    # allowance does not cover it (`BALANCE_INSUFFICIENT`, whose detail states the
+    # remainder, which is the whole point of the refusal).
+    LEAVE_TYPE_NOT_FOUND = "ERR_LVE_001"
+    #: The code is a type's identity for good: a balance refers to the row and a
+    #: report names the code, so reusing one would make two types share a name in a
+    #: record that outlives both.
+    LEAVE_TYPE_CODE_TAKEN = "ERR_LVE_002"
+    #: Retired from the catalogue: nothing new may be filed under it. A request
+    #: already filed under it is untouched.
+    LEAVE_TYPE_INACTIVE = "ERR_LVE_003"
+    #: A type that states nothing usable — no code, or a name missing from one of the
+    #: two languages the interface ships in.
+    LEAVE_TYPE_INVALID = "ERR_LVE_004"
+    LEAVE_REQUEST_NOT_FOUND = "ERR_LVE_005"
+    #: Inverted dates, a range longer than this module holds, an attachment reference
+    #: that is not a storage key, or a range that covers no working day — refused
+    #: rather than accepted as zero days, because a leave that costs nothing is a
+    #: leave no balance can account for.
+    LEAVE_REQUEST_INVALID = "ERR_LVE_006"
+    #: Only a draft is the requester's to file, and only a filed document can be
+    #: decided. A filed request is what two people were asked to approve.
+    LEAVE_REQUEST_NOT_DRAFT = "ERR_LVE_007"
+    #: This person already has an open request covering one of these dates. Two
+    #: overlapping leaves would be two deductions for one absence.
+    LEAVE_REQUEST_OVERLAPS = "ERR_LVE_008"
+    #: The year's balance does not cover the request. The detail names the four
+    #: figures and the remainder, because "you have three days left" and "you have
+    #: thirty entitled, two used, twenty-five reserved" are different answers.
+    LEAVE_BALANCE_INSUFFICIENT = "ERR_LVE_009"
+    #: The leave has begun. Withdrawing it would take back a day somebody is already
+    #: away for; the refusal names HR's after-the-fact correction instead.
+    LEAVE_ALREADY_STARTED = "ERR_LVE_010"
+    #: Rejected, already withdrawn, or never filed: nothing left to withdraw.
+    LEAVE_NOT_WITHDRAWABLE = "ERR_LVE_011"
+    #: The engine refused to file it — a request already open for this document, or a
+    #: rejection that is final. Carries the engine's own code in the detail.
+    LEAVE_SUBMISSION_REFUSED = "ERR_LVE_012"
+    #: The type requires an attachment and the request carries no reference to one.
+    LEAVE_ATTACHMENT_REQUIRED = "ERR_LVE_013"
+    #: Decided, and the balance did not move. The decision stands and the settle
+    #: sweep retries it, which is the honest reading of "approved and not yet spent".
+    LEAVE_SETTLE_FAILED = "ERR_LVE_014"
+
     # Cross-cutting.
     INTERNAL_ERROR = "ERR_INTERNAL_001"
     SERVICE_UNAVAILABLE = "ERR_INTERNAL_002"
-
 
 @dataclass(frozen=True, slots=True)
 class ErrorDefinition:
@@ -528,6 +577,32 @@ ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
     # 403 with its own code so the client can route to the change-password screen
     # instead of showing a permission error.
     ErrorCode.PASSWORD_CHANGE_REQUIRED: ErrorDefinition(403, "errors.password_change_required"),
+    # Leave (ticket 25). 404 for the two lookups; 409 for everything that conflicts
+    # with a state a document or a balance is already in — an insufficient balance,
+    # a leave that has begun, a request that is not a draft, a code already in use;
+    # and 422 for the four the caller wrote wrong. `SCHEDULE_INACTIVE`'s reasoning
+    # applies to `LEAVE_TYPE_INACTIVE`: nothing conflicts, the type is simply not
+    # offered any more, and the fix is to choose another one.
+    ErrorCode.LEAVE_TYPE_NOT_FOUND: ErrorDefinition(404, "errors.leave_type_not_found"),
+    ErrorCode.LEAVE_REQUEST_NOT_FOUND: ErrorDefinition(404, "errors.leave_request_not_found"),
+    ErrorCode.LEAVE_TYPE_CODE_TAKEN: ErrorDefinition(409, "errors.leave_type_code_taken"),
+    ErrorCode.LEAVE_BALANCE_INSUFFICIENT: ErrorDefinition(
+        409, "errors.leave_balance_insufficient"
+    ),
+    ErrorCode.LEAVE_ALREADY_STARTED: ErrorDefinition(409, "errors.leave_already_started"),
+    ErrorCode.LEAVE_NOT_WITHDRAWABLE: ErrorDefinition(409, "errors.leave_not_withdrawable"),
+    ErrorCode.LEAVE_REQUEST_NOT_DRAFT: ErrorDefinition(409, "errors.leave_request_not_draft"),
+    ErrorCode.LEAVE_REQUEST_OVERLAPS: ErrorDefinition(409, "errors.leave_request_overlaps"),
+    ErrorCode.LEAVE_SUBMISSION_REFUSED: ErrorDefinition(
+        409, "errors.leave_submission_refused"
+    ),
+    ErrorCode.LEAVE_SETTLE_FAILED: ErrorDefinition(409, "errors.leave_settle_failed"),
+    ErrorCode.LEAVE_TYPE_INACTIVE: ErrorDefinition(422, "errors.leave_type_inactive"),
+    ErrorCode.LEAVE_TYPE_INVALID: ErrorDefinition(422, "errors.leave_type_invalid"),
+    ErrorCode.LEAVE_REQUEST_INVALID: ErrorDefinition(422, "errors.leave_request_invalid"),
+    ErrorCode.LEAVE_ATTACHMENT_REQUIRED: ErrorDefinition(
+        422, "errors.leave_attachment_required"
+    ),
     ErrorCode.INTERNAL_ERROR: ErrorDefinition(500, "errors.internal_error", expose_detail=False),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorDefinition(
         503, "errors.service_unavailable", expose_detail=False

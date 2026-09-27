@@ -56,6 +56,18 @@ class Settings(BaseSettings):
     personnel_apply_runner_enabled: bool = False
     personnel_apply_interval_seconds: int = 900
 
+    # --- leave (ticket 25) --------------------------------------------------
+    # The annual allowance, in natural days, and the whole of `docs/DESIGN.md`'s
+    # D7: "30 自然日 ... 额度可配置 (`annual_leave_days=30`)". A setting rather than
+    # a table because it is one company-wide policy number: `ANNUAL_LEAVE_DAYS=25`
+    # in the environment changes it with no code and no migration, while a table
+    # would need an endpoint, a permission, an audit trail and a UI before the
+    # first installation could change a number the design already names. What a
+    # *person* is granted is `leave_balances.entitled_days` — materialised from
+    # this figure when their year's row is first needed, and adjustable per person
+    # by HR — so the parameter is the default, not the only source.
+    annual_leave_days: int = 30
+
     # The browser talks to the API directly, so origins must be host-facing.
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
 

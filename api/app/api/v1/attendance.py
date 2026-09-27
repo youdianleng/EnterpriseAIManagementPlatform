@@ -85,6 +85,7 @@ from app.domain.attendance.models import (
 from app.domain.attendance.notify import AttendanceNotifier
 from app.domain.attendance.records import AttendanceRecords, DayDetail, PunchChain
 from app.domain.attendance.service import AttendanceService
+from app.domain.leave.service import LeaveCalendar
 from app.domain.notification.approval import ApprovalNotifier
 from app.domain.notification.service import NotificationService
 from app.domain.schedule.service import ScheduleService
@@ -94,6 +95,7 @@ from app.repositories.attendance import (
     PostgresAttendanceRepository,
     PostgresCorrectionRepository,
 )
+from app.repositories.leave import PostgresLeaveRepository
 from app.repositories.notification import PostgresNotificationRepository
 from app.repositories.schedule import PostgresScheduleRepository
 
@@ -372,8 +374,9 @@ def _corrections(session: AsyncSession) -> CorrectionService:
     """The correction flow, with the engine, the day and the anomalies behind it.
 
     The anomaly service is the same wiring the nightly job uses: `resolve_for_
-    correction` re-runs the detection the scan runs, against the same schedule, so a
-    day cleared by a correction and a day examined by the pass cannot disagree.
+    correction` re-runs the detection the scan runs, against the same schedule and the
+    same leave calendar, so a day cleared by a correction and a day examined by the pass
+    cannot disagree.
     """
     punches, service = _collaborators(session)
     expectations = ScheduleService(PostgresScheduleRepository(session), session)
@@ -383,7 +386,9 @@ def _corrections(session: AsyncSession) -> CorrectionService:
         punches=punches,
         attendance=service,
         anomalies=AnomalyService(
-            PostgresAnomalyRepository(session), expectations=expectations
+            PostgresAnomalyRepository(session),
+            expectations=expectations,
+            leave=LeaveCalendar(PostgresLeaveRepository(session)),
         ),
         approvals=_approvals(session),
     )
