@@ -4,7 +4,7 @@
 
 **Blocked by:** 22 — 工作日程、节假日表与月度应出勤；19 — 通知中心与投递追踪
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [x] 员工完成下班打卡后，通知发往其**主职位**对应的经理；若员工档案上指定了覆盖通知人，则发给覆盖对象
       — `test_clocking_out_notifies_the_manager_of_the_primary_position`、
