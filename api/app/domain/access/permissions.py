@@ -54,6 +54,14 @@ class Action(StrEnum):
     # record and nothing about a notification.
     NOTIFICATION_READ_OWN = "notification.read_own"
 
+    # Attendance. Self-service, and only self-service: you punch your own clock and
+    # you read your own record. Two actions rather than one because they are two
+    # acts — recording your time, and reading it — and because a manager reading a
+    # report's day, or HR reading the company's, must arrive as a *new* action with
+    # its own resource rule (ticket 24) rather than as a quiet widening of these.
+    ATTENDANCE_CLOCK_OWN = "attendance.clock_own"
+    ATTENDANCE_READ_OWN = "attendance.read_own"
+
     # Documents and the knowledge base. Fleshed out in tickets 12 and 31; present
     # here so the document module has an action to ask about from the start.
     DOCUMENT_READ = "document.read"
@@ -168,6 +176,22 @@ RULES: dict[Action, ActionRule] = {
             "is exactly who a notification is addressed to."
         ),
     ),
+    Action.ATTENDANCE_CLOCK_OWN: ActionRule(
+        roles=frozenset({"employee"}),
+        description=(
+            "Punching your own clock. Every account holds `employee`, so the role "
+            "list is the whole signed-in population; what makes the action self-only "
+            "is `SELF_ONLY_ACTIONS` beside this table, and no role bypasses it."
+        ),
+    ),
+    Action.ATTENDANCE_READ_OWN: ActionRule(
+        roles=frozenset({"employee"}),
+        description=(
+            "Reading your own day and your own range. The Spanish working-time "
+            "obligation gives the employee access to their own record, which is this "
+            "action and nobody else's."
+        ),
+    ),
     Action.DOCUMENT_READ: ActionRule(
         roles=frozenset({"admin", "hr", "finance", "it", "compliance", "employee"}),
         description="Reading a document; clearance and department decide which ones.",
@@ -202,6 +226,19 @@ def rule_for(action: Action) -> ActionRule:
 #: this exception. The exception is about departments only — it does not lift the
 #: clearance ceiling, which is the one condition no role escapes for documents.
 DOCUMENT_CROSS_DEPARTMENT_ROLES = frozenset({"hr", "compliance"})
+
+#: Actions about the caller's own material, and nothing else.
+#:
+#: For these two, ownership is not a convenience the kernel grants on the way to
+#: deciding — it *is* the decision. A punch belongs to the person who made it, and
+#: no role reaches somebody else's through this action: not a manager for their
+#: report, not HR for the company, and not an administrator either. Ticket 24 adds
+#: the actions that read a report's day and the company's, each with its own
+#: resource rule, which is what stops "HR may see attendance" from arriving as a
+#: quiet widening of "I may see my own".
+SELF_ONLY_ACTIONS: frozenset[Action] = frozenset(
+    {Action.ATTENDANCE_CLOCK_OWN, Action.ATTENDANCE_READ_OWN}
+)
 
 
 def roles_may(action: Action, roles: frozenset[str]) -> bool:

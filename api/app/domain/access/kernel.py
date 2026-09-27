@@ -29,6 +29,7 @@ from uuid import UUID
 
 from app.domain.access.permissions import (
     DOCUMENT_CROSS_DEPARTMENT_ROLES,
+    SELF_ONLY_ACTIONS,
     Action,
     roles_may,
     rule_for,
@@ -246,6 +247,27 @@ def _can_on_resource(principal: Principal, action: Action, resource: Resource) -
     # clearance — which for a document is somebody else's private upload.
     if resource.kind is ResourceKind.DOCUMENT:
         return _can_read_document(principal, resource)
+
+    # Self-only actions, decided before anything else can widen them. Ownership is
+    # the whole rule here rather than a clause of it, so this branch sits above the
+    # privileged-role and manager-of-subject allowances: an HR member and a
+    # manager are refused somebody else's attendance through these actions, and
+    # reach it through their own actions instead (ticket 24). A resource that does
+    # not name an owner is refused rather than allowed — "we cannot tell that it is
+    # yours" is a refusal, not a permission, and a decision function whose default
+    # on missing information is "yes" is how a filter-free query gets written.
+    if action in SELF_ONLY_ACTIONS:
+        if (
+            resource.owner_employee_id is not None
+            and resource.owner_employee_id == principal.employee_id
+        ):
+            return Decision(True, (Reason.IS_OWNER,), "the principal owns the resource")
+        return Decision(
+            False,
+            (Reason.NOT_OWNER,),
+            f"{action} is about the principal's own material; "
+            f"owner={resource.owner_employee_id or 'unset'}",
+        )
 
     reasons: list[Reason] = [Reason.ROLE_PERMITS]
 

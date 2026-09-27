@@ -82,7 +82,7 @@ def require(action: Action, kind: ResourceKind | None = None):
         if decision.allowed:
             return principal
 
-        await _audit_refusal(request, principal, action, decision, kind)
+        await audit_refusal(request, principal, action, decision, kind)
         raise AppError(
             ErrorCode.FORBIDDEN,
             detail=f"{action} refused: {decision.primary_reason} ({decision.detail})",
@@ -100,7 +100,7 @@ def require_public() -> None:
     return None
 
 
-async def _audit_refusal(
+async def audit_refusal(
     request: Request,
     principal: Principal,
     action: Action,
@@ -112,6 +112,11 @@ async def _audit_refusal(
     In its own session and committed immediately: the request is about to fail,
     and a record that is rolled back with it would leave the refusals invisible —
     which is the half of the audit trail an incident actually needs.
+
+    Public because a router that decides on a *resource the request names* — one
+    the endpoint's own `require()` dependency could not see, such as the employee
+    an attendance call is about — must record its refusal the same way rather than
+    inventing a second convention for it.
     """
     from app.audit import AuditAction, record
     from app.db import get_session_factory

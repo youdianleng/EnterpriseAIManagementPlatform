@@ -28,6 +28,11 @@ from app.main import app
 #: RESTRICT, so referencing rows go first.
 CLEANUP_ORDER = (
     "DELETE FROM audit_log",
+    # Attendance references employees with ON DELETE RESTRICT, and a correction
+    # references the punch it corrects the same way, so corrections go first.
+    "DELETE FROM attendance_daily",
+    "DELETE FROM attendance_events WHERE correction_of_event_id IS NOT NULL",
+    "DELETE FROM attendance_events",
     # A personnel change references its employee with ON DELETE RESTRICT, so it
     # has to go before them. Its approval request is a plain column, not a foreign
     # key, so the order against the engine's tables does not matter.

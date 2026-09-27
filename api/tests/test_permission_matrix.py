@@ -59,7 +59,7 @@ from app.domain.access.kernel import (
     ResourceKind,
     can,
 )
-from app.domain.access.permissions import Action
+from app.domain.access.permissions import SELF_ONLY_ACTIONS, Action
 from app.domain.access.principal import SYSTEM_ROLES, Principal
 from tests.support.platform import Platform
 
@@ -177,6 +177,13 @@ DESIGN_GRANTS: dict[Action, frozenset[str]] = {
     # "Their own data" again, for the notification centre: what the system told
     # you is yours to read. Nobody reads anybody else's, which is the whole rule.
     Action.NOTIFICATION_READ_OWN: EVERYONE,
+    # Attendance (ticket 21). §4.1 gives an employee their own record: the four
+    # hours they worked, the punch they forgot, the day they were absent. Every
+    # role holds `employee`, so the role list is everyone — and the *reading* that
+    # makes these two self-only is recorded in `design_says` below, because "every
+    # role may" and "nobody may do it for somebody else" are both true at once.
+    Action.ATTENDANCE_CLOCK_OWN: EVERYONE,
+    Action.ATTENDANCE_READ_OWN: EVERYONE,
 }
 
 #: The resource each action acts on. A document is decided by §4.2 whatever the
@@ -209,6 +216,10 @@ KIND_FOR_ACTION: dict[Action, ResourceKind] = {
     # Notifications hang off the person they were sent to, which is the employee
     # resource the router names when it asks the kernel.
     Action.NOTIFICATION_READ_OWN: ResourceKind.EMPLOYEE,
+    # Attendance is about a person's own record, so the employee resource is the
+    # one the router names — carrying the *subject's* employee id as its owner.
+    Action.ATTENDANCE_CLOCK_OWN: ResourceKind.EMPLOYEE,
+    Action.ATTENDANCE_READ_OWN: ResourceKind.EMPLOYEE,
 }
 
 ACTIONS = tuple(sorted(Action, key=str))
@@ -301,6 +312,15 @@ def design_says(role: str, action: Action, shape: tuple[str | None, str | None] 
     if shape is None:
         return True
 
+    # The self-only actions. Every generated resource is somebody else's — it
+    # names no owner, and the matrix's caller owns only what they own — so the
+    # answer is "no" for every role, HR and management included. §4.1 gives an
+    # employee their own attendance and gives nobody anybody else's through these
+    # two actions; ticket 24 crosses that line with a new action, which is the
+    # reason this expectation is written as a refusal rather than as a role check.
+    if action in SELF_ONLY_ACTIONS:
+        return False
+
     held = frozenset({role, "employee"})
     clearance, department = shape
 
@@ -341,7 +361,7 @@ def test_the_generated_matrix_covers_every_dimension() -> None:
     # Literal on purpose: `len(ACTIONS)` would agree with itself however many
     # actions the catalogue grew, and the point is that adding one is a decision
     # somebody makes here rather than something that happens.
-    assert len(cases) == 7 * 22 * 13
+    assert len(cases) == 7 * 24 * 13
     assert 0 < permitted < len(cases), "the expectation answers the same way everywhere"
 
     discriminating = [
@@ -776,6 +796,12 @@ HTTP_MATRIX: tuple[tuple[str, str, Action | None], ...] = (
     ("POST", "/api/v1/accounts", Action.ACCOUNT_MANAGE),
     ("GET", "/api/v1/audit-log", Action.AUDIT_READ),
     ("GET", "/api/v1/auth/session", None),
+    # Attendance (ticket 21). Every role may punch its own clock and read its own
+    # record; naming somebody else is a refusal the matrix's layer 4 covers by
+    # name, because it is a resource-level decision rather than a role one.
+    ("POST", "/api/v1/attendance/clock", Action.ATTENDANCE_CLOCK_OWN),
+    ("GET", "/api/v1/attendance/day", Action.ATTENDANCE_READ_OWN),
+    ("GET", "/api/v1/attendance/range", Action.ATTENDANCE_READ_OWN),
 )
 
 
@@ -806,6 +832,7 @@ def http_payload(path: str, *, department: str, employee: str) -> dict:
             "hire_date": "2024-01-15",
         },
         "/api/v1/accounts": {"employee_id": employee, "username": f"mx{suffix}"},
+        "/api/v1/attendance/clock": {"kind": "clock_in"},
     }[path]
 
 
