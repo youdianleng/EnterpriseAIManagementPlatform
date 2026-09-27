@@ -32,6 +32,8 @@ from app.domain.access.permissions import (
     COMPANY_RECORD_ROLES,
     DOCUMENT_CROSS_DEPARTMENT_ROLES,
     LEAVE_CROSS_ACTIONS,
+    OVERTIME_COMPANY_ROLES,
+    OVERTIME_CROSS_ACTIONS,
     PROJECT_ADMIN_ROLES,
     SELF_ONLY_ACTIONS,
     Action,
@@ -353,14 +355,18 @@ def _can_on_resource(principal: Principal, action: Action, resource: Resource) -
             f"owner={resource.owner_employee_id or 'unset'}",
         )
 
-    # Somebody else's personnel record (ticket 24, extended by ticket 25 to leave),
-    # decided before the generic path can reach it. The path below would answer a
-    # manager's read of a colleague with the department clause — they share a
-    # department — and that is precisely the escalation the tickets refuse: a
-    # managerial position reaches its own reports, not its team's records. HR's remit,
-    # by contrast, does not depend on the row at all, which is why it is a role check
-    # here and not a second resource clause.
-    if action in ATTENDANCE_CROSS_ACTIONS or action in LEAVE_CROSS_ACTIONS:
+    # Somebody else's personnel record (ticket 24, extended by ticket 25 to leave and
+    # by ticket 26 to overtime), decided before the generic path can reach it. The path
+    # below would answer a manager's read of a colleague with the department clause —
+    # they share a department — and that is precisely the escalation the tickets refuse:
+    # a managerial position reaches its own reports, not its team's records. The
+    # company-wide remit, by contrast, does not depend on the row at all, which is why
+    # it is a role check here and not a second resource clause.
+    if (
+        action in ATTENDANCE_CROSS_ACTIONS
+        or action in LEAVE_CROSS_ACTIONS
+        or action in OVERTIME_CROSS_ACTIONS
+    ):
         return _can_on_record(principal, action, resource)
 
     reasons: list[Reason] = [Reason.ROLE_PERMITS]
@@ -459,10 +465,14 @@ def _can_on_record(principal: Principal, action: Action, resource: Resource) -> 
     """Somebody else's personnel record — their hours, their leave — two reaches, and
     nothing else.
 
-    **HR's is the company.** The working-time record is a personnel record and §4.1
+    **The company's is a role.** The working-time record is a personnel record and §4.1
     gives HR the personnel file; the four-year obligation the Spanish rules impose is
-    kept for exactly this reading, and a leave is part of the same file. Nothing about
-    the row enters into it, which is why the check is a role and not a clause.
+    kept for exactly this reading, and a leave is part of the same file. Overtime is the
+    one exception, and it is stated as its own set: §4.1 gives finance the monthly
+    overtime export, because overtime pay is a payroll calculation, so
+    `OVERTIME_COMPANY_ROLES` names two roles where `COMPANY_RECORD_ROLES` names one.
+    Nothing about the row enters into either, which is why the check is a role and not a
+    clause.
 
     **A manager's is their reports.** `principal.reports_employee_ids` is built from
     the assignments that name this person as the approver — the same relationship the
@@ -476,9 +486,14 @@ def _can_on_record(principal: Principal, action: Action, resource: Resource) -> 
     colleague share a department, and the generic path below would read that as
     permission; these actions exist because the tickets refuse that reading by name.
     """
-    if bool(principal.roles & COMPANY_RECORD_ROLES):
+    company_roles = (
+        OVERTIME_COMPANY_ROLES if action in OVERTIME_CROSS_ACTIONS else COMPANY_RECORD_ROLES
+    )
+    if bool(principal.roles & company_roles):
         return Decision(
-            True, (Reason.IS_PRIVILEGED,), "hr reaches the whole company's record"
+            True,
+            (Reason.IS_PRIVILEGED,),
+            f"{sorted(principal.roles & company_roles)} reaches the whole company's record",
         )
 
     if (

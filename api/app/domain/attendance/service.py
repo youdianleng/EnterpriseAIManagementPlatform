@@ -61,6 +61,7 @@ from app.domain.attendance.models import (
     EventType,
     ExpectationSource,
     NewEvent,
+    OvertimeSource,
     TimeSource,
     utc_now,
 )
@@ -88,6 +89,7 @@ class AttendanceService:
         *,
         now: TimeSource = utc_now,
         expectations: ExpectationSource | None = None,
+        overtime: OvertimeSource | None = None,
     ) -> None:
         self._repository = repository
         self._now = now
@@ -96,6 +98,11 @@ class AttendanceService:
         # request path always supplies it; a caller that only wants the punch
         # arithmetic does not have to.
         self._expectations = expectations
+        # The second optional source, and optional for the same reason (ticket 26):
+        # without it `overtime_minutes` stays null, which is what the column held
+        # before the overtime module existed. The request path supplies it, so a day
+        # read anywhere in the API carries the day's approved overtime.
+        self._overtime = overtime
 
     # --- clocking ----------------------------------------------------------
 
@@ -200,6 +207,18 @@ class AttendanceService:
         await self._repository.commit()
         return record
 
+    async def rebuild_day(self, employee_id: UUID, business_date: date) -> DayRecord:
+        """`recompute_day`'s twin, without the commit.
+
+        The transaction belongs to the caller here, which is what lets another module's
+        write and the day it changed land together: ticket 26's overtime settlement
+        writes a record and then rebuilds this day, so the record and the
+        `overtime_minutes` read from it are one event rather than two that can disagree
+        after a crash. A caller inside this module wants `recompute_day`, which commits.
+        """
+        await self._require_employee(employee_id)
+        return await self._rebuild(employee_id, business_date)
+
     async def range_view(
         self, employee_id: UUID, from_date: date, to_date: date
     ) -> list[DayRecord]:
@@ -232,11 +251,16 @@ class AttendanceService:
         # One query for every day without a snapshot, however scattered: the gaps
         # in a month are usually the weekends, and a query per gap would turn a
         # calendar view into thirty round trips. The expectations come in one pass
-        # for the same reason.
+        # for the same reason, and so does the approved overtime (ticket 26).
         events = await self._repository.events_by_date(employee_id, gaps[0], gaps[-1])
         expected = (
             await self._expectations.day_expectations(employee_id, gaps[0], gaps[-1])
             if self._expectations is not None
+            else {}
+        )
+        overtime = (
+            await self._overtime.overtime_by_date(employee_id, gaps[0], gaps[-1])
+            if self._overtime is not None
             else {}
         )
         today = madrid_today(self._now())
@@ -249,6 +273,7 @@ class AttendanceService:
                 events=events.get(day, []),
                 today=today,
                 expected=expected.get(day),
+                overtime_minutes=overtime.get(day),
             )
             for day in days
         ]
@@ -278,6 +303,7 @@ class AttendanceService:
             events=events,
             today=madrid_today(self._now()),
             expected=await self._expectation(employee_id, business_date),
+            overtime_minutes=await self._overtime_minutes(employee_id, business_date),
         )
 
     async def _expectation(
@@ -292,6 +318,18 @@ class AttendanceService:
         if self._expectations is None:
             return None
         return await self._expectations.day_expectation(employee_id, business_date)
+
+    async def _overtime_minutes(self, employee_id: UUID, business_date: date) -> int | None:
+        """The day's approved overtime, or nothing when there is no overtime module.
+
+        The same shape and the same reason as `_expectation` above: one query for the
+        day being derived, and the range read asks its own question in one pass. The
+        figure comes back as the overtime module computes it — this module never
+        re-derives the smaller-of rule, it carries the answer into the snapshot.
+        """
+        if self._overtime is None:
+            return None
+        return await self._overtime.overtime_minutes(employee_id, business_date)
 
     async def _rebuild(self, employee_id: UUID, business_date: date) -> DayRecord:
         """Derive the day and write it, stamped with the moment it was rebuilt.

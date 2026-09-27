@@ -170,8 +170,26 @@ class AuditAction(StrEnum):
     LEAVE_REQUEST_DRAFTED = "leave_request.drafted"  # 25
     LEAVE_REQUEST_SETTLED = "leave_request.settled"  # 25
     LEAVE_REQUEST_WITHDRAWN = "leave_request.withdrawn"  # 25
+    #: Overtime (ticket 26). The middle moment is the engine's here too — filing
+    #: writes `approval.submitted` and each decision writes `approval.decided`, keyed
+    #: on the request's own id — so what this module records itself is the draft it
+    #: wrote, the record an approval produced, the settlement that compared the two
+    #: figures, HR's confirmation of one of them, and the requester's withdrawal. The
+    #: settle and the confirm are separate actions because they are separate facts: one
+    #: is arithmetic over the day, the other is a person overruling it with a reason,
+    #: and an incident review asks which of the two produced the figure it is reading.
+    OVERTIME_REQUEST_DRAFTED = "overtime_request.drafted"  # 26
+    OVERTIME_REQUEST_UPDATED = "overtime_request.updated"  # 26
+    OVERTIME_REQUEST_WITHDRAWN = "overtime_request.withdrawn"  # 26
+    OVERTIME_REQUEST_RESOLVED = "overtime_request.resolved"  # 26
+    OVERTIME_RECORD_SETTLED = "overtime_record.settled"  # 26
+    OVERTIME_RECORD_CONFIRMED = "overtime_record.confirmed"  # 26
     AGENT_ACTION_PROPOSED = "agent.action_proposed"  # 40
     AGENT_ACTION_CONFIRMED = "agent.action_confirmed"  # 41
+    #: One record per export, carrying the period and what the file stated. Finance
+    #: re-runs a month as a matter of course, so the trail is what makes "who exported
+    #: which period, when, and how many rows did it say" answerable; the file itself is
+    #: a report and holds no marker of its own (ticket 26, and ticket 47's exports).
     DATA_EXPORTED = "data.exported"  # 26, 47
 
 

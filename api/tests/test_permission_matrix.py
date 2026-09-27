@@ -65,6 +65,8 @@ from app.domain.access.permissions import (
     ATTENDANCE_CROSS_ACTIONS,
     COMPANY_RECORD_ROLES,
     LEAVE_CROSS_ACTIONS,
+    OVERTIME_COMPANY_ROLES,
+    OVERTIME_CROSS_ACTIONS,
     PROJECT_ADMIN_ROLES,
     SELF_ONLY_ACTIONS,
     Action,
@@ -245,6 +247,22 @@ DESIGN_GRANTS: dict[Action, frozenset[str]] = {
     Action.LEAVE_READ_ALL: frozenset({"hr"}),
     Action.LEAVE_ATTACHMENT_READ: frozenset({"hr"}),
     Action.LEAVE_BALANCE_MANAGE: frozenset({"admin", "hr"}),
+    # Overtime (ticket 26). "Their own data" again for the two self-service acts, and the
+    # one place in this table where §4.1's *finance* row reaches somebody else's record:
+    # finance owns the payroll side, and overtime is what a payroll month is computed
+    # from, so `overtime.read_all` and `overtime.export` name it beside HR. Nothing else
+    # of finance's is widened by that — attendance and leave stay HR's, which is why
+    # overtime has a cross-action set and a company-role set of its own.
+    Action.OVERTIME_REQUEST_OWN: EVERYONE,
+    Action.OVERTIME_READ_OWN: EVERYONE,
+    Action.OVERTIME_READ_REPORT: frozenset({"manager"}),
+    Action.OVERTIME_READ_ALL: frozenset({"hr", "finance"}),
+    Action.OVERTIME_CONFIRM: frozenset({"hr"}),
+    Action.OVERTIME_SETTLE: frozenset({"hr"}),
+    # The file carries the staff number, a withheld field, so the roles that may produce
+    # it are the two of `EMPLOYEE_READ_WITHHELD` that own the personnel and payroll sides.
+    # Compliance reads the trail — who exported what — and not the payroll file.
+    Action.OVERTIME_EXPORT: frozenset({"hr", "finance"}),
     # Weekly timesheets (ticket 28). "Their own data" a fourth time, and self-only
     # through `SELF_ONLY_ACTIONS`: §4.1 gives an employee their own record, and 代填 —
     # filling in somebody else's hours — is a refusal the ticket states by name. The
@@ -332,6 +350,18 @@ KIND_FOR_ACTION: dict[Action, ResourceKind] = {
     Action.LEAVE_READ_ALL: ResourceKind.EMPLOYEE,
     Action.LEAVE_ATTACHMENT_READ: ResourceKind.EMPLOYEE,
     Action.LEAVE_BALANCE_MANAGE: ResourceKind.EMPLOYEE,
+    # Overtime (ticket 26). Everything this module decides is about a *person's* hours —
+    # the records, the totals, the confirmation — so the resource is the employee the
+    # record belongs to, exactly as the attendance and leave actions carry the subject.
+    # The export and the settle sweep act over a period rather than a row and are decided
+    # by role alone at the route, which is the `None` shape this matrix also covers.
+    Action.OVERTIME_REQUEST_OWN: ResourceKind.EMPLOYEE,
+    Action.OVERTIME_READ_OWN: ResourceKind.EMPLOYEE,
+    Action.OVERTIME_READ_REPORT: ResourceKind.EMPLOYEE,
+    Action.OVERTIME_READ_ALL: ResourceKind.EMPLOYEE,
+    Action.OVERTIME_CONFIRM: ResourceKind.EMPLOYEE,
+    Action.OVERTIME_SETTLE: ResourceKind.EMPLOYEE,
+    Action.OVERTIME_EXPORT: ResourceKind.EMPLOYEE,
 }
 
 #: Actions the catalogue decides by role alone, with no resource clause to apply.
@@ -480,6 +510,14 @@ def design_says(role: str, action: Action, shape: tuple[str | None, str | None] 
     if action in LEAVE_CROSS_ACTIONS:
         return bool(frozenset({role, "employee"}) & COMPANY_RECORD_ROLES)
 
+    # The same two reaches over somebody else's *overtime* (ticket 26), with one
+    # difference the expectation records: the company-wide set has two members, because
+    # §4.1 gives finance the monthly overtime export. The generated resource names no
+    # owner and this dimension has no reports, so a manager reaches nothing here; the
+    # manager's own case is asserted by name in layer 4.
+    if action in OVERTIME_CROSS_ACTIONS:
+        return bool(frozenset({role, "employee"}) & OVERTIME_COMPANY_ROLES)
+
     held = frozenset({role, "employee"})
     clearance, department = shape
 
@@ -538,9 +576,11 @@ def test_the_generated_matrix_covers_every_dimension() -> None:
     # the company's record, your own correction, HR's), ticket 25 adds eight for leave
     # (the catalogue and maintaining it, your own balances and your own requests, a
     # report's leave, the company's, the attachment behind a sick note, and granting
-    # an allowance), and the sum is asserted literally so that a fifth arriving as a
+    # an allowance), ticket 26 adds seven for overtime (asking in advance, your own
+    # records, a report's, the company's, HR's confirmation, the settle sweep and the
+    # monthly file), and the sum is asserted literally so that a fifth arriving as a
     # failing test rather than as extra coverage.
-    assert len(cases) == 7 * 47 * 13
+    assert len(cases) == 7 * 54 * 13
     assert 0 < permitted < len(cases), "the expectation answers the same way everywhere"
 
     discriminating = [
@@ -1090,6 +1130,34 @@ HTTP_MATRIX: tuple[tuple[str, str, Action | None], ...] = (
     ),
     ("POST", "/api/v1/leave/requests/{request_id}/withdraw", Action.LEAVE_REQUEST_OWN),
     ("GET", "/api/v1/leave/calendar", Action.LEAVE_READ_OWN),
+    # Overtime (ticket 26). The two self-service acts are self-only at the role level —
+    # every role holds `employee` — and which of the three reads applies is a fact about
+    # the caller and the subject, so the kernel is asked inside the handler and these
+    # rows record the action a request about *the caller* performs. HR's two period acts
+    # and the export are role-only guards, which is why the row for each is the action
+    # itself. The manager's reach over a report, HR's and finance's over the company, and
+    # the refusals in between are asserted by name in `test_overtime.py`.
+    ("POST", "/api/v1/overtime/requests", Action.OVERTIME_REQUEST_OWN),
+    ("GET", "/api/v1/overtime/requests", Action.OVERTIME_READ_OWN),
+    ("GET", "/api/v1/overtime/requests/{request_id}", Action.OVERTIME_READ_OWN),
+    ("PATCH", "/api/v1/overtime/requests/{request_id}", Action.OVERTIME_REQUEST_OWN),
+    (
+        "POST",
+        "/api/v1/overtime/requests/{request_id}/submit",
+        Action.OVERTIME_REQUEST_OWN,
+    ),
+    ("POST", "/api/v1/overtime/requests/{request_id}/decide", Action.SESSION_READ_OWN),
+    (
+        "POST",
+        "/api/v1/overtime/requests/{request_id}/withdraw",
+        Action.OVERTIME_REQUEST_OWN,
+    ),
+    ("GET", "/api/v1/overtime/records", Action.OVERTIME_READ_OWN),
+    ("GET", "/api/v1/overtime/records/{record_id}", Action.OVERTIME_READ_OWN),
+    ("POST", "/api/v1/overtime/records/{record_id}/confirm", Action.OVERTIME_CONFIRM),
+    ("POST", "/api/v1/overtime/settlements", Action.OVERTIME_SETTLE),
+    ("GET", "/api/v1/overtime/summary", Action.OVERTIME_READ_OWN),
+    ("GET", "/api/v1/overtime/export", Action.OVERTIME_EXPORT),
 )
 
 
@@ -1279,6 +1347,26 @@ def http_payload(path: str, *, department: str, employee: str) -> dict:
         "/api/v1/timesheets/entries/{task_id}": {"minutes": 60},
         "/api/v1/timesheets/copy-previous": {},
         "/api/v1/timesheets/submit": {},
+        # Overtime (ticket 26). The day is tomorrow rather than today: Madrid is ahead of
+        # the container's clock, so "today" computed here could already be yesterday
+        # there — and a request for a day that has passed is refused, which would read as
+        # a permission failure. The record id is one the matrix never creates, so the
+        # permitted caller reaches the handler's 404 while the refused one is stopped at
+        # the guard.
+        "/api/v1/overtime/requests": {
+            "business_date": (date.today() + timedelta(days=1)).isoformat(),
+            "expected_minutes": 120,
+            "reason": "Matriz",
+        },
+        "/api/v1/overtime/requests/{request_id}": {"expected_minutes": 60},
+        "/api/v1/overtime/requests/{request_id}/submit": {},
+        "/api/v1/overtime/requests/{request_id}/decide": {"decision": "approve"},
+        "/api/v1/overtime/requests/{request_id}/withdraw": {},
+        "/api/v1/overtime/records/{record_id}/confirm": {
+            "minutes": 120,
+            "note": "Matriz",
+        },
+        "/api/v1/overtime/settlements": {"month": "2026-03"},
     }[path]
 
 
@@ -1307,6 +1395,7 @@ async def test_the_http_matrix_for(platform: Platform, role: str) -> None:
             task_id=subject,
             correction_id=subject,
             request_id=subject,
+            record_id=subject,
             code="no-such-type",
         )
         payload = (
@@ -1376,7 +1465,7 @@ async def test_an_unauthenticated_request_reaches_no_endpoint(platform: Platform
     for method, template, _action in HTTP_MATRIX:
         path = template.format(
             subject=uuid4(), project=uuid4(), project_id=uuid4(), task_id=uuid4(),
-            correction_id=uuid4(), request_id=uuid4(), code="annual",
+            correction_id=uuid4(), request_id=uuid4(), record_id=uuid4(), code="annual",
         )
         response = await platform.client.request(method, path)
         if (response.status_code, response.json()["error"]["code"]) != (

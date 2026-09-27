@@ -49,6 +49,7 @@ from app.domain.attendance.models import (
     EventSource,
     EventType,
     NewEvent,
+    OvertimeSource,
     TimeSource,
     utc_now,
 )
@@ -93,6 +94,7 @@ __all__ = [
     "NewEvent",
     "NotificationRoute",
     "NotificationRouteSource",
+    "OvertimeSource",
     "TimeSource",
     "business_date_of",
     "dates_between",

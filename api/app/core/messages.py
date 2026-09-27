@@ -288,6 +288,35 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.leave_settle_failed": (
             "La solicitud se resolvió y el saldo no se pudo actualizar. Se reintentará."
         ),
+        "errors.overtime_request_not_found": "No se encontró la solicitud de horas extra.",
+        "errors.overtime_record_not_found": "No se encontró el registro de horas extra.",
+        "errors.overtime_request_invalid": (
+            "La solicitud de horas extra no es válida: la fecha debe ser hoy o posterior, "
+            "la duración debe caber en un día y hay que indicar el motivo."
+        ),
+        "errors.overtime_request_not_draft": (
+            "Esta solicitud ya no es un borrador y no se puede modificar ni enviar."
+        ),
+        "errors.overtime_request_exists": (
+            "Ya existe una solicitud o un registro de horas extra para ese día."
+        ),
+        "errors.overtime_record_not_settled": (
+            "El día de este registro aún no se ha calculado. Las horas reales se comparan "
+            "cuando el día ha terminado."
+        ),
+        "errors.overtime_resolve_failed": (
+            "La solicitud se aprobó y el registro no se pudo escribir. Se reintentará."
+        ),
+        "errors.overtime_submission_refused": (
+            "No se pudo enviar la solicitud a aprobación. Revisa su estado e inténtalo de nuevo."
+        ),
+        "errors.overtime_not_withdrawable": (
+            "Esta solicitud ya no se puede anular. Recursos Humanos puede confirmar o "
+            "ajustar las horas del registro."
+        ),
+        "errors.overtime_period_invalid": (
+            "El periodo indicado no es válido: usa el formato AAAA-MM."
+        ),
         "errors.internal_error": "Se produjo un error interno. Inténtalo de nuevo más tarde.",
         "errors.service_unavailable": "El servicio no está disponible en este momento.",
     },
@@ -549,6 +578,33 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.leave_settle_failed": (
             "The request was decided and its balance could not be updated. It will be retried."
         ),
+        "errors.overtime_request_not_found": "The overtime request was not found.",
+        "errors.overtime_record_not_found": "The overtime record was not found.",
+        "errors.overtime_request_invalid": (
+            "That overtime request is not valid: the date must be today or later, the "
+            "minutes must fit in a day, and a reason is required."
+        ),
+        "errors.overtime_request_not_draft": (
+            "This request is no longer a draft, so it cannot be changed or filed."
+        ),
+        "errors.overtime_request_exists": (
+            "There is already an overtime request or record for that day."
+        ),
+        "errors.overtime_record_not_settled": (
+            "This record's day has not been computed yet. The hours actually worked are "
+            "compared once the day is over."
+        ),
+        "errors.overtime_resolve_failed": (
+            "The request was approved and its record could not be written. It will be retried."
+        ),
+        "errors.overtime_submission_refused": (
+            "The request could not be filed for approval. Check its state and try again."
+        ),
+        "errors.overtime_not_withdrawable": (
+            "This request can no longer be withdrawn. HR can confirm or adjust the hours "
+            "on the record."
+        ),
+        "errors.overtime_period_invalid": "That is not a period: use YYYY-MM.",
         "errors.internal_error": "An internal error occurred. Please try again later.",
         "errors.service_unavailable": "The service is unavailable right now.",
     },

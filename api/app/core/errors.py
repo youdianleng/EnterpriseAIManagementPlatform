@@ -331,6 +331,49 @@ class ErrorCode(StrEnum):
     #: sweep retries it, which is the honest reading of "approved and not yet spent".
     LEAVE_SETTLE_FAILED = "ERR_LVE_014"
 
+    # Overtime: a request made *before* the hours, the record its approval writes,
+    # and the monthly figure finance exports (ticket 26). Four themes. The request
+    # itself is unusable (`..._INVALID`) — a date that has passed, which is the
+    # pre-approval rule itself, or minutes no day holds; the day already carries an
+    # overtime intention (`REQUEST_EXISTS`), which is a conflict because two records
+    # for one day would double the month's total; the document is not in a state that
+    # admits the act (`NOT_DRAFT`, `NOT_WITHDRAWABLE`); and a figure cannot be
+    # confirmed yet because the day it is about has not been computed
+    # (`RECORD_NOT_SETTLED`) — a 409, because the caller may well have the authority
+    # and the day is simply still open.
+    OVERTIME_REQUEST_NOT_FOUND = "ERR_OVT_001"
+    #: A date before today in Madrid (overtime is applied for in advance, and there
+    #: is deliberately no retroactive entry), minutes outside a day's bounds, an
+    #: empty reason, or a month this module does not hold.
+    OVERTIME_REQUEST_INVALID = "ERR_OVT_002"
+    #: Only a draft is the requester's to correct or to file. A filed document is
+    #: what two people were asked to approve.
+    OVERTIME_REQUEST_NOT_DRAFT = "ERR_OVT_003"
+    #: This person already has a live request — or a record — for that day. Overtime
+    #: is counted once per day per person, which is what keeps the monthly total a
+    #: sum of facts rather than of intentions.
+    OVERTIME_REQUEST_EXISTS = "ERR_OVT_004"
+    OVERTIME_RECORD_NOT_FOUND = "ERR_OVT_005"
+    #: The record exists and the day it is about has not been computed yet, so there
+    #: is no original to confirm against. HR's figure is stored *beside* the
+    #: computed one, never instead of it.
+    OVERTIME_RECORD_NOT_SETTLED = "ERR_OVT_006"
+    #: The engine approved the request and the record could not be written. The
+    #: decision stands and the resolve sweep retries it, which is the honest reading
+    #: of "approved and not yet recorded".
+    OVERTIME_RESOLVE_FAILED = "ERR_OVT_007"
+    #: The engine refused to file it — a request already open for this document, or
+    #: a rejection that is final. Carries the engine's own code in the detail.
+    OVERTIME_SUBMISSION_REFUSED = "ERR_OVT_008"
+    #: A period that is not `YYYY-MM`, or one outside the years this module holds.
+    #: Its own code rather than `OVERTIME_REQUEST_INVALID`, because the fix is to
+    #: send the month the caller meant rather than to correct a document.
+    OVERTIME_PERIOD_INVALID = "ERR_OVT_009"
+    #: Rejected, withdrawn, never filed, or already approved: there is nothing left
+    #: to withdraw. An approved request's record is corrected by HR's confirmation,
+    #: and the refusal names that instead.
+    OVERTIME_NOT_WITHDRAWABLE = "ERR_OVT_010"
+
     # Cross-cutting.
     INTERNAL_ERROR = "ERR_INTERNAL_001"
     SERVICE_UNAVAILABLE = "ERR_INTERNAL_002"
@@ -603,6 +646,36 @@ ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
     ErrorCode.LEAVE_ATTACHMENT_REQUIRED: ErrorDefinition(
         422, "errors.leave_attachment_required"
     ),
+    # Overtime (ticket 26). 404 for the two lookups; 409 for everything that
+    # conflicts with a state a document or a record is already in — the day already
+    # carries overtime, the record's day is still open, an approved request cannot be
+    # withdrawn; and 422 for the three the caller wrote wrong. The pre-approval rule
+    # is one of those three: a date that has passed is a request the module cannot
+    # accept, not one it may quietly record after the fact.
+    ErrorCode.OVERTIME_REQUEST_NOT_FOUND: ErrorDefinition(
+        404, "errors.overtime_request_not_found"
+    ),
+    ErrorCode.OVERTIME_RECORD_NOT_FOUND: ErrorDefinition(
+        404, "errors.overtime_record_not_found"
+    ),
+    ErrorCode.OVERTIME_REQUEST_EXISTS: ErrorDefinition(409, "errors.overtime_request_exists"),
+    ErrorCode.OVERTIME_REQUEST_NOT_DRAFT: ErrorDefinition(
+        409, "errors.overtime_request_not_draft"
+    ),
+    ErrorCode.OVERTIME_RECORD_NOT_SETTLED: ErrorDefinition(
+        409, "errors.overtime_record_not_settled"
+    ),
+    ErrorCode.OVERTIME_RESOLVE_FAILED: ErrorDefinition(409, "errors.overtime_resolve_failed"),
+    ErrorCode.OVERTIME_SUBMISSION_REFUSED: ErrorDefinition(
+        409, "errors.overtime_submission_refused"
+    ),
+    ErrorCode.OVERTIME_NOT_WITHDRAWABLE: ErrorDefinition(
+        409, "errors.overtime_not_withdrawable"
+    ),
+    ErrorCode.OVERTIME_REQUEST_INVALID: ErrorDefinition(
+        422, "errors.overtime_request_invalid"
+    ),
+    ErrorCode.OVERTIME_PERIOD_INVALID: ErrorDefinition(422, "errors.overtime_period_invalid"),
     ErrorCode.INTERNAL_ERROR: ErrorDefinition(500, "errors.internal_error", expose_detail=False),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorDefinition(
         503, "errors.service_unavailable", expose_detail=False

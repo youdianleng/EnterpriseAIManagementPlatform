@@ -24,7 +24,9 @@ days that need repairing, and the record of a bad day would be its absence.
 scheduling module's answer for the date — the minutes, the schedule and whether a
 holiday covers it — passed in as a value rather than fetched here, so this module
 still depends on nothing but its arguments and the day's arithmetic can still be
-tested with hand-built days.
+tested with hand-built days. Ticket 26's `overtime_minutes` arrives the same way: the
+approved overtime for the day is a fact about another module's records, and the
+derivation carries it into the snapshot without computing or capping it.
 """
 
 from datetime import UTC, date, datetime
@@ -46,6 +48,7 @@ def derive(
     events: list[AttendanceEvent],
     today: date,
     expected: DayExpectation | None = None,
+    overtime_minutes: int | None = None,
 ) -> DayRecord:
     """The day one person's events describe.
 
@@ -56,6 +59,13 @@ def derive(
     `expected` is the scheduling module's answer for this date (ticket 22), and it
     is optional: without it the derivation is exactly what ticket 21 shipped, and
     `expected_minutes` stays null rather than claiming a figure nobody agreed to.
+
+    `overtime_minutes` is the overtime module's answer (ticket 26), passed in the same
+    way and for the same reason: this function is pure, and "what did this day's
+    approved overtime come to" is a fact about another module's records rather than
+    about the punches. It is carried through untouched — the derivation does not
+    compute, cap or compare it, because the smaller-of rule belongs to the module that
+    owns the approved figure.
 
     **A day nobody was expected to work is not an absence.** When there are no
     punches, the expectation decides the status: a holiday, a rest day, or — only
@@ -71,6 +81,7 @@ def derive(
             business_date=business_date,
             status=_status_without_events(expected),
             expected_minutes=_expected_minutes(expected),
+            overtime_minutes=overtime_minutes,
             snapshot_schedule_id=expected.schedule_id if expected is not None else None,
         )
 
@@ -116,6 +127,7 @@ def derive(
         last_out=last_out,
         worked_minutes=worked_minutes,
         expected_minutes=_expected_minutes(expected),
+        overtime_minutes=overtime_minutes,
         snapshot_schedule_id=expected.schedule_id if expected is not None else None,
     )
 

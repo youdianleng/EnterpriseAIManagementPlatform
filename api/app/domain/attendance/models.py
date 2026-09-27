@@ -246,6 +246,33 @@ class ExpectationSource(Protocol):
         ...
 
 
+class OvertimeSource(Protocol):
+    """What the attendance module asks the overtime module, and nothing else.
+
+    Ticket 26's half of `attendance_daily.overtime_minutes`, built the way ticket 22
+    built `expected_minutes`: the derivation is handed a *value* for the day, and this
+    is the seam that produces it. The figure is the overtime module's own answer — what
+    HR confirmed, else the settled smaller of the approved and the worked minutes, else
+    what was approved — and it is deliberately not re-derived here: a second
+    implementation of "取较小值" would eventually disagree with the record the monthly
+    export is built from.
+
+    Optional, and that is why the pair exists: an `AttendanceService` built without a
+    source leaves `overtime_minutes` null, which is exactly what the column held before
+    ticket 26 and what ticket 21's tests still assert.
+    """
+
+    async def overtime_minutes(self, employee_id: UUID, business_date: date) -> int | None:
+        """One day's approved overtime, or nothing when none was approved."""
+        ...
+
+    async def overtime_by_date(
+        self, employee_id: UUID, from_date: date, to_date: date
+    ) -> dict[date, int]:
+        """The same for an inclusive range, grouped by date and omitting empty days."""
+        ...
+
+
 __all__ = [
     "CLOCK_SKEW",
     "MAX_RANGE_DAYS",
@@ -260,6 +287,7 @@ __all__ = [
     "EventType",
     "ExpectationSource",
     "NewEvent",
+    "OvertimeSource",
     "TimeSource",
     "utc_now",
 ]

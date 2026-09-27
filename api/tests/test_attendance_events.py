@@ -449,16 +449,23 @@ def test_a_chain_of_corrections_resolves_to_its_newest_row() -> None:
 # --- the interface is four operations and nothing else ----------------------
 
 
-def test_the_public_surface_is_exactly_the_four_operations() -> None:
+def test_the_public_surface_is_only_the_operations_a_day_needs() -> None:
     """`codebase-design` §2.4 fixes the interface.
 
-    A fifth operation is how a timestamp gets back into a date aggregation — a
+    A new operation is how a timestamp gets back into a date aggregation — a
     `day_for(instant)` would be the first thing a caller reached for, and the
     module's whole risk mitigation is that the caller has nothing to reach for.
+
+    **Ticket 26 added `rebuild_day`, and the list below is where that decision is
+    recorded.** It is not a new thing to ask of a day: it is `recompute_day` without the
+    commit, so that another module's write and the day it changed land in one transaction
+    — the overtime settlement writes a record and rebuilds the day whose
+    `overtime_minutes` follows from it. Every operation here still takes and returns
+    *dates*, which is the property the interface exists for.
     """
     public = {name for name in vars(AttendanceService) if not name.startswith("_")}
 
-    assert public == {"clock", "day_view", "recompute_day", "range_view"}
+    assert public == {"clock", "day_view", "rebuild_day", "recompute_day", "range_view"}
 
 
 # --- the stream and the day, over a real database ---------------------------

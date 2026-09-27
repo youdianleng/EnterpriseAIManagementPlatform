@@ -49,6 +49,13 @@ CLEANUP_TABLES = (
     "leave_balance_entries",
     "leave_requests",
     "leave_balances",
+    # The overtime ledger (ticket 26). Named rather than left to the cascade from
+    # `employees`, for the reason the list above exists at all: it is what the suite
+    # writes, and a reader looking for "does anything survive a wipe" should find the
+    # answer here rather than in the foreign keys.
+    "overtime_entries",
+    "overtime_records",
+    "overtime_requests",
     "personnel_changes",
     "approval_decisions",
     "approval_steps",

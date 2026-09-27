@@ -467,8 +467,15 @@ async def test_a_correction_of_a_day_that_has_not_happened_is_refused(
 
     # A day that has not happened, with an instant that has: the business date is
     # the only thing wrong with it.
+    #
+    # The instant is two hours ago on the UTC calendar, not this morning in Madrid.
+    # Between 22:00 and midnight UTC, Madrid has already rolled to the next date, so
+    # "today at 10:00 Madrid" is still in the future — and this test then failed on
+    # the *instant* check while claiming to test the date one. An instant that is
+    # past in UTC is past in Madrid too, whatever the hour.
+    past_instant = datetime.now(UTC) - timedelta(hours=2)
     future_day = await request_correction(
-        cast.subject, day=tomorrow, corrected_at=at(today, 10).isoformat()
+        cast.subject, day=tomorrow, corrected_at=past_instant.isoformat()
     )
     future_instant = await request_correction(
         cast.subject, day=MONDAY, corrected_at=at(tomorrow, 9).isoformat()

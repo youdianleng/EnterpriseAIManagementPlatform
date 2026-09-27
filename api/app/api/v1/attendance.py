@@ -88,6 +88,7 @@ from app.domain.attendance.service import AttendanceService
 from app.domain.leave.service import LeaveCalendar
 from app.domain.notification.approval import ApprovalNotifier
 from app.domain.notification.service import NotificationService
+from app.domain.overtime.service import OvertimeLedger
 from app.domain.schedule.service import ScheduleService
 from app.repositories.approval import PostgresApprovalRepository
 from app.repositories.attendance import (
@@ -97,6 +98,7 @@ from app.repositories.attendance import (
 )
 from app.repositories.leave import PostgresLeaveRepository
 from app.repositories.notification import PostgresNotificationRepository
+from app.repositories.overtime import PostgresOvertimeRepository
 from app.repositories.schedule import PostgresScheduleRepository
 
 router = APIRouter(prefix="/attendance", tags=["attendance"])
@@ -332,11 +334,18 @@ def _collaborators(
     append and the day it rebuilds are the same transaction — the property `clock`
     has, and the reason the correction service takes the service rather than
     re-deriving a day itself.
+
+    The overtime ledger is the second seam the day is derived with (ticket 26), beside
+    the schedule: `attendance_daily.overtime_minutes` is filled from the overtime
+    module's records the same way `expected_minutes` is filled from the schedule's, so
+    every read of a day — here, on the punches surface, and in the export — carries the
+    day's approved overtime without this module knowing what a rate is.
     """
     punches = PostgresAttendanceRepository(session)
     return punches, AttendanceService(
         punches,
         expectations=ScheduleService(PostgresScheduleRepository(session), session),
+        overtime=OvertimeLedger(PostgresOvertimeRepository(session)),
     )
 
 

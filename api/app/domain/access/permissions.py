@@ -135,6 +135,44 @@ class Action(StrEnum):
     #: approval chain.
     LEAVE_BALANCE_MANAGE = "leave.balance_manage"
 
+    # Overtime (ticket 26). Seven actions, and the seventh is the one the design
+    # settles by name: §4.1 gives `finance` "加班月度导出" — the monthly overtime export
+    # — because overtime pay is a payroll calculation and this system only accumulates
+    # and exports the hours. So the company-wide *read* is two roles rather than one
+    # (HR keeps the working-time record; finance reads it to pay from), which is why
+    # overtime gets its own cross-action set and its own company-role set beside the
+    # attendance and leave ones instead of borrowing theirs.
+    #:
+    #: Filing is self-service and self-only: nobody files somebody else's overtime, and
+    #: the hours are applied for *before* they are worked, so there is nothing for HR to
+    #: enter after the fact.
+    OVERTIME_REQUEST_OWN = "overtime.request_own"
+    OVERTIME_READ_OWN = "overtime.read_own"
+    #: A manager's reach: their reports' overtime, which is what approving it needs.
+    #: The resource rule is the reporting relationship — see `OVERTIME_CROSS_ACTIONS` —
+    #: and deliberately not the department, because a manager and a colleague share one.
+    OVERTIME_READ_REPORT = "overtime.read_report"
+    #: The company's overtime: HR, which keeps the working-time record, and finance,
+    #: which this design gives the monthly export. Nobody else — not administration,
+    #: which configures the system rather than reading personnel files, and not
+    #: compliance, whose overtime-adjacent read is the audit trail itself.
+    OVERTIME_READ_ALL = "overtime.read_all"
+    #: Confirming or adjusting the hours of a settled record. HR alone, and its own
+    #: action because it is the one act here that overrules a computed figure: a
+    #: manager approves the overtime, and is refused the adjustment.
+    OVERTIME_CONFIRM = "overtime.confirm"
+    #: Running the comparison of approved against actually worked for a period. HR's,
+    #: because the outcome of it is a queue of differences that only HR can answer.
+    OVERTIME_SETTLE = "overtime.settle"
+    #: Producing the monthly file. Its own action rather than a use of
+    #: `overtime.read_all`, because the file carries the staff number — a withheld
+    #: field — and an installation may well want the reading of a screen and the
+    #: handing over of a payroll file to be separable decisions. HR and finance, which
+    #: is exactly the set `EMPLOYEE_READ_WITHHELD` names for that column, minus
+    #: compliance: the reader of the audit trail reads *who exported what* rather than
+    #: the payroll file itself.
+    OVERTIME_EXPORT = "overtime.export"
+
     # Weekly timesheets (ticket 28). Three acts, all of them self-only, because the
     # ticket says so in as many words: filling in somebody else's hours is a 403.
     # Separating them is what will let ticket 29 give a manager "read my report's
@@ -481,6 +519,71 @@ RULES: dict[Action, ActionRule] = {
             "is what gets approved."
         ),
     ),
+    # Overtime (ticket 26). The readings are recorded rather than left to the reader,
+    # as tickets 24 and 25 recorded theirs.
+    Action.OVERTIME_REQUEST_OWN: ActionRule(
+        roles=frozenset({"employee"}),
+        description=(
+            "Asking to work overtime on a date, in advance. Self-only through "
+            "`SELF_ONLY_ACTIONS`: nobody files somebody else's overtime, and there is "
+            "no retroactive path at all — the request has to be for today or later, so "
+            "HR has nothing to enter after the fact either."
+        ),
+    ),
+    Action.OVERTIME_READ_OWN: ActionRule(
+        roles=frozenset({"employee"}),
+        description=(
+            "Your own overtime records, your own totals and their history. Self-only "
+            "through `SELF_ONLY_ACTIONS`, like your own attendance and your own leave."
+        ),
+    ),
+    Action.OVERTIME_READ_REPORT: ActionRule(
+        roles=frozenset({"manager"}),
+        description=(
+            "Reading the overtime of the people who report to you, and of nobody else. "
+            "The role list says which *kind* of caller; `OVERTIME_CROSS_ACTIONS` beside "
+            "the self-only set says the resource rule, which is the reporting "
+            "relationship itself — a manager reads their reports and is refused a "
+            "colleague in their own department."
+        ),
+    ),
+    Action.OVERTIME_READ_ALL: ActionRule(
+        roles=frozenset({"hr", "finance"}),
+        description=(
+            "Reading anybody's overtime. HR keeps the working-time record, and §4.1 "
+            "gives finance the monthly overtime export because overtime pay is a "
+            "payroll calculation — this is the only action in the catalogue where "
+            "finance's company-wide reach is written down, and it is narrow on purpose: "
+            "the hours, and nothing about the person beyond the name the file states."
+        ),
+    ),
+    Action.OVERTIME_CONFIRM: ActionRule(
+        roles=frozenset({"hr"}),
+        description=(
+            "Confirming or adjusting the hours of a settled record, with the reason. HR "
+            "alone: the computed figure stays readable, and the confirmed one is stored "
+            "beside it, so this is the one act in the module that overrules arithmetic "
+            "and it is deliberately not a manager's."
+        ),
+    ),
+    Action.OVERTIME_SETTLE: ActionRule(
+        roles=frozenset({"hr"}),
+        description=(
+            "Running the comparison of the approved minutes against the day's actually "
+            "worked minutes for a period. HR's, because its outcome is a queue of "
+            "differences that only HR can answer."
+        ),
+    ),
+    Action.OVERTIME_EXPORT: ActionRule(
+        roles=frozenset({"hr", "finance"}),
+        description=(
+            "Producing the month's CSV. Its own action because the file carries the "
+            "staff number — a withheld field — so an installation may separate the "
+            "reading of a screen from the handing over of a payroll file. HR and "
+            "finance: the two roles §4.1 gives the personnel side and the payroll side, "
+            "and the two `EMPLOYEE_READ_WITHHELD` already names for that column."
+        ),
+    ),
     Action.DOCUMENT_READ: ActionRule(
         roles=frozenset({"admin", "hr", "finance", "it", "compliance", "employee"}),
         description="Reading a document; clearance and department decide which ones.",
@@ -540,6 +643,11 @@ SELF_ONLY_ACTIONS: frozenset[Action] = frozenset(
         # own actions instead.
         Action.LEAVE_READ_OWN,
         Action.LEAVE_REQUEST_OWN,
+        # Ticket 26's two: your own overtime, and asking for it in advance. The same
+        # rule, and it carries the module's central constraint: nobody files somebody
+        # else's overtime, and there is no retroactive entry for anybody to file.
+        Action.OVERTIME_REQUEST_OWN,
+        Action.OVERTIME_READ_OWN,
     }
 )
 
@@ -576,6 +684,19 @@ LEAVE_CROSS_ACTIONS: frozenset[Action] = frozenset(
     }
 )
 
+#: The same two reaches over somebody else's *overtime* (ticket 26), and the reason it
+#: is a third set rather than a wider second one: the company-wide role list is not the
+#: same. §4.1 gives finance the monthly overtime export, so `OVERTIME_COMPANY_ROLES`
+#: below has two members where the attendance and leave sets have one, and folding
+#: overtime into `LEAVE_CROSS_ACTIONS` would have handed finance the whole company's
+#: leave as well — a reach nobody granted it.
+OVERTIME_CROSS_ACTIONS: frozenset[Action] = frozenset(
+    {
+        Action.OVERTIME_READ_REPORT,
+        Action.OVERTIME_READ_ALL,
+    }
+)
+
 #: The roles whose reach over somebody else's personnel record — their hours, their
 #: leave — is the whole company rather than their own reports.
 #:
@@ -589,6 +710,18 @@ COMPANY_RECORD_ROLES: frozenset[str] = frozenset({"hr"})
 #: so does the permission matrix. One value today, and the alias is what says so —
 #: two literals would be two things to change.
 ATTENDANCE_COMPANY_ROLES: frozenset[str] = COMPANY_RECORD_ROLES
+
+#: The roles whose reach over somebody else's *overtime* is the whole company (ticket
+#: 26).
+#:
+#: Two, where the personnel-record set above has one, and the second is the whole
+#: reason this constant exists separately: `docs/DESIGN.md` §4.1 gives finance
+#: "加班月度导出" — the monthly overtime export — and gives it nothing else in the
+#: personnel record. Overtime is what a payroll month is computed from, so the reading
+#: is finance's; a leave, an absence or a punch is not, so it is not. Stated as its own
+#: set rather than widened into `COMPANY_RECORD_ROLES`, which would have granted
+#: finance the company's attendance and leave in the same edit.
+OVERTIME_COMPANY_ROLES: frozenset[str] = frozenset({"hr", "finance"})
 
 #: Roles that manage *every* project, not only the ones they manage themselves.
 #:

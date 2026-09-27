@@ -68,6 +68,17 @@ class Settings(BaseSettings):
     # by HR — so the parameter is the default, not the only source.
     annual_leave_days: int = 30
 
+    # --- overtime (ticket 26) -----------------------------------------------
+    # How far the approved minutes and the day's actual worked minutes may differ
+    # before the record is marked for HR instead of being settled quietly. Half an
+    # hour, because below it the gap is the minute somebody spent walking to the lift
+    # and the rounding of a punch, and at or above it somebody worked materially more
+    # or less than was agreed — which is a conversation rather than a number the
+    # system may pick silently. A setting rather than a constant for the same reason
+    # `annual_leave_days` is one: it is a company's tolerance, and
+    # `OVERTIME_CONFIRMATION_THRESHOLD_MINUTES=15` changes it with no code change.
+    overtime_confirmation_threshold_minutes: int = 30
+
     # The browser talks to the API directly, so origins must be host-facing.
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
 
