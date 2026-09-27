@@ -52,6 +52,9 @@ CLEANUP_TABLES = (
     "approval_requests",
     "notification_deliveries",
     "notifications",
+    # No foreign key reaches it, so CASCADE cannot find it: the digest's rows have
+    # to be named here or one test's mail is the next test's "already sent".
+    "daily_digests",
     "users",
     "role_permissions",
     "roles",

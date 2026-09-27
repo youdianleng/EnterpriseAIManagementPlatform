@@ -40,6 +40,10 @@ class User(Base):
             "clearance_level IN ('low', 'medium', 'high')",
             name="ck_users_clearance_level",
         ),
+        # The two languages the interface ships in (DESIGN §10.4, D2). NULL is a
+        # real state: nobody has been asked yet, and the digest falls back to the
+        # configured default rather than to whichever language the row was made in.
+        CheckConstraint("locale IS NULL OR locale IN ('es', 'en')", name="ck_users_locale"),
     )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
@@ -75,6 +79,12 @@ class User(Base):
     # deactivation and password reset. Sessions carry the epoch they were issued
     # under, so invalidation is one comparison rather than a key scan.
     session_epoch: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    #: `es` or `en`, or NULL for "not chosen". DESIGN §10.4 has the login choose
+    #: from the browser and persist the manual override here; until a profile
+    #: screen writes it, the morning digest is the only reader and it treats NULL
+    #: as "write to them in the company's language".
+    locale: Mapped[str | None] = mapped_column(String(5), nullable=True)
 
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     password_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

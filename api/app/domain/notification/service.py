@@ -44,9 +44,11 @@ from app.domain.notification.repository import NotificationRepository
 #:
 #: In-app is `sent` with one attempt: the row *is* the delivery, and it is readable
 #: as soon as the transaction commits. Email is `pending` with no attempts and the
-#: reason it has none, because nothing sends mail yet — recording it as sent would
-#: be a lie the first person to ask "did the email go out" would believe, and
-#: leaving the reason empty would read as an attempt that failed silently.
+#: reason it has none: the row is the *queue* — ticket 20's daily digest is what
+#: drains it (`jobs/send_daily_digests.py`), and until that pass runs, "not
+#: attempted" is the honest state. Recording it as sent here would be a lie the
+#: first person to ask "did the email go out" would believe, and leaving the reason
+#: empty would read as an attempt that failed silently.
 DELIVERY_PLAN: tuple[DeliveryPlan, ...] = (
     DeliveryPlan(channel=DeliveryChannel.IN_APP, status=DeliveryStatus.SENT, attempts=1),
     DeliveryPlan(

@@ -49,9 +49,46 @@ docker compose up --build
 | API | http://localhost:8000 |
 | API docs (OpenAPI) | http://localhost:8000/docs |
 | API health | http://localhost:8000/health |
+| Mailpit (caught mail) | http://localhost:8025 |
 
 Opening the web app prints the backend's answer on the landing page, which is
 the end-to-end proof that web, api, postgres and redis are wired together.
+
+## Mail: caught locally, never sent out
+
+Every message the API sends goes to **Mailpit**, which accepts anything on port
+1025 and delivers it nowhere: the rendered message is read at
+http://localhost:8025. Development and demo therefore have no route to a real
+inbox, which is the point — a digest that escapes the network is a real person's
+morning. Nothing in the test suite reaches a mail server at all: the transport
+(`api/app/mail.py`) is a seam with a recording double behind it.
+
+The one mail this system sends today is the **daily digest**
+(`docs/DESIGN.md` §7.1): one message per recipient about the previous day's
+attendance anomalies, grouped by report, with a link into the platform.
+
+```bash
+# One pass, for a date you choose — no need to wait for 08:00.
+docker compose exec -T api python -m app.jobs.send_daily_digests 2026-09-21
+docker compose exec -T api python -m app.jobs.send_daily_digests            # Madrid yesterday
+docker compose exec -T api python -m app.jobs.send_daily_digests --retry    # after fixing a relay
+```
+
+Production runs the same command from cron at 08:00 Madrid, which is where the
+timezone belongs — the job takes the date it is about and knows nothing about
+when it was started:
+
+```cron
+CRON_TZ=Europe/Madrid
+0 8 * * * docker compose exec -T api python -m app.jobs.send_daily_digests
+```
+
+Two properties make that safe to install: a day is mailed **once** per recipient
+(`daily_digests` is unique on recipient and date, so a re-run or a restarted
+container is a no-op), and **a clean day is not mailed at all** — a digest exists
+only where there is something to report. A message that fails is retried a bounded
+number of times and then left `failed` with the sender's reason on the delivery
+row, which is where "I never got it" is answered.
 
 ## First run: demo data and a login
 

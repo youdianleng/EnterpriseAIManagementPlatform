@@ -35,6 +35,26 @@ services:
       retries: 12
     restart: unless-stopped
 
+  # Catches every message the API sends. Development and demo have no way out to
+  # the internet on purpose: a digest that escapes the network is a real person's
+  # inbox, and nobody testing this system wants to be the one who did that.
+  mailpit:
+    image: axllent/mailpit:v1.20
+    environment:
+      # SMTP on 1025 and the web UI on 8025 are its defaults; they are written out
+      # because a reader should not have to look them up to know what is exposed.
+      MP_SMTP_BIND_ADDR: 0.0.0.0:1025
+      MP_UI_BIND_ADDR: 0.0.0.0:8025
+    ports:
+      - "${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "${MAILPIT_UI_PORT:-8025}:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
   api:
     build:
       context: ./api
@@ -52,6 +72,18 @@ services:
       APP_DB_PASSWORD: ${APP_DB_PASSWORD:-eam_app_dev_password}
       REDIS_URL: redis://redis:6379/0
       CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+      # Mail goes to the sibling catch-all, and nowhere else. `SMTP_USER` and
+      # `SMTP_PASSWORD` are deliberately unset: Mailpit accepts anything, and a
+      # credential in a development default is a credential somebody ships.
+      MAIL_ENABLED: ${MAIL_ENABLED:-true}
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_FROM: ${SMTP_FROM:-no-reply@empresa.es}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-false}
+      # Host-facing, because the link in a digest is opened in the reader's browser.
+      WEB_BASE_URL: ${WEB_BASE_URL:-http://localhost:3000}
+      DIGEST_DEFAULT_LANGUAGE: ${DIGEST_DEFAULT_LANGUAGE:-es}
+      DIGEST_MAX_ATTEMPTS: ${DIGEST_MAX_ATTEMPTS:-3}
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
@@ -60,6 +92,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      mailpit:
         condition: service_healthy
     healthcheck:
       test:

@@ -59,6 +59,39 @@ class Settings(BaseSettings):
     # The browser talks to the API directly, so origins must be host-facing.
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
 
+    # --- mail (ticket 20) ---------------------------------------------------
+    # **Off by default**, like the personnel runner above and for a blunter
+    # reason: an unconfigured sender that tries anyway bounces a company's worth
+    # of mail off a mail server that never agreed to take it. Compose turns it on
+    # and points it at Mailpit, which accepts everything and delivers nothing.
+    mail_enabled: bool = False
+    # `mailpit` is the sibling container's name on the compose network, the same
+    # convention `postgres` and `redis` follow above.
+    smtp_host: str = "mailpit"
+    smtp_port: int = 1025
+    # Both optional: Mailpit wants neither, a real relay usually wants both. A
+    # username without a password (or the reverse) is a half-configured relay and
+    # is refused at send time rather than guessed at.
+    smtp_user: str | None = None
+    smtp_password: str | None = None
+    smtp_from: str = "no-reply@empresa.es"
+    # Plain SMTP inside the compose network; a real relay terminates TLS itself,
+    # and STARTTLS is what a submission port needs.
+    smtp_starttls: bool = False
+    smtp_timeout_seconds: int = 10
+
+    # Where the link in a digest points. The host is a setting because the mail
+    # is read outside the compose network, where `web` does not resolve.
+    web_base_url: str = "http://localhost:3000"
+    # How many times one day's digest for one recipient is attempted before it is
+    # left `failed` with its reason. Three, because a transient refusal is worth
+    # two more tries and a permanent one is worth nobody's morning.
+    digest_max_attempts: int = 3
+    # The language a digest is written in when the recipient has stored no
+    # preference (DESIGN §10.4: the choice lives on the account, and the great
+    # majority of accounts have never been asked).
+    digest_default_language: str = "es"
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

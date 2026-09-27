@@ -155,13 +155,15 @@ class NotificationDraft:
         return f"{self.type}:{self.entity_type}:{self.entity_id}:{self.event}"
 
 
-#: Why the email row sits at `pending` with no attempts.
+#: Why an email delivery row sits at `pending` with no attempts.
 #:
 #: Written on the row rather than left empty, because an empty reason is
-#: indistinguishable from an attempt that failed without saying why — and "did it
-#: go out" is the question the delivery table exists to answer. Ticket 20 adds the
-#: sender that replaces this line.
-NOT_ATTEMPTED = "not attempted: no mail sender is configured yet (ticket 20)"
+#: indistinguishable from an attempt that failed without saying why — and "did it go
+#: out" is the question the delivery table exists to answer. The daily digest
+#: (`jobs/send_daily_digests.py`) is what carries these rows, and it rewrites this
+#: line with what became of each one: sent, failed with the sender's own reason, or
+#: held with the reason there was nothing to send.
+NOT_ATTEMPTED = "not attempted: queued for the daily digest"
 
 
 @dataclass(slots=True, frozen=True)

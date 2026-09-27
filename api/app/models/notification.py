@@ -27,12 +27,13 @@ told has to stay readable after they leave, and a notification needs no account
 to exist — it is addressed to a person.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -159,4 +160,68 @@ class NotificationDelivery(Base):
         return f"<NotificationDelivery {self.channel} {self.status}>"
 
 
-__all__ = ["TITLE_KEY_PATTERN", "Notification", "NotificationDelivery"]
+class DailyDigest(Base):
+    """One morning's mail to one recipient, and how the sending of it went.
+
+    `(recipient_employee_id, digest_date)` is unique, and that index *is* the
+    ticket's "the same day is mailed once": a second run of the job, a restarted
+    container and a cron entry that fired twice all land on this row instead of on
+    a second message. The row is written **before** the message is handed to the
+    sender, so a crash between the two leaves a failed attempt that the next run
+    retries rather than an untraceable hole.
+
+    `anomaly_count > 0` is the "avoid daily noise" rule stated where it cannot be
+    forgotten: a mail is only ever composed about something, so a row with nothing
+    to report is a row PostgreSQL refuses.
+
+    `attempts` and `error` live here rather than only on the notification
+    deliveries: *this* is the unit that is retried, and it can be the only record
+    of an attempt when the day's queued notifications have none (a recipient whose
+    anomalies were reported but whose reminders were suppressed as duplicates).
+
+    `payload` is the structured content that was composed — the reports, the
+    anomaly kinds and the date — never the rendered sentences. What was sent is
+    reconstructible in either language, which is what a mail that has already left
+    the building needs.
+    """
+
+    __tablename__ = "daily_digests"
+    __table_args__ = (
+        CheckConstraint("anomaly_count > 0", name="ck_daily_digests_anomaly_count"),
+        CheckConstraint("attempts >= 0", name="ck_daily_digests_attempts"),
+        # The mechanism, not a convention: one mail per recipient per day.
+        UniqueConstraint(
+            "recipient_employee_id", "digest_date", name="uq_daily_digests_recipient_date"
+        ),
+        Index("ix_daily_digests_date", "digest_date"),
+        # What a run still has to deal with: rows that have not gone out.
+        Index(
+            "ix_daily_digests_unsent",
+            "digest_date",
+            postgresql_where=text("sent_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    #: Who the mail is addressed to. DESIGN §3.7 calls this `manager_employee_id`,
+    #: which is who it is in the ordinary case; it is a plain UUID for the reason
+    #: `notifications.recipient_employee_id` is — the mail is addressed to a
+    #: person, and remains readable after they leave.
+    recipient_employee_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    digest_date: Mapped[date] = mapped_column(Date, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    anomaly_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: Attempts *made*, so 0 is "composed, never handed to a sender" — which is
+    #: what a run with `MAIL_ENABLED=false` would leave if it wrote rows at all.
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    #: Why the last attempt failed, as the sender reported it. Cleared on success.
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<DailyDigest {self.digest_date} -> {self.recipient_employee_id}>"
+
+
+__all__ = ["TITLE_KEY_PATTERN", "DailyDigest", "Notification", "NotificationDelivery"]
