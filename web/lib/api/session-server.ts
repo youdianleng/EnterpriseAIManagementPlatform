@@ -11,6 +11,7 @@ import { cookies } from "next/headers";
 import { ApiError, API_SERVER_BASE_URL } from "@/lib/api/client";
 import type { AuthSession, OwnProfile, PasswordPolicy } from "@/lib/api/auth";
 import type { NotificationPage, UnreadCount } from "@/lib/api/notifications";
+import type { TimesheetStatusRead, TimesheetWeek } from "@/lib/api/timesheets";
 
 /** The cookie the API sets at login; httpOnly, so it never reaches browser script. */
 export const SESSION_COOKIE = "eam_session";
@@ -104,6 +105,36 @@ export async function readServerUnreadCount(): Promise<number | null> {
   try {
     const payload = await serverRequest<UnreadCount>("/api/v1/notifications/unread-count");
     return payload.unread;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One week of the caller's own timesheet, for the grid's first paint.
+ *
+ * Null when it cannot be read, which the screen renders as its error state with a
+ * retry — the same shape `readServerNotifications` uses, and for the same reason: a
+ * failed read is a state the screen has, not an exception the shell must catch.
+ */
+export async function readServerWeek(week: string): Promise<TimesheetWeek | null> {
+  try {
+    return await serverRequest<TimesheetWeek>(
+      `/api/v1/timesheets/week?week=${encodeURIComponent(week)}`,
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** The week's approval state, with every round's decisions. */
+export async function readServerWeekStatus(
+  week: string,
+): Promise<TimesheetStatusRead | null> {
+  try {
+    return await serverRequest<TimesheetStatusRead>(
+      `/api/v1/timesheets/week/status?week=${encodeURIComponent(week)}`,
+    );
   } catch {
     return null;
   }

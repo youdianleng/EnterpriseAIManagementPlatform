@@ -26,6 +26,7 @@ from app.domain.personnel.errors import PersonnelErrorCode
 from app.domain.position.errors import PositionErrorCode
 from app.domain.project.errors import ProjectErrorCode
 from app.domain.schedule.errors import ScheduleErrorCode
+from app.domain.timesheet.errors import TimesheetErrorCode
 
 #: Alias class -> the catalogue value prefixes it owns.
 #:
@@ -39,6 +40,7 @@ ALIASES: dict[type, tuple[str, ...]] = {
     PositionErrorCode: ("ERR_POS_",),
     ProjectErrorCode: ("ERR_PRJ_",),
     ScheduleErrorCode: ("ERR_SCH_",),
+    TimesheetErrorCode: ("ERR_TSH_",),
 }
 
 

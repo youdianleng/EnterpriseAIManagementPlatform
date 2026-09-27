@@ -119,6 +119,12 @@ class ProjectTask(Base):
         # Scoped to the project: the same code in two projects is two different
         # tasks, which is how a client's own numbering is recorded as they write it.
         UniqueConstraint("project_id", "code", name="uq_project_tasks_project_code"),
+        # `id` is unique on its own, so this adds no restriction here. It exists to
+        # be *referenceable*: ticket 28's `timesheet_entries` carries a composite
+        # foreign key onto `(id, project_id)`, which is what makes "an entry's task
+        # belongs to the entry's project" a database fact rather than a service
+        # check. Declared by migration 0015, beside the table that needs it.
+        UniqueConstraint("id", "project_id", name="uq_project_tasks_id_project"),
         # The read that matters: the tasks of one project, the live ones first.
         Index("ix_project_tasks_project_active", "project_id", "is_active"),
     )

@@ -69,6 +69,13 @@ export function SiteHeader({
                 </Link>
               </li>
               <li>
+                {/* Your own hours: every account holds `employee`, so there is no role
+                    that would be refused this page (§4.1). */}
+                <Link href={`/${locale}/timesheets`} className="text-fg-muted hover:text-fg">
+                  {dict.nav.timesheets}
+                </Link>
+              </li>
+              <li>
                 <Link
                   href={`/${locale}/notifications`}
                   className="inline-flex items-center gap-1.5 text-fg-muted hover:text-fg"

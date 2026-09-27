@@ -193,6 +193,40 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.schedule_holiday_exists": (
             "Esa fecha ya está marcada como festivo con ese ámbito y esa región."
         ),
+        # Weekly timesheets (ticket 28). Each one says what the person can do next: an
+        # employee who is told only that something failed cannot act on it, and every one
+        # of these is a state they can reach by typing.
+        "errors.timesheet_not_found": "No existe ninguna hoja de horas para esa semana.",
+        "errors.timesheet_entry_not_found": "Esa entrada de horas no existe en esta semana.",
+        "errors.timesheet_entry_task_mismatch":
+            "La tarea no pertenece al proyecto indicado.",
+        "errors.timesheet_already_exists":
+            "Ya tienes una hoja de horas para esa semana.",
+        "errors.timesheet_not_editable": (
+            "Esta semana ya está enviada. Solo puedes modificarla si te la devuelven."
+        ),
+        "errors.timesheet_entry_project_not_recordable": (
+            "Ese proyecto no admite horas nuevas: solo los proyectos activos las aceptan."
+        ),
+        "errors.timesheet_copy_target_not_empty": (
+            "Esta semana ya tiene horas. Vacíala antes de copiar la anterior."
+        ),
+        "errors.timesheet_submission_refused": (
+            "No se pudo enviar la semana: revisa el estado de la solicitud y vuelve a intentarlo."
+        ),
+        "errors.timesheet_not_yours": "Solo puedes rellenar tus propias horas.",
+        "errors.timesheet_week_not_monday": (
+            "La semana empieza en lunes: indica la fecha del lunes."
+        ),
+        "errors.timesheet_entry_outside_project_dates": (
+            "Esa fecha queda fuera del periodo del proyecto. Elige otro día u otro proyecto."
+        ),
+        "errors.timesheet_entry_minutes_invalid": (
+            "Los minutos deben ser un número entero entre 1 y 1440 (24 h)."
+        ),
+        "errors.timesheet_copy_source_invalid": (
+            "La semana anterior no tiene horas que copiar."
+        ),
         "errors.internal_error": "Se produjo un error interno. Inténtalo de nuevo más tarde.",
         "errors.service_unavailable": "El servicio no está disponible en este momento.",
     },
@@ -365,6 +399,37 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         ),
         "errors.schedule_holiday_exists": (
             "That date is already a holiday with that scope and region."
+        ),
+        # Weekly timesheets (ticket 28). Each one says what the person can do next: an
+        # employee told only that something failed cannot act on it, and every one of
+        # these is a state they can reach by typing.
+        "errors.timesheet_not_found": "There is no timesheet for that week.",
+        "errors.timesheet_entry_not_found": "That entry does not exist in this week.",
+        "errors.timesheet_entry_task_mismatch":
+            "The task does not belong to the project named.",
+        "errors.timesheet_already_exists": "You already have a timesheet for that week.",
+        "errors.timesheet_not_editable": (
+            "This week has been submitted. You can only change it if it comes back to you."
+        ),
+        "errors.timesheet_entry_project_not_recordable": (
+            "That project does not accept new time: only active projects do."
+        ),
+        "errors.timesheet_copy_target_not_empty": (
+            "This week already has hours. Clear it before copying the previous one."
+        ),
+        "errors.timesheet_submission_refused": (
+            "The week could not be submitted: check the request's state and try again."
+        ),
+        "errors.timesheet_not_yours": "You can only fill in your own hours.",
+        "errors.timesheet_week_not_monday": "A week starts on Monday: give the Monday's date.",
+        "errors.timesheet_entry_outside_project_dates": (
+            "That date is outside the project's period. Pick another day or another project."
+        ),
+        "errors.timesheet_entry_minutes_invalid": (
+            "Minutes must be a whole number from 1 to 1440 (24 h)."
+        ),
+        "errors.timesheet_copy_source_invalid": (
+            "The previous week has no hours to copy."
         ),
         "errors.internal_error": "An internal error occurred. Please try again later.",
         "errors.service_unavailable": "The service is unavailable right now.",

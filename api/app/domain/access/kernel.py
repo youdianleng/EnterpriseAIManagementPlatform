@@ -70,6 +70,12 @@ class ResourceKind(StrEnum):
     #: to drift apart later.
     SCHEDULE = "schedule"
     HOLIDAY = "holiday"
+    #: A week of hours (ticket 28). Its own kind rather than `EMPLOYEE`, because the
+    #: resource a timesheet decision carries is the *week's owner* and the audit
+    #: trail should say "timesheet" rather than guess at a person. It takes the
+    #: self-only branch below and nothing else, which is exactly what the ticket
+    #: asks for: reading or writing somebody else's week is refused for every role.
+    TIMESHEET = "timesheet"
 
 
 @dataclass(slots=True, frozen=True)
@@ -597,7 +603,11 @@ def filter_for(principal: Principal, kind: ResourceKind) -> FilterSpec:
 
     # Structure and administration are organisation-wide for anyone whose role
     # passed the action check; the filter records that rather than pretending
-    # otherwise.
+    # otherwise. A week of hours (ticket 28) lands here too, and `allow_all` is
+    # harmless for it for a reason worth stating: the three timesheet actions are
+    # self-only, so the *resource* clause refuses every week but the caller's own
+    # before any filter is consulted — there is no list endpoint that could leak
+    # through a permissive spec.
     return FilterSpec(
         _token=_FILTER_TOKEN,
         kind=kind,

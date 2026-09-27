@@ -21,6 +21,8 @@ export type Dictionary = {
     home: string;
     /** The notification centre, which every signed-in role can open. */
     notifications: string;
+    /** Weekly timesheets: your own hours, which every role may fill in. */
+    timesheets: string;
     /** Accessible name of the signed-in navigation landmark. */
     main: string;
   };
@@ -228,6 +230,106 @@ export type Dictionary = {
     validation_failed: string;
     internal_error: string;
     service_unavailable: string;
+    /** Timesheet refusals the employee can act on, so the screen must name them. */
+    timesheet_not_editable: string;
+    timesheet_not_yours: string;
+    timesheet_week_not_monday: string;
+    timesheet_entry_minutes_invalid: string;
+    timesheet_entry_outside_project_dates: string;
+    timesheet_entry_project_not_recordable: string;
+    timesheet_copy_source_invalid: string;
+    timesheet_copy_target_not_empty: string;
+    timesheet_submission_refused: string;
+    project_task_not_recordable: string;
+  };
+  timesheets: {
+    title: string;
+    intro: string;
+    /** The week being shown, with the range interpolated. */
+    weekOf: string;
+    previousWeek: string;
+    nextWeek: string;
+    thisWeek: string;
+    copyPrevious: string;
+    copying: string;
+    submit: string;
+    submitting: string;
+    /** Shown in place of the submit button once the week is filed. */
+    submittedOn: string;
+    /** The statuses, as words. Colour alone never carries a status (§5). */
+    status: {
+      draft: string;
+      pending: string;
+      approved: string;
+      rejected: string;
+    };
+    /** Says why a filed week cannot be edited, beside the status. */
+    lockedHint: string;
+    rejectedHint: string;
+    /** The per-entry ceiling, stated so a refusal is predicted rather than discovered. */
+    minutesHint: string;
+    /** Says a row will be billed. A word, because a colour alone cannot carry it (§5). */
+    billable: string;
+    /** A day's expectation, with the duration interpolated. */
+    expected: string;
+    /** A day nobody has a schedule for: not the same fact as expecting nothing. */
+    expectedUnknown: string;
+    /** A holiday, which is a rest day rather than a day somebody skipped. */
+    holiday: string;
+    dayTotal: string;
+    weekTotal: string;
+    weekExpected: string;
+    overBudget: string;
+    overBudgetDay: string;
+    noEntries: string;
+    emptyHint: string;
+    loading: string;
+    error: string;
+    retry: string;
+    /** The grid's caption and column headers. */
+    caption: string;
+    /** Accessible names for the grid controls. */
+    addEntry: string;
+    removeEntry: string;
+    saving: string;
+    entryForm: {
+      heading: string;
+      project: string;
+      task: string;
+      projectPlaceholder: string;
+      taskPlaceholder: string;
+      minutes: string;
+      note: string;
+      notePlaceholder: string;
+      add: string;
+      cancel: string;
+      projectRequired: string;
+      taskRequired: string;
+      minutesRequired: string;
+      minutesRange: string;
+    };
+    /** The narrow-viewport downgrade (design system §7), not a squeezed grid. */
+    desktopOnly: {
+      title: string;
+      body: string;
+      alternative: string;
+    };
+    history: {
+      heading: string;
+      round: string;
+      level: string;
+      decision: string;
+      comment: string;
+      decidedAt: string;
+      empty: string;
+      decisions: {
+        approved: string;
+        rejected: string;
+        returned: string;
+        pending: string;
+        skipped: string;
+      };
+    };
   };
   footer: {
     milestone: string;

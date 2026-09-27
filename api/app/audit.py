@@ -135,6 +135,17 @@ class AuditAction(StrEnum):
     #: because the figure is evidence: the row says what it was measured against,
     #: and this says when it was written and on whose instruction.
     EXPECTED_HOURS_SNAPSHOTTED = "attendance.expected_hours_snapshotted"  # 22
+    #: Weekly timesheets (ticket 28). Three actions rather than one, and the third
+    #: is the one that matters: filing a week is the moment it stops being the
+    #: employee's to change, and "who filed which week, when" is the question an
+    #: approval dispute asks. The two edit actions are separate for the same reason
+    #: the punch stream separates recording from correcting: an entry written and an
+    #: entry removed are different facts about a week.
+    TIMESHEET_CREATED = "timesheet.created"  # 28
+    TIMESHEET_ENTRY_WRITTEN = "timesheet.entry_written"  # 28
+    TIMESHEET_ENTRY_REMOVED = "timesheet.entry_removed"  # 28
+    TIMESHEET_SUBMITTED = "timesheet.submitted"  # 28
+    TIMESHEET_COPIED = "timesheet.copied"  # 28
     AGENT_ACTION_PROPOSED = "agent.action_proposed"  # 40
     AGENT_ACTION_CONFIRMED = "agent.action_confirmed"  # 41
     DATA_EXPORTED = "data.exported"  # 26, 47

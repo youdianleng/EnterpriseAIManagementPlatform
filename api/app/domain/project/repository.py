@@ -14,6 +14,7 @@ Three things about this interface are load-bearing:
   with the page.
 """
 
+from collections.abc import Collection
 from typing import Protocol
 from uuid import UUID
 
@@ -36,6 +37,14 @@ class ProjectRepository(Protocol):
     async def find_by_code(self, code: str) -> Project | None:
         """The project holding this code, archived ones included: the uniqueness is
         for good, so an archived row is a collision rather than free space."""
+        ...
+
+    async def projects_by_ids(self, project_ids: Collection[UUID]) -> dict[UUID, Project]:
+        """Several projects at once, keyed by id.
+
+        The other half of ticket 28's grid read: a week's entries name projects as
+        well as tasks, and resolving them one at a time is a query per cell.
+        """
         ...
 
     async def list_projects(self, query: ProjectQuery) -> ProjectPage:
@@ -74,6 +83,16 @@ class ProjectRepository(Protocol):
         ...
 
     async def get_task(self, task_id: UUID) -> ProjectTask | None: ...
+
+    async def tasks_by_ids(self, task_ids: Collection[UUID]) -> dict[UUID, ProjectTask]:
+        """Several tasks at once, keyed by id.
+
+        Added for ticket 28's grid: a week's entries each name a task, and resolving
+        them one at a time is a query per cell — the read this exists to avoid.
+        Absent ids are simply missing from the result; a caller that needs one to
+        exist reads it with `get_task`.
+        """
+        ...
 
     async def find_task_by_code(self, project_id: UUID, code: str) -> ProjectTask | None: ...
 

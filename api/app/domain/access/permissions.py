@@ -86,6 +86,18 @@ class Action(StrEnum):
     HOLIDAY_READ = "holiday.read"
     HOLIDAY_MANAGE = "holiday.manage"
 
+    # Weekly timesheets (ticket 28). Three acts, all of them self-only, because the
+    # ticket says so in as many words: filling in somebody else's hours is a 403.
+    # Separating them is what will let ticket 29 give a manager "read my report's
+    # week" without that arriving as a quiet widening of the employee's own read —
+    # the same argument the attendance pair records above.
+    TIMESHEET_READ_OWN = "timesheet.read_own"
+    TIMESHEET_WRITE_OWN = "timesheet.write_own"
+    #: Filing a week is its own act because it is the moment the week stops being
+    #: the employee's to change: one permission for "type my hours" and "hand them
+    #: to my manager for sign-off" would make the second impossible to withdraw.
+    TIMESHEET_SUBMIT_OWN = "timesheet.submit_own"
+
     # Documents and the knowledge base. Fleshed out in tickets 12 and 31; present
     # here so the document module has an action to ask about from the start.
     DOCUMENT_READ = "document.read"
@@ -275,6 +287,37 @@ RULES: dict[Action, ActionRule] = {
             "expected hours, so it is the same authority as the schedule itself."
         ),
     ),
+    # Weekly timesheets (ticket 28). Every account holds `employee`, so the role
+    # list is the whole signed-in population; what makes these self-only is
+    # `SELF_ONLY_ACTIONS` below, and no role bypasses it — not a manager for their
+    # report, not HR for the company. Ticket 29's approver surface adds the action
+    # that reads a report's week, as its own permission rather than as a wider
+    # version of this one.
+    Action.TIMESHEET_READ_OWN: ActionRule(
+        roles=frozenset({"employee"}),
+        description=(
+            "Reading your own week, and the approval state of the ones you have "
+            "filed. The Spanish working-time obligation gives the employee their own "
+            "record; nobody else's is reachable through this action."
+        ),
+    ),
+    Action.TIMESHEET_WRITE_OWN: ActionRule(
+        roles=frozenset({"employee"}),
+        description=(
+            "Writing entries into your own draft week, copying the previous one into "
+            "it, and removing what you typed. A filed week is refused by the module "
+            "whatever this action says."
+        ),
+    ),
+    Action.TIMESHEET_SUBMIT_OWN: ActionRule(
+        roles=frozenset({"employee"}),
+        description=(
+            "Filing your own week with the approval engine. Its own action because "
+            "it is the act that takes the week out of your hands: an installation "
+            "that wanted a second pair of eyes before filing could take this one "
+            "away without touching the writing."
+        ),
+    ),
     Action.DOCUMENT_READ: ActionRule(
         roles=frozenset({"admin", "hr", "finance", "it", "compliance", "employee"}),
         description="Reading a document; clearance and department decide which ones.",
@@ -319,12 +362,16 @@ DOCUMENT_CROSS_DEPARTMENT_ROLES = frozenset({"hr", "compliance"})
 #: company, and not an administrator either. Ticket 24 adds the actions that read a
 #: report's day and the company's, each with its own resource rule, which is what
 #: stops "HR may see attendance" from arriving as a quiet widening of "I may see my
-#: own".
+#: own". Ticket 28's three join them for the same reason and with the same
+#: consequence: 代填 is a 403 the ticket asks for by name.
 SELF_ONLY_ACTIONS: frozenset[Action] = frozenset(
     {
         Action.ATTENDANCE_CLOCK_OWN,
         Action.ATTENDANCE_READ_OWN,
         Action.SCHEDULE_READ_OWN,
+        Action.TIMESHEET_READ_OWN,
+        Action.TIMESHEET_WRITE_OWN,
+        Action.TIMESHEET_SUBMIT_OWN,
     }
 )
 

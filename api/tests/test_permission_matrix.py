@@ -209,6 +209,17 @@ DESIGN_GRANTS: dict[Action, frozenset[str]] = {
     Action.SCHEDULE_MANAGE: frozenset({"admin", "hr"}),
     Action.HOLIDAY_READ: EVERYONE,
     Action.HOLIDAY_MANAGE: frozenset({"admin", "hr"}),
+    # Weekly timesheets (ticket 28). "Their own data" a fourth time, and self-only
+    # through `SELF_ONLY_ACTIONS`: §4.1 gives an employee their own record, and 代填 —
+    # filling in somebody else's hours — is a refusal the ticket states by name. The
+    # three are separate acts because filing a week is the moment it stops being the
+    # employee's to change, and an installation that wanted a second pair of eyes
+    # before filing could take `timesheet.submit_own` away without touching the
+    # writing. Ticket 29's approver surface adds the action that reads a report's
+    # week, as its own permission rather than a wider version of these.
+    Action.TIMESHEET_READ_OWN: EVERYONE,
+    Action.TIMESHEET_WRITE_OWN: EVERYONE,
+    Action.TIMESHEET_SUBMIT_OWN: EVERYONE,
 }
 
 #: The resource each action acts on. A document is decided by §4.2 whatever the
@@ -260,6 +271,12 @@ KIND_FOR_ACTION: dict[Action, ResourceKind] = {
     Action.SCHEDULE_MANAGE: ResourceKind.SCHEDULE,
     Action.HOLIDAY_READ: ResourceKind.HOLIDAY,
     Action.HOLIDAY_MANAGE: ResourceKind.HOLIDAY,
+    # The week, which is its own kind rather than the employee it belongs to: the
+    # resource carries the week's owner, and the audit trail should say "timesheet"
+    # rather than guess at a person. It takes the self-only branch and nothing else.
+    Action.TIMESHEET_READ_OWN: ResourceKind.TIMESHEET,
+    Action.TIMESHEET_WRITE_OWN: ResourceKind.TIMESHEET,
+    Action.TIMESHEET_SUBMIT_OWN: ResourceKind.TIMESHEET,
 }
 
 #: Actions the catalogue decides by role alone, with no resource clause to apply.
@@ -442,9 +459,10 @@ def test_the_generated_matrix_covers_every_dimension() -> None:
     # somebody makes here rather than something that happens. Ticket 21 wrote 24;
     # ticket 27 adds the four project actions; ticket 22 adds four more — reading
     # your own week, maintaining schedules, reading the calendar, maintaining it —
-    # and the sum is asserted literally so that a fifth arrives as a failing test
-    # rather than as extra coverage.
-    assert len(cases) == 7 * 32 * 13
+    # ticket 28 adds three for the weekly timesheet (read your own week, write it,
+    # file it), and the sum is asserted literally so that a fourth arrives as a
+    # failing test rather than as extra coverage.
+    assert len(cases) == 7 * 35 * 13
     assert 0 < permitted < len(cases), "the expectation answers the same way everywhere"
 
     discriminating = [
@@ -919,6 +937,20 @@ HTTP_MATRIX: tuple[tuple[str, str, Action | None], ...] = (
     ),
     ("GET", "/api/v1/holidays", Action.HOLIDAY_READ),
     ("POST", "/api/v1/holidays", Action.HOLIDAY_MANAGE),
+    # Weekly timesheets (ticket 28). Every role may read and write *its own* week, so
+    # the role-level answer here is "yes" for all seven and the interesting refusal —
+    # somebody else's week, which the ticket says is a 403 — is a resource-level
+    # decision layer 4 asserts by name. The week is a query parameter (see the router:
+    # this is the convention ticket 21 established for a surface that answers about
+    # the caller), and `{task_id}` stands in for the entry id.
+    ("GET", "/api/v1/timesheets/week", Action.TIMESHEET_READ_OWN),
+    ("GET", "/api/v1/timesheets/week/status", Action.TIMESHEET_READ_OWN),
+    ("GET", "/api/v1/timesheets/mine", Action.TIMESHEET_READ_OWN),
+    ("POST", "/api/v1/timesheets/entries", Action.TIMESHEET_WRITE_OWN),
+    ("PATCH", "/api/v1/timesheets/entries/{task_id}", Action.TIMESHEET_WRITE_OWN),
+    ("DELETE", "/api/v1/timesheets/entries/{task_id}", Action.TIMESHEET_WRITE_OWN),
+    ("POST", "/api/v1/timesheets/copy-previous", Action.TIMESHEET_WRITE_OWN),
+    ("POST", "/api/v1/timesheets/submit", Action.TIMESHEET_SUBMIT_OWN),
 )
 
 
@@ -935,6 +967,13 @@ def holiday_date(suffix: str) -> date:
         1 + int(suffix[2:4], 16) % 12,
         1 + int(suffix[4:6], 16) % 28,
     )
+
+
+#: The week the timesheet rows are about. A Monday, so the module's week key is valid,
+#: and fixed rather than derived from "today" so the payload and the path always agree
+#: about which week they mean — the failure a computed date would produce is a 400
+#: that reads like a permission problem.
+MATRIX_WEEK_START = date(2027, 1, 4)
 
 
 #: The routes whose body the matrix can make genuinely valid, so a permitted caller
@@ -1043,6 +1082,20 @@ def http_payload(path: str, *, department: str, employee: str) -> dict:
             "name_en": "Matrix",
             "scope": "national",
         },
+        # Ticket 28. The project and task ids are real uuids the matrix never creates,
+        # which is the ordinary shape here: the guard lets the caller through and the
+        # handler answers 404 — what this layer asserts is the guard. The entry's day
+        # is `MATRIX_WEEK_START` itself, and the week travels in the query string, so
+        # the two always agree about which week is meant.
+        "/api/v1/timesheets/entries": {
+            "entry_date": MATRIX_WEEK_START.isoformat(),
+            "project_id": employee,
+            "task_id": employee,
+            "minutes": 480,
+        },
+        "/api/v1/timesheets/entries/{task_id}": {"minutes": 60},
+        "/api/v1/timesheets/copy-previous": {},
+        "/api/v1/timesheets/submit": {},
     }[path]
 
 
@@ -1065,17 +1118,24 @@ async def test_the_http_matrix_for(platform: Platform, role: str) -> None:
 
     for method, template, action in HTTP_MATRIX:
         path = template.format(
-            subject=subject, project=subject, project_id=subject, task_id=subject
+            subject=actor.employee_id if action in SELF_ONLY_ACTIONS else subject,
+            project=subject,
+            project_id=subject,
+            task_id=subject,
         )
         payload = (
             http_payload(template, department=department, employee=accountless)
             if method in {"POST", "PATCH", "PUT"}
             else None
         )
+        # The timesheet surface names its week in the query string, as ticket 21's
+        # routes do for a surface that answers about the caller: the week is a date
+        # rather than a row id, and this is the one layer that has to supply it.
+        params = {"week": MATRIX_WEEK_START.isoformat()} if "/timesheets/" in path else None
         response = (
-            await actor.call(method, path, json=payload)
+            await actor.call(method, path, json=payload, params=params)
             if payload is not None
-            else await actor.call(method, path)
+            else await actor.call(method, path, params=params)
         )
         checked += 1
         label = f"role={role} {method} {path} (action={action or 'none'})"

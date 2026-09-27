@@ -22,6 +22,7 @@ from app.api.v1 import positions as positions_v1
 from app.api.v1 import projects as projects_v1
 from app.api.v1 import roles as roles_v1
 from app.api.v1 import schedules as schedules_v1
+from app.api.v1 import timesheets as timesheets_v1
 from app.cache import close_redis
 from app.config import get_settings
 from app.core.exception_handlers import register_exception_handlers
@@ -149,6 +150,7 @@ def create_app() -> FastAPI:
     app.include_router(personnel_v1.router, prefix=API_PREFIX)
     app.include_router(projects_v1.router, prefix=API_PREFIX)
     app.include_router(schedules_v1.router, prefix=API_PREFIX)
+    app.include_router(timesheets_v1.router, prefix=API_PREFIX)
     if settings.is_development:
         app.include_router(debug.router, prefix=API_PREFIX)
 

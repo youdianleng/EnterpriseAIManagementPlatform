@@ -18,6 +18,7 @@ Nothing commits: the service commits once, so the row and its audit entry land
 together.
 """
 
+from collections.abc import Collection
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, or_, select
@@ -113,6 +114,19 @@ class PostgresProjectRepository:
     async def find_by_code(self, code: str) -> Project | None:
         row = await self._session.scalar(select(ProjectRow).where(ProjectRow.code == code))
         return _to_project(row) if row is not None else None
+
+    async def projects_by_ids(self, project_ids: Collection[UUID]) -> dict[UUID, Project]:
+        """Several projects in one statement, keyed by id.
+
+        The other half of ticket 28's grid read: a week's entries name projects as
+        well as tasks, and resolving them one at a time is a query per cell.
+        """
+        if not project_ids:
+            return {}
+        rows = await self._session.scalars(
+            select(ProjectRow).where(ProjectRow.id.in_(list(project_ids)))
+        )
+        return {row.id: _to_project(row) for row in rows}
 
     async def list_projects(self, query: ProjectQuery) -> ProjectPage:
         statement = select(ProjectRow)
@@ -218,6 +232,20 @@ class PostgresProjectRepository:
     async def get_task(self, task_id: UUID) -> ProjectTask | None:
         row = await self._session.scalar(select(TaskRow).where(TaskRow.id == task_id))
         return _to_task(row) if row is not None else None
+
+    async def tasks_by_ids(self, task_ids: Collection[UUID]) -> dict[UUID, ProjectTask]:
+        """Several tasks in one statement, keyed by id.
+
+        Ticket 28's grid read: a week names a task per entry, and a lookup per cell is
+        how a seven-day screen becomes twenty round trips. An unknown id is simply
+        absent — nothing here decides whether that is an error.
+        """
+        if not task_ids:
+            return {}
+        rows = await self._session.scalars(
+            select(TaskRow).where(TaskRow.id.in_(list(task_ids)))
+        )
+        return {row.id: _to_task(row) for row in rows}
 
     async def find_task_by_code(self, project_id: UUID, code: str) -> ProjectTask | None:
         row = await self._session.scalar(

@@ -15,6 +15,7 @@ from app.models.schedule import (
     WorkSchedule,
     WorkScheduleDay,
 )
+from app.models.timesheet import Timesheet, TimesheetEntry
 
 __all__ = [
     "ApprovalDecision",
@@ -34,6 +35,8 @@ __all__ = [
     "PersonnelChange",
     "Project",
     "ProjectTask",
+    "Timesheet",
+    "TimesheetEntry",
     "User",
     "WorkSchedule",
     "WorkScheduleDay",

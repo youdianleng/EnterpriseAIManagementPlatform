@@ -217,6 +217,50 @@ class ErrorCode(StrEnum):
     #: instead; a person adding one by hand is told rather than silently overwriting.
     SCHEDULE_HOLIDAY_EXISTS = "ERR_SCH_011"
 
+    # Weekly timesheets (ticket 28). Four themes. A week is identified by its
+    # Monday, so "not a Monday" is its own code rather than a validation error: the
+    # fix is to send the right date, not to correct a field. An entry's project and
+    # task must agree and must be bookable, which is what `ENTRY_*` says. A
+    # *locked* week is a state rather than a permission — the caller may well own
+    # it — so it reads like `PROJECT_ARCHIVED`'s 409 and not like a 403. And
+    # `TIMESHEET_ALREADY_SUBMITTED` is the engine's rule in this module's
+    # vocabulary: a rejection is final for the request, so the way forward names
+    # the edit that has to happen first.
+    TIMESHEET_NOT_FOUND = "ERR_TSH_001"
+    #: The week's start is not the Monday of the week it names. The whole module
+    #: keys on that, and the database refuses it as well.
+    TIMESHEET_WEEK_NOT_MONDAY = "ERR_TSH_002"
+    #: One timesheet per person per week, refused by a unique constraint. Its own
+    #: code because the answer is "open the one you have", not "try again later".
+    TIMESHEET_ALREADY_EXISTS = "ERR_TSH_003"
+    #: Submitted, or already decided: not the caller's to edit any more. The
+    #: engine's request is what holds the decision, and this is the module's word
+    #: for "not in a state you may write in".
+    TIMESHEET_NOT_EDITABLE = "ERR_TSH_004"
+    TIMESHEET_ENTRY_NOT_FOUND = "ERR_TSH_005"
+    #: The task belongs to another project. 404 for the reason the project module
+    #: gives: the route names both, so telling them apart is an existence oracle.
+    TIMESHEET_ENTRY_TASK_MISMATCH = "ERR_TSH_006"
+    #: The project is not `active`: draft, closed or archived. Reported with the
+    #: status in the detail, and refused by the database as well as here — a
+    #: constraint the application can forget is not the guarantee ticket 27 asked
+    #: for. 409 rather than 422, matching `PROJECT_ARCHIVED`.
+    TIMESHEET_ENTRY_PROJECT_NOT_RECORDABLE = "ERR_TSH_007"
+    #: The date is outside the project's own start and end dates.
+    TIMESHEET_ENTRY_OUTSIDE_PROJECT_DATES = "ERR_TSH_008"
+    #: Minutes must be a positive integer no longer than `MAX_ENTRY_MINUTES`.
+    TIMESHEET_ENTRY_MINUTES_INVALID = "ERR_TSH_009"
+    #: The week is not the caller's own. 403, by the ticket's own wording.
+    TIMESHEET_NOT_YOURS = "ERR_TSH_010"
+    #: Copying a week into itself, or off the calendar.
+    TIMESHEET_COPY_SOURCE_INVALID = "ERR_TSH_011"
+    #: The week being copied into already has entries. Refused rather than merged:
+    #: a copy that added to what was there is a duplicate nobody sees.
+    TIMESHEET_COPY_TARGET_NOT_EMPTY = "ERR_TSH_012"
+    #: The engine refused the submission — a request already filed, or a rejection
+    #: that is final. Carries the engine's own code in the detail.
+    TIMESHEET_SUBMISSION_REFUSED = "ERR_TSH_013"
+
     # Cross-cutting.
     INTERNAL_ERROR = "ERR_INTERNAL_001"
     SERVICE_UNAVAILABLE = "ERR_INTERNAL_002"
@@ -406,6 +450,39 @@ ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
         422, "errors.schedule_invalid_holiday_file"
     ),
     ErrorCode.SCHEDULE_HOLIDAY_EXISTS: ErrorDefinition(409, "errors.schedule_holiday_exists"),
+    # 404 for the two lookups, 409 for the four states the caller has to be told
+    # apart from "you may not", 422 for the three the caller wrote wrong. A locked
+    # week is the deliberate 409: the caller owns it, and "you cannot write here"
+    # has a different remedy from "that is not yours".
+    ErrorCode.TIMESHEET_NOT_FOUND: ErrorDefinition(404, "errors.timesheet_not_found"),
+    ErrorCode.TIMESHEET_ENTRY_NOT_FOUND: ErrorDefinition(404, "errors.timesheet_entry_not_found"),
+    ErrorCode.TIMESHEET_ENTRY_TASK_MISMATCH: ErrorDefinition(
+        404, "errors.timesheet_entry_task_mismatch"
+    ),
+    ErrorCode.TIMESHEET_ALREADY_EXISTS: ErrorDefinition(409, "errors.timesheet_already_exists"),
+    ErrorCode.TIMESHEET_NOT_EDITABLE: ErrorDefinition(409, "errors.timesheet_not_editable"),
+    ErrorCode.TIMESHEET_ENTRY_PROJECT_NOT_RECORDABLE: ErrorDefinition(
+        409, "errors.timesheet_entry_project_not_recordable"
+    ),
+    ErrorCode.TIMESHEET_COPY_TARGET_NOT_EMPTY: ErrorDefinition(
+        409, "errors.timesheet_copy_target_not_empty"
+    ),
+    ErrorCode.TIMESHEET_SUBMISSION_REFUSED: ErrorDefinition(
+        409, "errors.timesheet_submission_refused"
+    ),
+    ErrorCode.TIMESHEET_NOT_YOURS: ErrorDefinition(403, "errors.timesheet_not_yours"),
+    ErrorCode.TIMESHEET_WEEK_NOT_MONDAY: ErrorDefinition(
+        422, "errors.timesheet_week_not_monday"
+    ),
+    ErrorCode.TIMESHEET_ENTRY_OUTSIDE_PROJECT_DATES: ErrorDefinition(
+        422, "errors.timesheet_entry_outside_project_dates"
+    ),
+    ErrorCode.TIMESHEET_ENTRY_MINUTES_INVALID: ErrorDefinition(
+        422, "errors.timesheet_entry_minutes_invalid"
+    ),
+    ErrorCode.TIMESHEET_COPY_SOURCE_INVALID: ErrorDefinition(
+        422, "errors.timesheet_copy_source_invalid"
+    ),
     # 403 with its own code so the client can route to the change-password screen
     # instead of showing a permission error.
     ErrorCode.PASSWORD_CHANGE_REQUIRED: ErrorDefinition(403, "errors.password_change_required"),

@@ -28,12 +28,41 @@ const OUT = join(HERE, "..", "..", ".scratch", "visual");
 const API = process.env.EAM_API_URL ?? "http://localhost:8000";
 
 const LOCALES = ["es", "en"];
-const PATHS = ["", "/style-guide", "/notifications", "/login"];
+const PATHS = ["", "/style-guide", "/notifications", "/timesheets", "/login"];
 const VIEWPORTS = [
   { name: "320", width: 320, height: 720 },
+  // 375 as well as 320, because the ticket names 375 explicitly and the timesheet grid
+  // is the one screen whose behaviour *changes* at that width rather than merely
+  // reflowing: below 768 it is replaced by the "please use a desktop" panel.
+  { name: "375", width: 375, height: 812 },
   { name: "768", width: 768, height: 900 },
   { name: "1280", width: 1280, height: 900 },
 ];
+
+/**
+ * The width at which the timesheet grid stops being replaced by the notice.
+ *
+ * Mirrors the breakpoint in `docs/architecture/frontend-design-system.md` §7 and the
+ * `matchMedia` query in `timesheet-screen.tsx`. Named here rather than left implicit so
+ * a disagreement between the three is a failing check rather than a quiet one.
+ */
+const GRID_BREAKPOINT = 768;
+
+/**
+ * The week `scripts/timesheet-data-check.mjs` fills, as a `YYYY-MM-DD` Monday.
+ *
+ * Three weeks back, computed from the components of a local date so the browser's
+ * timezone cannot move the day — the same rule `lib/api/timesheets.ts` follows, and for
+ * the same reason: a wrong Monday is a 422 from the API.
+ */
+function fixtureWeek() {
+  const today = new Date();
+  const monday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 21);
+  monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
+  const month = `${monday.getMonth() + 1}`.padStart(2, "0");
+  const day = `${monday.getDate()}`.padStart(2, "0");
+  return `${monday.getFullYear()}-${month}-${day}`;
+}
 
 /** Everything the shell and the style guide must expose. */
 const REQUIRED_SELECTORS = [
@@ -137,6 +166,26 @@ async function checkPage(page, url, label) {
   if (unnamed.length > 0) fail(`${label}: controls without an accessible name: ${unnamed.join(" | ")}`);
   else ok(`${label}: all controls have an accessible name`);
 
+  // 5. A `headers` attribute has to point at an id that exists.
+  //
+  // A table that names its header cells and gets the ids wrong is worse than one that
+  // does not name them: a screen reader announces nothing where a label was promised.
+  // This is invisible on screen, which is exactly why it is checked.
+  const danglingHeaders = await page.evaluate(() => {
+    const broken = [];
+    for (const cell of document.querySelectorAll("[headers]")) {
+      for (const id of (cell.getAttribute("headers") ?? "").split(/\s+/).filter(Boolean)) {
+        if (document.getElementById(id) === null) {
+          broken.push(`${cell.tagName.toLowerCase()} headers="${id}" has no matching id`);
+        }
+      }
+    }
+    return broken;
+  });
+  if (danglingHeaders.length > 0) {
+    fail(`${label}: table cells point at headers that do not exist: ${danglingHeaders.join(" | ")}`);
+  }
+
   return headingCounts;
 }
 
@@ -210,6 +259,178 @@ async function signIn(request, username, password) {
   };
 }
 
+/**
+ * The weekly timesheet grid (ticket 28).
+ *
+ * `PATHS` already covers its headings, overflow and accessible names in both languages
+ * at every width, and the loop above asserts the 375px gate. What is asserted here is
+ * what the screen is *for*, and each one is a rule from the design system rather than a
+ * preference:
+ *
+ *   - seven columns, Monday to Sunday (§6.1: a week is seven days);
+ *   - a day total and a week total on screen (§6.1: live totals);
+ *   - tabular numerals on the numbers (§2.3: `7,5` and `11,5` must align by place value,
+ *     which is the difference between reading 11,5 and 1,5);
+ *   - a cell that Enter opens and Escape closes with the focus handed back (§6.1:
+ *     "filling a week with a mouse is torture" — so the grid must be reachable by Tab
+ *     and operable by Enter, and the focus must not be lost when the editor closes);
+ *   - and, in Spanish, an over-budget notice that is present *without* the minutes
+ *     changing, on a week that genuinely has one. The warning-not-truncation rule is
+ *     asserted against the API in `tests/test_timesheets.py`; what is checked here is
+ *     that the screen shows it. `scripts/timesheet-data-check.mjs` fills the week this
+ *     reads — nine hours against eight expected — so the notice is read off a week that
+ *     has one rather than waited for.
+ *
+ * **Two weeks, on purpose.** The structure and the keyboard belong to a week somebody can
+ * still write in, and the current week is empty and editable. The warning belongs to a
+ * week that has a long day, which is the filed fixture week — a filed week has no cells
+ * to Tab into, so one week cannot answer both questions.
+ */
+async function checkTimesheets(browser, sessionCookie) {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await context.addCookies([sessionCookie]);
+  const page = await context.newPage();
+
+  // Addressed by a data attribute rather than by a caption or a section: the
+  // submission-history table is nested inside the same section, and the caption is in
+  // Spanish, which the English half of this function is not.
+  const grid = page.locator('[data-testid="timesheet-grid"]');
+
+  // --- the empty, editable week: structure and keyboard (§6.1) ------------------
+  await page.goto(`${BASE}/es/timesheets`, { waitUntil: "networkidle" });
+
+  const columns = await grid.locator("thead th").count();
+  expect(columns === 7, `timesheets: seven day columns, Monday to Sunday (found ${columns})`);
+
+  const dayNames = await grid.locator("thead th").allInnerTexts();
+  expect(
+    /lunes/i.test(dayNames[0]) && /domingo/i.test(dayNames[6]),
+    `timesheets: the columns run Monday to Sunday (${dayNames.map((t) => t.split("\n")[0]).join(", ")})`,
+  );
+
+  // Live totals: a day total on every day row, and the week's total in the footer.
+  const dayTotals = await grid.locator("tbody tr td:first-child", { hasText: /Total del día/ }).count();
+  expect(dayTotals === 7, `timesheets: every day shows its own total (found ${dayTotals})`);
+  const footer = (await grid.locator("tfoot").innerText()).replace(/\s+/g, " ");
+  expect(/Total de la semana/i.test(footer), `timesheets: the week total is shown ("${footer}")`);
+
+  // Tabular numerals: the totals column must not use proportional digits (§2.3).
+  const totalsAreTabular = await grid
+    .locator("tbody td:first-child .tabular")
+    .evaluateAll((elements) => elements.length > 0 && elements.every((el) => el !== null));
+  expect(totalsAreTabular, "timesheets: day totals use tabular numerals");
+
+  // Keyboard: Tab reaches an "add hours" cell, Enter opens its editor, Escape closes it
+  // and hands the focus back to the cell it came from.
+  const firstCell = grid.getByRole("button", { name: /^Añadir horas:/i }).first();
+  await firstCell.focus();
+  const focusedBefore = await page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? "");
+  expect(
+    /^Añadir horas:/i.test(focusedBefore),
+    `timesheets: a cell is focusable by keyboard ("${focusedBefore}")`,
+  );
+
+  await page.keyboard.press("Enter");
+  const editor = page.locator("form[id^='entry-form-']").first();
+  await editor.waitFor({ timeout: 5000 });
+  ok("timesheets: Enter on a cell opens its editor");
+
+  // The editor takes the focus itself. Without that, removing the focused cell sends the
+  // focus to <body>, Escape reaches nothing and the next Tab restarts at the top of the
+  // page — the defect this assertion exists for.
+  const focusedField = await page.evaluate(() => {
+    const element = document.activeElement;
+    return element ? `${element.tagName}:${element.getAttribute("type") ?? ""}` : "none";
+  });
+  expect(focusedField !== "BODY:", `timesheets: the editor takes the focus (${focusedField})`);
+
+  const labelledFields = await editor.locator("select, input").count();
+  const labelled = await editor.locator("label").count();
+  expect(
+    labelled >= labelledFields,
+    `timesheets: every editor field carries a label (${labelled} labels for ${labelledFields} fields)`,
+  );
+
+  await page.keyboard.press("Escape");
+  await editor.waitFor({ state: "detached", timeout: 5000 });
+  const focusedAfter = await page.evaluate(
+    () => document.activeElement?.getAttribute("aria-label") ?? "",
+  );
+  expect(
+    /^Añadir horas:/i.test(focusedAfter),
+    `timesheets: Escape returns the focus to the cell ("${focusedAfter}")`,
+  );
+
+  await page.screenshot({ path: join(OUT, "timesheets-grid-es.png"), fullPage: true });
+
+  // --- the week with a long day: the warning, and the minutes intact -------------
+  const week = fixtureWeek();
+  await page.goto(`${BASE}/es/timesheets?week=${week}`, { waitUntil: "networkidle" });
+
+  const warning = page.getByText(/por encima de la jornada prevista/i).first();
+  expect(
+    (await warning.count()) > 0,
+    `timesheets: the over-budget notice is shown for the week of ${week}`,
+  );
+  if ((await warning.count()) > 0) {
+    const notice = (await warning.innerText()).replace(/\s+/g, " ");
+    expect(
+      /puedes enviarla igualmente/i.test(notice),
+      `timesheets: the notice says the week can still be submitted ("${notice}")`,
+    );
+    // Nothing was truncated: the nine hours are still on the day, with the excess named
+    // beside them — which is the difference between warning and truncating.
+    const monday = (
+      await grid.locator(`tr[data-day-total="${week}"]`).first().innerText()
+    ).replace(/\s+/g, " ");
+    expect(
+      /Total del día: 9 h/.test(monday),
+      `timesheets: the long day kept every minute ("${monday}")`,
+    );
+    expect(
+      /Por encima de lo previsto: 1 h/.test(monday),
+      `timesheets: and says by how much ("${monday}")`,
+    );
+    ok("timesheets: the warning warns and the totals are intact");
+  }
+  await page.screenshot({ path: join(OUT, "timesheets-over-budget-es.png"), fullPage: true });
+
+  // The narrow widths: the notice, and no grid at all.
+  for (const width of [320, 375]) {
+    await page.setViewportSize({ width, height: 812 });
+    await page.goto(`${BASE}/es/timesheets?week=${week}`, { waitUntil: "networkidle" });
+    const notice = page.locator("#timesheet-desktop-only");
+    expect((await notice.count()) === 1, `timesheets ${width}px: the desktop notice is shown`);
+    expect(
+      (await grid.count()) === 0,
+      `timesheets ${width}px: the grid is not squeezed onto the screen`,
+    );
+    const text = (await notice.innerText()).replace(/\s+/g, " ");
+    expect(
+      /ordenador/i.test(text),
+      `timesheets ${width}px: the notice says what to do instead ("${text.slice(0, 80)}…")`,
+    );
+    await page.screenshot({ path: join(OUT, `timesheets-${width}-es.png`), fullPage: true });
+  }
+
+  // English, at the width the grid is for: the same screen, the other language.
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto(`${BASE}/en/timesheets?week=${week}`, { waitUntil: "networkidle" });
+  const english = (await grid.innerText()).replace(/\s+/g, " ");
+  expect(/Week total/i.test(english), "timesheets en: the totals are in English");
+  expect(
+    !/Total de la semana/i.test(english),
+    "timesheets en: no Spanish leaked into the English screen",
+  );
+  expect(
+    /Monday/i.test(english) && /Sunday/i.test(english),
+    "timesheets en: the columns are named in English",
+  );
+  await page.screenshot({ path: join(OUT, "timesheets-grid-en.png"), fullPage: true });
+
+  await context.close();
+}
+
 async function main() {
   await mkdir(OUT, { recursive: true });
   const browser = await chromium.launch();
@@ -265,6 +486,24 @@ async function main() {
           );
         }
 
+        // The timesheet grid's own gate (design system §7): below the breakpoint the
+        // grid must be *absent* and the notice present. Asserted at every width rather
+        // than only the narrow ones, because "the grid is missing on a desktop" and
+        // "the grid is squeezed onto a phone" are both failures of the same rule.
+        if (sessionCookie && path === "/timesheets") {
+          const grid = await page.locator('[data-testid="timesheet-grid"]').count();
+          const notice = await page.locator("#timesheet-desktop-only").count();
+          const expectedGrid = viewport.width >= GRID_BREAKPOINT ? 1 : 0;
+          expect(
+            grid === expectedGrid,
+            `${label}: the grid is ${expectedGrid ? "rendered" : "replaced by the notice"}`,
+          );
+          expect(
+            notice === (expectedGrid ? 0 : 1),
+            `${label}: the "use a desktop" notice is ${expectedGrid ? "hidden" : "shown"}`,
+          );
+        }
+
         // The sign-in screen gets its own screenshot once the form has been
         // exercised, in `checkLoginForm`.
         if (path !== "/login") {
@@ -313,6 +552,7 @@ async function main() {
   if (sessionCookie) {
     await checkStyleGuide(browser, sessionCookie);
     await checkNotifications(browser, sessionCookie);
+    await checkTimesheets(browser, sessionCookie);
   } else {
     console.log("[note] signed-in checks skipped (no usable credentials)");
   }
