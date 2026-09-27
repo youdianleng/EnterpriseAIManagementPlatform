@@ -182,15 +182,12 @@ def effective_punches(
     Public because the anomaly scan (ticket 23) reads the same day and must read it
     the same way: an anomaly judged against uncorrected instants would contradict
     the day it is about, and a correction that fixed a late arrival would leave the
-    lateness standing for ever.
+    lateness standing for ever. Ticket 24's correction flow resolves the chain
+    through `chain_tip` below, which is the same walk this function makes.
     """
-    corrections: dict[UUID, list[AttendanceEvent]] = {}
-    for event in events:
-        if event.event_type is EventType.CORRECTION and event.correction_of_event_id is not None:
-            corrections.setdefault(event.correction_of_event_id, []).append(event)
-
+    corrections = corrections_of(events)
     resolved = [
-        (punch, _corrected_instant(punch, corrections).astimezone(UTC))
+        (punch, chain_tip(punch, corrections).occurred_at.astimezone(UTC))
         for punch in events
         if punch.is_punch
     ]
@@ -198,10 +195,26 @@ def effective_punches(
     return resolved
 
 
-def _corrected_instant(
+def corrections_of(
+    events: list[AttendanceEvent],
+) -> dict[UUID, list[AttendanceEvent]]:
+    """The corrections pointing at each row, grouped by the row they restate.
+
+    The stream is read from the pointing side because that is the only direction it
+    has: a correction names its target and a punch knows nothing about what came
+    after it, which is what leaves the original row untouched.
+    """
+    corrections: dict[UUID, list[AttendanceEvent]] = {}
+    for event in events:
+        if event.event_type is EventType.CORRECTION and event.correction_of_event_id is not None:
+            corrections.setdefault(event.correction_of_event_id, []).append(event)
+    return corrections
+
+
+def chain_tip(
     event: AttendanceEvent, corrections: dict[UUID, list[AttendanceEvent]]
-) -> datetime:
-    """Follow the correction chain from `event` to its newest correction.
+) -> AttendanceEvent:
+    """The newest row in the correction chain that starts at `event`.
 
     The walk terminates because of the shape of the data rather than because of a
     guard: every step moves to a row that points at the one before it, and a row has
@@ -209,13 +222,17 @@ def _corrected_instant(
     revisit a row. A visited-set here would be dead code, and dead code in a
     resolver reads as "this may loop" — which would be the wrong thing to believe
     about the one function that decides what a day's numbers are.
+
+    Public because ticket 24's flow appends its correction to *this* row rather than
+    to the punch: a second correction of one punch is the continuation of the first
+    on screen, and the day reads the same row this returns.
     """
     current = event
     while True:
         candidates = corrections.get(current.id)
         if not candidates:
-            return current.occurred_at
+            return current
         current = max(candidates, key=lambda item: (item.created_at, str(item.id)))
 
 
-__all__ = ["derive", "effective_punches"]
+__all__ = ["chain_tip", "corrections_of", "derive", "effective_punches"]

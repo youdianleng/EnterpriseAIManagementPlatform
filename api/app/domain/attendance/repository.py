@@ -33,6 +33,15 @@ class AttendanceRepository(Protocol):
         """`employees.status`, or None when there is no such employee."""
         ...
 
+    async def employee_name(self, employee_id: UUID) -> str | None:
+        """The person's name as an inspector's list writes it, or None if unknown.
+
+        Ticket 24's export needs a name and nothing else — not the directory, not the
+        visibility projection, not the withheld block — so it is asked for here
+        rather than reached for through the employee module's repository.
+        """
+        ...
+
     async def find_punch(
         self, employee_id: UUID, event_type: EventType, occurred_at: datetime
     ) -> AttendanceEvent | None:

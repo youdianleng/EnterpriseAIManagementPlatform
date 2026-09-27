@@ -28,6 +28,8 @@ from enum import StrEnum
 from uuid import UUID
 
 from app.domain.access.permissions import (
+    ATTENDANCE_COMPANY_ROLES,
+    ATTENDANCE_CROSS_ACTIONS,
     DOCUMENT_CROSS_DEPARTMENT_ROLES,
     PROJECT_ADMIN_ROLES,
     SELF_ONLY_ACTIONS,
@@ -138,6 +140,11 @@ class Reason(StrEnum):
     PRIVILEGED_ROLE_REQUIRED = "privileged_role_required"
     MANAGES_OWN_PROJECT = "manages_own_project"
     NOT_PROJECT_MANAGER = "not_project_manager"
+    #: Somebody else's attendance, and the caller is neither their manager nor HR.
+    #: Its own reason rather than `NOT_OWNER`, which is what the self-only branch
+    #: says and would describe the wrong rule: the file was never the caller's to
+    #: read by ownership in the first place.
+    NOT_MANAGER_OF_SUBJECT = "not_manager_of_subject"
 
 
 @dataclass(slots=True, frozen=True)
@@ -340,6 +347,15 @@ def _can_on_resource(principal: Principal, action: Action, resource: Resource) -
             f"owner={resource.owner_employee_id or 'unset'}",
         )
 
+    # Somebody else's attendance (ticket 24), decided before the generic path can
+    # reach it. The path below would answer a manager's read of a colleague with the
+    # department clause — they share a department — and that is precisely the
+    # escalation the ticket refuses: a managerial position reaches its own reports,
+    # not its team's records. HR's remit, by contrast, does not depend on the row at
+    # all, which is why it is a role check here and not a second resource clause.
+    if action in ATTENDANCE_CROSS_ACTIONS:
+        return _can_on_attendance(principal, action, resource)
+
     reasons: list[Reason] = [Reason.ROLE_PERMITS]
 
     # Ownership always grants read access to one's own material, whatever the
@@ -429,6 +445,48 @@ def _can_on_project(principal: Principal, action: Action, resource: Resource) ->
         (Reason.NOT_PROJECT_MANAGER,),
         f"{action} is for the project's own manager; manager="
         f"{resource.manager_employee_id or 'unset'}, caller={principal.employee_id}",
+    )
+
+
+def _can_on_attendance(
+    principal: Principal, action: Action, resource: Resource
+) -> Decision:
+    """Somebody else's attendance record: two reaches, and nothing else.
+
+    **HR's is the company.** The working-time record is a personnel record, and
+    §4.1 gives HR the personnel file; the four-year obligation the Spanish rules
+    impose is kept for exactly this reading. Nothing about the row enters into it,
+    which is why the check is a role and not a clause.
+
+    **A manager's is their reports.** `principal.reports_employee_ids` is built from
+    the assignments that name this person as the approver — the same relationship
+    the approval route is resolved from — so "my report" means here what it means
+    everywhere else. A resource that names nobody, or names somebody who does not
+    report to the caller, is refused: "we cannot tell that they report to you" is a
+    refusal, not a permission, for the reason the self-only branch gives.
+
+    **The department is not part of this rule, deliberately.** A manager and a
+    colleague share a department, and the generic path below would read that as
+    permission; these actions exist because the ticket refuses that reading by name.
+    """
+    if bool(principal.roles & ATTENDANCE_COMPANY_ROLES):
+        return Decision(
+            True, (Reason.IS_PRIVILEGED,), "hr reaches the whole company's working-time record"
+        )
+
+    if (
+        resource.owner_employee_id is not None
+        and resource.owner_employee_id in principal.reports_employee_ids
+    ):
+        return Decision(
+            True, (Reason.MANAGER_OF_SUBJECT,), "the principal approves for this person"
+        )
+
+    return Decision(
+        False,
+        (Reason.NOT_MANAGER_OF_SUBJECT,),
+        f"{action} reaches your own reports and nothing else; subject="
+        f"{resource.owner_employee_id or 'unset'}, caller={principal.employee_id}",
     )
 
 

@@ -59,6 +59,17 @@ class AnomalyRepository(Protocol):
         """Everything recorded against one person's one day, resolved ones included."""
         ...
 
+    async def anomalies_by_date(
+        self, employee_id: UUID, from_date: date, to_date: date
+    ) -> dict[date, list[Anomaly]]:
+        """The same for an inclusive range, grouped by day, oldest day first.
+
+        Ticket 24's self-service reads want one day; a report or an export wants a
+        period. Both are this query, and a second implementation of "what was
+        flagged" would be a second answer.
+        """
+        ...
+
     async def unnotified(self, business_date: date) -> list[Anomaly]:
         """The day's still-standing anomalies nobody has been told about yet.
 

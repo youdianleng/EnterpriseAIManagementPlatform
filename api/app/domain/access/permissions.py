@@ -61,6 +61,18 @@ class Action(StrEnum):
     # its own resource rule (ticket 24) rather than as a quiet widening of these.
     ATTENDANCE_CLOCK_OWN = "attendance.clock_own"
     ATTENDANCE_READ_OWN = "attendance.read_own"
+    # Ticket 24, and the four actions it said it would add. Reading somebody else's
+    # working-time record is two different reaches — a manager's, which stops at
+    # their own reports, and HR's, which is the whole company — so it is two
+    # actions: one action with a role list would make the second a consequence of
+    # the first, and widening a manager's reach would widen HR's silently. Filing a
+    # correction is two acts for the same reason: your own (self-only, like the
+    # clock) and HR's after-the-fact correction of somebody else's record, which is
+    # the same chain and the same engine.
+    ATTENDANCE_READ_REPORT = "attendance.read_report"
+    ATTENDANCE_READ_ALL = "attendance.read_all"
+    ATTENDANCE_CORRECTION_OWN = "attendance.correction_own"
+    ATTENDANCE_CORRECTION_ANY = "attendance.correction_any"
 
     # Projects and their tasks (ticket 27). Reading is what an employee needs to
     # fill in a timesheet; managing is what a project manager does to their own
@@ -228,6 +240,49 @@ RULES: dict[Action, ActionRule] = {
             "action and nobody else's."
         ),
     ),
+    # Ticket 24. Three readings of §4.1, recorded rather than left to the reader:
+    # a manager reaches *their reports'* attendance, which is the half of §4.1's
+    # manager row that is about time; HR reaches the company's, because the
+    # working-time record is a personnel record and HR keeps those; and nobody
+    # else — not administration, which configures the system rather than reading
+    # personnel files, and not finance, which reads the payroll record and reads
+    # these files through an export when an accountant needs one.
+    Action.ATTENDANCE_READ_REPORT: ActionRule(
+        roles=frozenset({"manager"}),
+        description=(
+            "Reading the attendance of the people who report to you, and of nobody "
+            "else. The role list says *which kind of caller*; `ATTENDANCE_CROSS_"
+            "ACTIONS` beside the self-only set says the resource rule, which is the "
+            "reporting relationship itself — a manager reads their reports and is "
+            "refused a colleague in their own department."
+        ),
+    ),
+    Action.ATTENDANCE_READ_ALL: ActionRule(
+        roles=frozenset({"hr"}),
+        description=(
+            "Reading anybody's attendance. HR owns the working-time record — it is "
+            "what the four-year obligation is kept for — and the export an accountant "
+            "or a labour inspector reads is produced through this action."
+        ),
+    ),
+    Action.ATTENDANCE_CORRECTION_OWN: ActionRule(
+        roles=frozenset({"employee"}),
+        description=(
+            "Filing a correction request about your own punch. Self-only through "
+            "`SELF_ONLY_ACTIONS`: nobody asks for a correction of somebody else's day "
+            "through this action, and a manager's approval of one is the engine's "
+            "act, not this one."
+        ),
+    ),
+    Action.ATTENDANCE_CORRECTION_ANY: ActionRule(
+        roles=frozenset({"hr"}),
+        description=(
+            "Filing a correction request about somebody else's punch — 事后修正. HR "
+            "corrects a record after the fact, and it goes down the same chain: the "
+            "same document, the same two levels, the same append, and no in-place "
+            "overwrite anywhere."
+        ),
+    ),
     # §4.1 gives an employee "their own data" and, since a timesheet is filled in
     # against a project, the projects they may book against. Every role holds
     # `employee`, so the list is everyone; *which* projects is decided by the
@@ -368,12 +423,38 @@ SELF_ONLY_ACTIONS: frozenset[Action] = frozenset(
     {
         Action.ATTENDANCE_CLOCK_OWN,
         Action.ATTENDANCE_READ_OWN,
+        Action.ATTENDANCE_CORRECTION_OWN,
         Action.SCHEDULE_READ_OWN,
         Action.TIMESHEET_READ_OWN,
         Action.TIMESHEET_WRITE_OWN,
         Action.TIMESHEET_SUBMIT_OWN,
     }
 )
+
+#: The actions that reach *somebody else's* attendance record, and the reason they
+#: are listed here rather than left to the generic path (ticket 24).
+#:
+#: The kernel's ordinary employee path would answer these with the department
+#: clause: a manager and a colleague share a department, so "in my department" would
+#: be read as "mine to read", which is exactly the escalation the ticket refuses by
+#: name. So these actions are decided by their own branch — the reporting
+#: relationship, or a company-wide remit, and nothing else — and this set is what
+#: names them, so a fifth action added to the attendance surface has to be put in
+#: one of the two lists deliberately.
+ATTENDANCE_CROSS_ACTIONS: frozenset[Action] = frozenset(
+    {
+        Action.ATTENDANCE_READ_REPORT,
+        Action.ATTENDANCE_READ_ALL,
+        Action.ATTENDANCE_CORRECTION_ANY,
+    }
+)
+
+#: The roles whose reach over somebody else's attendance is the whole company
+#: rather than their own reports. HR, and deliberately not "is privileged": finance
+#: and compliance are privileged for *personnel files* (§4.1) and reading somebody's
+#: hours is not what either of them was given, so the two sets are stated separately
+#: and cannot be confused.
+ATTENDANCE_COMPANY_ROLES: frozenset[str] = frozenset({"hr"})
 
 #: Roles that manage *every* project, not only the ones they manage themselves.
 #:

@@ -40,6 +40,18 @@ class AttendanceErrorCode:
     #: list, because "nothing there" and "you asked the wrong question" must not
     #: look the same.
     RANGE_INVALID = ErrorCode.ATTENDANCE_RANGE_INVALID
+    #: The correction document (ticket 24) — six codes, and the boundary between
+    #: them is what the client shows. `NOT_FOUND` and `INVALID` are the request;
+    #: `NOT_DRAFT` is a document somebody else has already moved on; the pair that
+    #: names no single punch is `TARGET_UNRESOLVED`, the one refusal this flow makes
+    #: instead of guessing; `SUBMISSION_REFUSED` and `APPLY_FAILED` are the engine's
+    #: answer relayed.
+    CORRECTION_NOT_FOUND = ErrorCode.ATTENDANCE_CORRECTION_NOT_FOUND
+    CORRECTION_INVALID = ErrorCode.ATTENDANCE_CORRECTION_INVALID
+    CORRECTION_NOT_DRAFT = ErrorCode.ATTENDANCE_CORRECTION_NOT_DRAFT
+    CORRECTION_TARGET_UNRESOLVED = ErrorCode.ATTENDANCE_CORRECTION_TARGET_UNRESOLVED
+    CORRECTION_SUBMISSION_REFUSED = ErrorCode.ATTENDANCE_CORRECTION_SUBMISSION_REFUSED
+    CORRECTION_APPLY_FAILED = ErrorCode.ATTENDANCE_CORRECTION_APPLY_FAILED
     #: Grouped here because a caller reasons about "why was this punch refused",
     #: not about which enum a code happens to live in.
     EMPLOYEE_NOT_FOUND = ErrorCode.EMPLOYEE_NOT_FOUND

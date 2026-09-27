@@ -108,6 +108,32 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
             "El rango de fechas no es válido: la fecha inicial no puede ser posterior a "
             "la final, ni el rango superar los cuatro años."
         ),
+        # Corrections (ticket 24). Each says what the person can do next: the punch
+        # was recorded wrongly, so the way forward is a correction request — which is
+        # also what the two refusals below have in common.
+        "errors.attendance_correction_not_found": (
+            "No se encontró esa solicitud de corrección de fichaje."
+        ),
+        "errors.attendance_correction_invalid": (
+            "La solicitud de corrección no es válida: indica el día, el fichaje que "
+            "corriges, la hora correcta y el motivo. La hora no puede ser futura."
+        ),
+        "errors.attendance_correction_not_draft": (
+            "Esta solicitud ya no es un borrador: no se puede modificar ni presentar. "
+            "Si fue rechazada, crea una nueva."
+        ),
+        "errors.attendance_correction_target_unresolved": (
+            "Ese día no tiene un único fichaje de ese tipo: hay varios turnos y la "
+            "solicitud no puede decir a cuál se refiere. Revisa el día antes de "
+            "corregirlo."
+        ),
+        "errors.attendance_correction_submission_refused": (
+            "No se pudo presentar la solicitud: revisa su estado y vuelve a intentarlo."
+        ),
+        "errors.attendance_correction_apply_failed": (
+            "La corrección está aprobada pero no se pudo aplicar al registro de "
+            "jornada. No se modificó ningún fichaje; revisa el día y vuelve a intentarlo."
+        ),
         "errors.personnel_change_not_found": "No se encontró la solicitud de cambio.",
         "errors.personnel_change_invalid_payload": (
             "El detalle del cambio no es válido: indica los campos y sus valores "
@@ -320,6 +346,30 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.attendance_range_invalid": (
             "That date range is not valid: the start cannot be after the end, and a "
             "single range cannot exceed four years."
+        ),
+        # Corrections (ticket 24). Each says what the person can do next: the punch
+        # was recorded wrongly, so the way forward is a correction request — which is
+        # also what the two refusals below have in common.
+        "errors.attendance_correction_not_found": "That correction request was not found.",
+        "errors.attendance_correction_invalid": (
+            "That correction request is not valid: name the day, the punch you are "
+            "correcting, the right time and the reason. The time cannot be in the future."
+        ),
+        "errors.attendance_correction_not_draft": (
+            "This request is no longer a draft, so it cannot be edited or filed. If it "
+            "was rejected, raise a new one."
+        ),
+        "errors.attendance_correction_target_unresolved": (
+            "That day does not have exactly one punch of that kind: there are several "
+            "shifts and the request cannot say which one it means. Check the day before "
+            "correcting it."
+        ),
+        "errors.attendance_correction_submission_refused": (
+            "The request could not be filed: check its state and try again."
+        ),
+        "errors.attendance_correction_apply_failed": (
+            "The correction is approved but could not be applied to the working-time "
+            "record. No punch was changed; check the day and try again."
         ),
         "errors.personnel_change_not_found": "The personnel change was not found.",
         "errors.personnel_change_invalid_payload": (

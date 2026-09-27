@@ -146,6 +146,16 @@ class AuditAction(StrEnum):
     TIMESHEET_ENTRY_REMOVED = "timesheet.entry_removed"  # 28
     TIMESHEET_SUBMITTED = "timesheet.submitted"  # 28
     TIMESHEET_COPIED = "timesheet.copied"  # 28
+    #: A correction request (ticket 24): the document a person writes to restate a
+    #: punch, and the append that carries it out. Two actions, not three, because
+    #: the middle one is the engine's: filing writes `approval.submitted` and each
+    #: decision writes `approval.decided`, both keyed on the correction's own id, so
+    #: "everything that happened to this correction" is one equality filter. A
+    #: second record of the same decision under a different name would be a copy
+    #: that eventually disagrees with the engine.
+    ATTENDANCE_CORRECTION_REQUESTED = "attendance_correction.requested"  # 24
+    ATTENDANCE_CORRECTION_UPDATED = "attendance_correction.updated"  # 24
+    ATTENDANCE_CORRECTION_APPLIED = "attendance_correction.applied"  # 24
     AGENT_ACTION_PROPOSED = "agent.action_proposed"  # 40
     AGENT_ACTION_CONFIRMED = "agent.action_confirmed"  # 41
     DATA_EXPORTED = "data.exported"  # 26, 47

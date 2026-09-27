@@ -40,7 +40,7 @@ answer different questions.
 import itertools
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import UTC, date, datetime, time, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -60,7 +60,13 @@ from app.domain.access.kernel import (
     ResourceKind,
     can,
 )
-from app.domain.access.permissions import PROJECT_ADMIN_ROLES, SELF_ONLY_ACTIONS, Action
+from app.domain.access.permissions import (
+    ATTENDANCE_COMPANY_ROLES,
+    ATTENDANCE_CROSS_ACTIONS,
+    PROJECT_ADMIN_ROLES,
+    SELF_ONLY_ACTIONS,
+    Action,
+)
 from app.domain.access.principal import SYSTEM_ROLES, Principal
 from tests.support.platform import Platform
 
@@ -185,6 +191,18 @@ DESIGN_GRANTS: dict[Action, frozenset[str]] = {
     # role may" and "nobody may do it for somebody else" are both true at once.
     Action.ATTENDANCE_CLOCK_OWN: EVERYONE,
     Action.ATTENDANCE_READ_OWN: EVERYONE,
+    # Ticket 24's four. §4.1 gives a manager their reports' attendance and HR the
+    # company's, and an employee their own: the two reads that reach somebody else
+    # are separate actions with separate role lists, and the two filing actions are
+    # split the same way — your own punch (self-only, like the clock) and HR's
+    # after-the-fact correction of somebody else's. What the role list cannot say is
+    # *whose* record, so `design_says` refuses the generated resource for a manager
+    # — it names no owner, and this dimension contains no reports — and layer 4
+    # asserts the manager's own case by name.
+    Action.ATTENDANCE_READ_REPORT: frozenset({"manager"}),
+    Action.ATTENDANCE_READ_ALL: frozenset({"hr"}),
+    Action.ATTENDANCE_CORRECTION_OWN: EVERYONE,
+    Action.ATTENDANCE_CORRECTION_ANY: frozenset({"hr"}),
     # Projects (ticket 27). Reading the catalogue is what an employee needs in order
     # to fill in a timesheet, and a catalogue only some roles may read is not a
     # catalogue. What is *not* in this table is the second half of the rule: who may
@@ -256,6 +274,12 @@ KIND_FOR_ACTION: dict[Action, ResourceKind] = {
     # one the router names — carrying the *subject's* employee id as its owner.
     Action.ATTENDANCE_CLOCK_OWN: ResourceKind.EMPLOYEE,
     Action.ATTENDANCE_READ_OWN: ResourceKind.EMPLOYEE,
+    # The record is a person's, whichever action reaches it: the subject is the
+    # resource's owner, and the kernel's attendance branch is what reads it.
+    Action.ATTENDANCE_READ_REPORT: ResourceKind.EMPLOYEE,
+    Action.ATTENDANCE_READ_ALL: ResourceKind.EMPLOYEE,
+    Action.ATTENDANCE_CORRECTION_OWN: ResourceKind.EMPLOYEE,
+    Action.ATTENDANCE_CORRECTION_ANY: ResourceKind.EMPLOYEE,
     # Projects and their tasks. A task is decided as its project: it has no reach of
     # its own, so the resource the router builds carries the project's department and
     # the project's manager.
@@ -406,6 +430,14 @@ def design_says(role: str, action: Action, shape: tuple[str | None, str | None] 
     if action in SELF_ONLY_ACTIONS:
         return False
 
+    # Somebody else's attendance (ticket 24). The generated resource names no owner,
+    # and this dimension has no reports in it, so a manager reaches nothing here —
+    # while HR's remit does not depend on the row at all. The manager's own case is
+    # asserted by name in layer 4, and the department is deliberately not part of the
+    # expectation: "in my department" is the reading these actions refuse.
+    if action in ATTENDANCE_CROSS_ACTIONS:
+        return bool(frozenset({role, "employee"}) & ATTENDANCE_COMPANY_ROLES)
+
     held = frozenset({role, "employee"})
     clearance, department = shape
 
@@ -460,9 +492,11 @@ def test_the_generated_matrix_covers_every_dimension() -> None:
     # ticket 27 adds the four project actions; ticket 22 adds four more — reading
     # your own week, maintaining schedules, reading the calendar, maintaining it —
     # ticket 28 adds three for the weekly timesheet (read your own week, write it,
-    # file it), and the sum is asserted literally so that a fourth arrives as a
-    # failing test rather than as extra coverage.
-    assert len(cases) == 7 * 35 * 13
+    # file it), ticket 24 adds four for attendance corrections (a report's record,
+    # the company's record, your own correction, HR's), and the sum is asserted
+    # literally so that a fourth arrives as a failing test rather than as extra
+    # coverage.
+    assert len(cases) == 7 * 39 * 13
     assert 0 < permitted < len(cases), "the expectation answers the same way everywhere"
 
     discriminating = [
@@ -903,6 +937,37 @@ HTTP_MATRIX: tuple[tuple[str, str, Action | None], ...] = (
     ("POST", "/api/v1/attendance/clock", Action.ATTENDANCE_CLOCK_OWN),
     ("GET", "/api/v1/attendance/day", Action.ATTENDANCE_READ_OWN),
     ("GET", "/api/v1/attendance/range", Action.ATTENDANCE_READ_OWN),
+    # Ticket 24. The four routes above answer about the caller and are self-only;
+    # these are the surfaces that can name somebody else, and the route-level guard
+    # is "signed in" — which of the three attendance actions applies is a fact about
+    # the caller and the subject, so the kernel is asked inside the handler and the
+    # rows here record the action the request turns out to perform: the caller's own.
+    # The refusal a manager gets for a colleague, and HR's reach, are asserted by
+    # name in `test_attendance_corrections.py`.
+    ("GET", "/api/v1/attendance/punches", Action.ATTENDANCE_READ_OWN),
+    ("GET", "/api/v1/attendance/export", Action.ATTENDANCE_READ_OWN),
+    ("POST", "/api/v1/attendance/corrections", Action.ATTENDANCE_CORRECTION_OWN),
+    ("GET", "/api/v1/attendance/corrections", Action.ATTENDANCE_READ_OWN),
+    (
+        "GET",
+        "/api/v1/attendance/corrections/{correction_id}",
+        Action.ATTENDANCE_READ_OWN,
+    ),
+    (
+        "PATCH",
+        "/api/v1/attendance/corrections/{correction_id}",
+        Action.ATTENDANCE_CORRECTION_OWN,
+    ),
+    (
+        "POST",
+        "/api/v1/attendance/corrections/{correction_id}/submit",
+        Action.ATTENDANCE_CORRECTION_OWN,
+    ),
+    (
+        "POST",
+        "/api/v1/attendance/corrections/{correction_id}/decide",
+        Action.SESSION_READ_OWN,
+    ),
     # Projects (ticket 27). `manager` is in `project.manage`'s role list because a
     # project manager manages *their* project, and the row above is somebody else's
     # — which layer 4 asserts by name. Reading the catalogue is open to every role.
@@ -994,6 +1059,14 @@ RESOURCE_FREE_ROUTES: frozenset[str] = frozenset(
         "/api/v1/attendance/clock",
         "/api/v1/attendance/day",
         "/api/v1/attendance/range",
+        # Ticket 24. The three reads answer about the caller with no parameters at
+        # all, and the correction draft is a request about the caller's own punch —
+        # so all four have an answer this layer can assert exactly. The routes that
+        # name a correction id cannot: the row does not exist in this fixture, and a
+        # 404 proves the handler is wired but says nothing about its body.
+        "/api/v1/attendance/punches",
+        "/api/v1/attendance/export",
+        "/api/v1/attendance/corrections",
         "/api/v1/projects",
         "/api/v1/projects/selectable",
     }
@@ -1033,6 +1106,21 @@ def http_payload(path: str, *, department: str, employee: str) -> dict:
         },
         "/api/v1/accounts": {"employee_id": employee, "username": f"mx{suffix}"},
         "/api/v1/attendance/clock": {"kind": "clock_in"},
+        # Ticket 24. A real request about the caller: a day that has happened, an
+        # instant that has, and a reason. The caller has punched nothing, so the
+        # flow takes it as a punch to make up — which is the ordinary case for a
+        # forgotten clock_out and the one this body exercises.
+        "/api/v1/attendance/corrections": {
+            "business_date": (date.today() - timedelta(days=30)).isoformat(),
+            "kind": "clock_out",
+            "corrected_at": datetime.combine(
+                date.today() - timedelta(days=30), time(9, 0), tzinfo=UTC
+            ).isoformat(),
+            "reason": "Matriz",
+        },
+        "/api/v1/attendance/corrections/{correction_id}": {"reason": "Matriz dos"},
+        "/api/v1/attendance/corrections/{correction_id}/submit": {},
+        "/api/v1/attendance/corrections/{correction_id}/decide": {"decision": "approve"},
         # Ticket 27. `suffix` is fresh per call, so repeated runs of the matrix in
         # one test cannot collide on the project code — which is unique for good.
         "/api/v1/projects": {
@@ -1122,6 +1210,7 @@ async def test_the_http_matrix_for(platform: Platform, role: str) -> None:
             project=subject,
             project_id=subject,
             task_id=subject,
+            correction_id=subject,
         )
         payload = (
             http_payload(template, department=department, employee=accountless)
@@ -1181,7 +1270,8 @@ async def test_an_unauthenticated_request_reaches_no_endpoint(platform: Platform
     failures: list[str] = []
     for method, template, _action in HTTP_MATRIX:
         path = template.format(
-            subject=uuid4(), project=uuid4(), project_id=uuid4(), task_id=uuid4()
+            subject=uuid4(), project=uuid4(), project_id=uuid4(), task_id=uuid4(),
+            correction_id=uuid4(),
         )
         response = await platform.client.request(method, path)
         if (response.status_code, response.json()["error"]["code"]) != (
@@ -1369,6 +1459,16 @@ async def test_a_manager_cannot_read_a_non_reports_attendance(
     refused = can(manager, Action.EMPLOYEE_READ, stranger)
     assert refused.denied, f"a manager reached a non-report: {refused.detail}"
     assert Reason.DEPARTMENT_NOT_REACHABLE in refused.reasons
+
+    # Ticket 24's version of the same line, and the one a department would have got
+    # wrong: the attendance read is decided by the reporting relationship, so a
+    # manager reaches their report's record and is refused a colleague's — including
+    # one who sits in their own department, which the generated resource above
+    # deliberately does not distinguish.
+    assert can(manager, Action.ATTENDANCE_READ_REPORT, report).allowed
+    attendance_refusal = can(manager, Action.ATTENDANCE_READ_REPORT, stranger)
+    assert attendance_refusal.denied, f"a manager read a non-report's hours: {attendance_refusal}"
+    assert attendance_refusal.primary_reason is Reason.NOT_MANAGER_OF_SUBJECT
 
     first, second = await seed_withheld_details(platform)
     async with app_connection() as session:

@@ -125,6 +125,26 @@ class ErrorCode(StrEnum):
     #: An inverted range, or one longer than this module will answer in a single
     #: request. Refused rather than answered with an empty list.
     ATTENDANCE_RANGE_INVALID = "ERR_ATT_006"
+    # Correction documents (ticket 24): the request to restate a punch, its two
+    # levels of approval, and the event that approval appends. Four themes. The
+    # document exists or it does not; the request itself is unusable (a naive
+    # instant, a kind that is not a punch, a day that has not happened yet); the
+    # document is not in a state the caller may act on; and the day-and-kind pair
+    # the request names did not identify exactly one punch — which is a refusal
+    # rather than a guess, because guessing would restate somebody else's punch.
+    ATTENDANCE_CORRECTION_NOT_FOUND = "ERR_ATT_007"
+    ATTENDANCE_CORRECTION_INVALID = "ERR_ATT_008"
+    ATTENDANCE_CORRECTION_NOT_DRAFT = "ERR_ATT_009"
+    #: The pair named no punch, or named two. A day with two shifts has two
+    #: clock_outs, and "the clock_out of that day" cannot say which one is meant.
+    ATTENDANCE_CORRECTION_TARGET_UNRESOLVED = "ERR_ATT_010"
+    #: The engine refused to file it — a request already open for this document, or
+    #: a rejection that is final. Carries the engine's own code in the detail.
+    ATTENDANCE_CORRECTION_SUBMISSION_REFUSED = "ERR_ATT_011"
+    #: Approved, and the append did not happen: the day's punches could not be read
+    #: into an answer for this document, so the decision stands and nothing moved.
+    #: The next run of the applier retries it.
+    ATTENDANCE_CORRECTION_APPLY_FAILED = "ERR_ATT_012"
 
     # Personnel changes: one document for 入转调离, five change types (ticket 17).
     PERSONNEL_CHANGE_NOT_FOUND = "ERR_PCH_001"
@@ -384,6 +404,28 @@ ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
         400, "errors.attendance_correction_not_a_punch"
     ),
     ErrorCode.ATTENDANCE_RANGE_INVALID: ErrorDefinition(422, "errors.attendance_range_invalid"),
+    # 404 for a document that does not exist; 422 for a request that could never be
+    # one; 409 for the two state conflicts (not a draft any more, and a pair of
+    # facts that does not identify one punch). The apply failure is a conflict too:
+    # the approval happened and the record did not move.
+    ErrorCode.ATTENDANCE_CORRECTION_NOT_FOUND: ErrorDefinition(
+        404, "errors.attendance_correction_not_found"
+    ),
+    ErrorCode.ATTENDANCE_CORRECTION_INVALID: ErrorDefinition(
+        422, "errors.attendance_correction_invalid"
+    ),
+    ErrorCode.ATTENDANCE_CORRECTION_NOT_DRAFT: ErrorDefinition(
+        409, "errors.attendance_correction_not_draft"
+    ),
+    ErrorCode.ATTENDANCE_CORRECTION_TARGET_UNRESOLVED: ErrorDefinition(
+        409, "errors.attendance_correction_target_unresolved"
+    ),
+    ErrorCode.ATTENDANCE_CORRECTION_SUBMISSION_REFUSED: ErrorDefinition(
+        409, "errors.attendance_correction_submission_refused"
+    ),
+    ErrorCode.ATTENDANCE_CORRECTION_APPLY_FAILED: ErrorDefinition(
+        409, "errors.attendance_correction_apply_failed"
+    ),
     ErrorCode.PERSONNEL_CHANGE_NOT_FOUND: ErrorDefinition(
         404, "errors.personnel_change_not_found"
     ),

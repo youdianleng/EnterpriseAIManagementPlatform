@@ -5,7 +5,8 @@ Three things here are worth reading before the SQL:
 * **`append_event` cannot rewrite anything.** The runtime role has INSERT and
   SELECT on `attendance_events` and nothing else (migration 0012), so the absence
   of an update or a delete is a property of the connection rather than a promise
-  this module makes.
+  this module makes. Ticket 24's correction flow appends through this same method —
+  there is no second write path to the stream for a correction to arrive by.
 * **A punch collides on its way in and is read back.** `ON CONFLICT DO NOTHING`
   against the partial unique index is what makes two simultaneous retries of one
   request produce one row and one answer, instead of a second row or a 500. The
@@ -20,18 +21,33 @@ stream through the same `_events_by_date` the daily snapshot uses. That sharing 
 the point rather than a convenience: an anomaly judged from a different reading of a
 day than the day's own record was built from would contradict the record it is
 about.
+
+`PostgresCorrectionRepository` (ticket 24) is the third. It holds the correction
+*documents* — the requests, not the events — and one recursive query over the
+stream, because "the chain that starts at this punch" is the question the whole
+flow turns on: whether to restate a punch or make one up, which row a new
+correction points at, and whether the day and kind a document names identify one
+punch or two.
 """
 
 from collections.abc import Sequence
 from datetime import date, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, or_, select, text, update
+from sqlalchemy import case, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from app.domain.approval.models import ApprovalStatus
 from app.domain.attendance.anomalies import Anomaly, AnomalyType, NewAnomaly
+from app.domain.attendance.corrections import (
+    Correction,
+    CorrectionInput,
+    CorrectionPatch,
+    CorrectionQuery,
+    CorrectionState,
+)
 from app.domain.attendance.models import (
     PUNCH_EVENT_TYPES,
     TERMINATED_STATUS,
@@ -43,8 +59,10 @@ from app.domain.attendance.models import (
     NewEvent,
 )
 from app.domain.attendance.notify import NotificationRoute
+from app.models.approval import ApprovalRequest as RequestRow
 from app.models.attendance import PUNCH_DEDUPE_PREDICATE
 from app.models.attendance import AttendanceAnomaly as AnomalyRow
+from app.models.attendance import AttendanceCorrection as CorrectionRow
 from app.models.attendance import AttendanceDaily as DailyRow
 from app.models.attendance import AttendanceEvent as EventRow
 from app.models.employee import Employee as EmployeeRow
@@ -93,6 +111,23 @@ class PostgresAttendanceRepository:
         return await self._session.scalar(
             select(EmployeeRow.status).where(EmployeeRow.id == employee_id)
         )
+
+    async def employee_name(self, employee_id: UUID) -> str | None:
+        """`"Apellidos, Nombre"`, for the export an inspector reads (ticket 24).
+
+        Written the way a Spanish official listing writes a person, and read here
+        rather than from the employee module's repository because the export needs
+        a name and nothing else — the visibility projection, the withheld fields and
+        the whole directory are questions this module is not asking.
+        """
+        row = (
+            await self._session.execute(
+                select(EmployeeRow.last_name, EmployeeRow.first_name).where(
+                    EmployeeRow.id == employee_id
+                )
+            )
+        ).first()
+        return None if row is None else f"{row[0]}, {row[1]}"
 
     async def find_punch(
         self, employee_id: UUID, event_type: EventType, occurred_at: datetime
@@ -371,6 +406,30 @@ class PostgresAnomalyRepository:
         )
         return [_to_anomaly(row) for row in rows]
 
+    async def anomalies_by_date(
+        self, employee_id: UUID, from_date: date, to_date: date
+    ) -> dict[date, list[Anomaly]]:
+        """Every recorded anomaly in a range, grouped by day, resolved ones included.
+
+        Ticket 24's day read wants the open ones; the export's reader wants to know
+        which days were ever flagged. Both are this query with a filter, so it
+        returns everything and lets the caller say which question it is asking —
+        the same day and the same rows the nightly pass wrote, rather than a second
+        reading of the stream that could contradict it.
+        """
+        rows = await self._session.scalars(
+            select(AnomalyRow)
+            .where(
+                AnomalyRow.employee_id == employee_id,
+                AnomalyRow.business_date.between(from_date, to_date),
+            )
+            .order_by(AnomalyRow.business_date, AnomalyRow.type)
+        )
+        grouped: dict[date, list[Anomaly]] = {}
+        for row in rows:
+            grouped.setdefault(row.business_date, []).append(_to_anomaly(row))
+        return grouped
+
     async def unnotified(self, business_date: date) -> list[Anomaly]:
         """The day's standing, untold rows, in a stable order.
 
@@ -469,4 +528,237 @@ def _to_anomaly(row: AnomalyRow) -> Anomaly:
     )
 
 
-__all__ = ["PostgresAnomalyRepository", "PostgresAttendanceRepository"]
+def _to_correction(row: CorrectionRow) -> Correction:
+    return Correction(
+        id=row.id,
+        employee_id=row.employee_id,
+        business_date=row.business_date,
+        kind=EventType(row.kind),
+        corrected_at=row.corrected_at,
+        reason=row.reason,
+        requested_by_employee_id=row.requested_by_employee_id,
+        approval_request_id=row.approval_request_id,
+        applied_event_id=row.applied_event_id,
+        applied_at=row.applied_at,
+        submitted_at=row.submitted_at,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+#: The six states, in SQL. The same rule `corrections.state_of_correction` states in
+#: Python, and expressed against the *engine's* status rather than against a column
+#: of this table — which is why there is no column to disagree with it. Literal
+#: statuses on both sides: a rename in either module has to fail a test rather than
+#: make a state unreachable. The two expressions are run over one corpus of rows by
+#: `tests/test_attendance_corrections.py`.
+STATE_OF_ROW = case(
+    # The append is the fact that matters, and it wins over everything below.
+    (CorrectionRow.applied_at.is_not(None), CorrectionState.APPLIED.value),
+    # Never filed, so there is no request to read.
+    (CorrectionRow.approval_request_id.is_(None), CorrectionState.DRAFT.value),
+    # Filed, and the request row cannot be read: in flight is the honest answer.
+    (RequestRow.id.is_(None), CorrectionState.IN_APPROVAL.value),
+    (
+        RequestRow.status.in_(("pending_first", "pending_second")),
+        CorrectionState.IN_APPROVAL.value,
+    ),
+    (RequestRow.status == "approved", CorrectionState.APPROVED.value),
+    (RequestRow.status == "rejected", CorrectionState.REJECTED.value),
+    (RequestRow.status == "withdrawn", CorrectionState.WITHDRAWN.value),
+    # `draft` (returned for correction) and anything unrecognised: back with the
+    # requester, which is where a returned document sits.
+    else_=CorrectionState.DRAFT.value,
+)
+
+
+class PostgresCorrectionRepository:
+    """The correction documents, and the one recursive read they turn on."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    # --- the document ------------------------------------------------------
+
+    async def save_correction(self, correction: CorrectionInput) -> Correction:
+        row = CorrectionRow(
+            employee_id=correction.employee_id,
+            business_date=correction.business_date,
+            kind=correction.kind.value,
+            corrected_at=correction.corrected_at,
+            reason=correction.reason,
+            requested_by_employee_id=correction.requested_by_employee_id,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return _to_correction(row)
+
+    async def get_correction(self, correction_id: UUID) -> Correction | None:
+        row = await self._session.get(CorrectionRow, correction_id)
+        return _to_correction(row) if row is not None else None
+
+    async def list_corrections(
+        self, query: CorrectionQuery
+    ) -> list[tuple[Correction, CorrectionState]]:
+        statement = (
+            select(CorrectionRow, STATE_OF_ROW)
+            .outerjoin(RequestRow, RequestRow.id == CorrectionRow.approval_request_id)
+            .where(*self._conditions(query))
+            # Newest first: a list of requests is read from the top, and the order
+            # they were written in is the order somebody remembers them in.
+            .order_by(CorrectionRow.created_at.desc(), CorrectionRow.id.desc())
+            .limit(query.limit)
+            .offset(query.offset)
+        )
+        rows = (await self._session.execute(statement)).all()
+        return [(_to_correction(row), CorrectionState(state)) for row, state in rows]
+
+    async def count_corrections(self, query: CorrectionQuery) -> int:
+        statement = (
+            select(func.count())
+            .select_from(CorrectionRow)
+            .outerjoin(RequestRow, RequestRow.id == CorrectionRow.approval_request_id)
+            .where(*self._conditions(query))
+        )
+        return await self._session.scalar(statement) or 0
+
+    async def approval_status_of(self, correction_id: UUID) -> ApprovalStatus | None:
+        status = await self._session.scalar(
+            select(RequestRow.status)
+            .join(CorrectionRow, CorrectionRow.approval_request_id == RequestRow.id)
+            .where(CorrectionRow.id == correction_id)
+        )
+        return ApprovalStatus(status) if status is not None else None
+
+    # --- writes ------------------------------------------------------------
+
+    async def write_draft(
+        self, correction_id: UUID, *, patch: CorrectionPatch
+    ) -> Correction:
+        values: dict[str, object] = {}
+        if patch.corrected_at is not None:
+            values["corrected_at"] = patch.corrected_at
+        if patch.reason is not None:
+            values["reason"] = patch.reason
+        if values:
+            await self._write(correction_id, **values)
+        return await self._require(correction_id)
+
+    async def mark_submitted(
+        self, correction_id: UUID, *, request_id: UUID, at: datetime
+    ) -> Correction:
+        await self._write(
+            correction_id, approval_request_id=request_id, submitted_at=at
+        )
+        return await self._require(correction_id)
+
+    async def mark_applied(
+        self, correction_id: UUID, *, event_id: UUID, at: datetime
+    ) -> Correction:
+        await self._write(correction_id, applied_event_id=event_id, applied_at=at)
+        return await self._require(correction_id)
+
+    async def lock_next_unapplied(
+        self,
+        *,
+        exclude: frozenset[UUID] = frozenset(),
+        only: UUID | None = None,
+    ) -> Correction | None:
+        statement = (
+            select(CorrectionRow)
+            .where(
+                # Filed and not applied. The engine's answer is *not* part of this
+                # predicate: whether a request was approved is the engine's rule,
+                # and SQL would have to re-express it.
+                CorrectionRow.applied_at.is_(None),
+                CorrectionRow.approval_request_id.is_not(None),
+            )
+            # Oldest first: after a crash the documents are applied in the order
+            # they were filed, so a chain of corrections to one punch lands in
+            # order rather than depending on which row a query returned first.
+            .order_by(CorrectionRow.created_at, CorrectionRow.id)
+            .limit(1)
+            .with_for_update(skip_locked=True, of=CorrectionRow)
+        )
+        if only is not None:
+            statement = statement.where(CorrectionRow.id == only)
+        if exclude:
+            statement = statement.where(CorrectionRow.id.not_in(exclude))
+        row = await self._session.scalar(statement)
+        return _to_correction(row) if row is not None else None
+
+    # --- the stream --------------------------------------------------------
+
+    async def punch_lineage(
+        self, employee_id: UUID, business_date: date, kind: EventType
+    ) -> list[AttendanceEvent]:
+        """One punch and everything that restates it, oldest first.
+
+        A recursive walk from the punch down the `correction_of_event_id` edge, and
+        it terminates for the reason `derivation.chain_tip` gives: each row points
+        at exactly one earlier row, so the chain cannot revisit one. The seed is
+        every row of that kind on that day — which is `N` punches, normally one,
+        and the flow refuses `N > 1` rather than choosing.
+
+        Ordered by `(created_at, id)`: the order the rows were written, which is
+        what `chain_tip` follows and therefore the order the corrections took
+        effect in.
+        """
+        seed = (
+            select(EventRow.id)
+            .where(
+                EventRow.employee_id == employee_id,
+                EventRow.business_date == business_date,
+                EventRow.event_type == kind.value,
+            )
+            .cte("lineage", recursive=True)
+        )
+        child = aliased(EventRow)
+        lineage = seed.union_all(
+            select(child.id).where(child.correction_of_event_id == seed.c.id)
+        )
+        rows = await self._session.scalars(
+            select(EventRow)
+            .where(EventRow.id.in_(select(lineage.c.id)))
+            .order_by(EventRow.created_at, EventRow.id)
+        )
+        return [_to_event(row) for row in rows]
+
+    # --- internals ---------------------------------------------------------
+
+    def _conditions(self, query: CorrectionQuery) -> Sequence[object]:
+        # `Sequence` rather than `list[...]`: this class defines `list`, and an
+        # annotation evaluated in the class body would find that method instead of
+        # the builtin.
+        conditions: list[object] = []
+        if query.employee_id is not None:
+            conditions.append(CorrectionRow.employee_id == query.employee_id)
+        if query.state is not None:
+            conditions.append(STATE_OF_ROW == query.state.value)
+        return conditions
+
+    async def _require(self, correction_id: UUID) -> Correction:
+        correction = await self.get_correction(correction_id)
+        if correction is None:  # pragma: no cover - the row was just written
+            raise RuntimeError(f"correction {correction_id} vanished mid-transaction")
+        return correction
+
+    async def _write(self, correction_id: UUID, **values: object) -> None:
+        await self._session.execute(
+            update(CorrectionRow)
+            .where(CorrectionRow.id == correction_id)
+            .values(**values, updated_at=func.now())
+            .execution_options(synchronize_session=False)
+        )
+        await self._session.flush()
+
+    async def commit(self) -> None:
+        await self._session.commit()
+
+
+__all__ = [
+    "STATE_OF_ROW",
+    "PostgresAnomalyRepository",
+    "PostgresAttendanceRepository",
+    "PostgresCorrectionRepository",
+]

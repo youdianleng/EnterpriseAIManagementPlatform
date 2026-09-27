@@ -1,6 +1,6 @@
 """Attendance: an append-only event stream, the day derived from it, and what is wrong.
 
-Three tables and one direction (DESIGN §3.2, D25):
+Four tables and one direction (DESIGN §3.2, D25):
 
 * `attendance_events` is the record. It is append-only *in the database*: the
   runtime role holds INSERT and SELECT on it and nothing else (migration 0012),
@@ -16,6 +16,11 @@ Three tables and one direction (DESIGN §3.2, D25):
   punch, a late arrival, an early leave. The unique key is
   `(employee_id, business_date, type)`, which is what makes the pass idempotent —
   the anomaly is a property of the day, and the same property is not true twice.
+* `attendance_corrections` is the *request* to restate a punch (ticket 24): a day, a
+  kind, an instant, a reason, and the two levels of approval it went through. It is
+  a document rather than an event because the event it produces only exists once
+  somebody has approved it, and `applied_event_id` names that row when it does. The
+  punch itself is never touched by any of this — approval *appends*.
 
 **`business_date` is stored, not derived on read.** It is the Madrid calendar day
 of the punch (with the cross-midnight rule applied — see
@@ -62,6 +67,12 @@ PUNCH_DEDUPE_PREDICATE = "event_type <> 'correction'"
 ANOMALY_TYPES_SQL = (
     "('missing_clock_out', 'missing_clock_in', 'late', 'early_leave', 'no_punches')"
 )
+
+#: What a correction may restate: the two punches, and deliberately not
+#: `correction`. A request to change a correction is a request about the punch it
+#: belongs to, which is what keeps the chain one chain (ticket 24). Literal in
+#: migration 0017 as well.
+CORRECTION_KINDS_SQL = "('clock_in', 'clock_out')"
 
 
 class AttendanceEvent(Base):
@@ -275,11 +286,98 @@ class AttendanceAnomaly(Base):
         return f"<AttendanceAnomaly {self.employee_id} {self.business_date} {self.type}>"
 
 
+class AttendanceCorrection(Base):
+    """The request to restate one punch, and what became of it (ticket 24).
+
+    The row is the *document*: which day, which kind, what the instant should have
+    been, why, who asked and where the approval engine got to. Approval is what
+    appends the event, and `applied_event_id` names the row it appended — so
+    "did this take effect" is one column rather than a state machine copied out of
+    the engine.
+    """
+
+    __tablename__ = "attendance_corrections"
+    __table_args__ = (
+        CheckConstraint(f"kind IN {CORRECTION_KINDS_SQL}", name="ck_attendance_corrections_kind"),
+        # No reason, no correction: the same rule the stream states for its own
+        # correction events, because both are rows somebody has to be able to read.
+        CheckConstraint("length(btrim(reason)) > 0", name="ck_attendance_corrections_reason"),
+        # Effect is one fact with two witnesses, written together or not at all: a
+        # row claiming to have changed a punch without naming the row it appended
+        # (or the reverse) is a row nobody can audit.
+        CheckConstraint(
+            "(applied_at IS NULL) = (applied_event_id IS NULL)",
+            name="ck_attendance_corrections_applied",
+        ),
+        Index(
+            "ix_attendance_corrections_employee_date",
+            "employee_id",
+            "business_date",
+        ),
+        # The applier's queue. Partial: a draft nobody filed can never be approved,
+        # and an applied row is never a candidate again.
+        Index(
+            "ix_attendance_corrections_unapplied",
+            "approval_request_id",
+            postgresql_where=text("applied_at IS NULL AND approval_request_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    #: Whose punch this is about. The requester may be somebody else (HR correcting
+    #: after the fact), which is why the two ids are separate columns.
+    employee_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("employees.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    #: The Madrid business day the corrected punch counts against.
+    business_date: Mapped[date] = mapped_column(Date, nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: What the instant should have been, in UTC.
+    corrected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    #: The engine's request. No foreign key, for the reason `personnel_changes` has
+    #: none: the engine treats `(entity_type, entity_id)` as free-form and its
+    #: tables are the engine's. Null until the document is filed, which is also what
+    #: makes it a draft.
+    approval_request_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    #: The event approval appended — a `correction` pointing at the punch, or a
+    #: punch the record never had. Null until it took effect.
+    applied_event_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("attendance_events.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: Who filed it. The engine's route is resolved for this person, and the
+    #: notification about the outcome goes to them.
+    requested_by_employee_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("employees.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return (
+            f"<AttendanceCorrection {self.employee_id} {self.business_date} {self.kind}>"
+        )
+
+
 __all__ = [
     "ANOMALY_TYPES_SQL",
+    "CORRECTION_KINDS_SQL",
     "PUNCH_DEDUPE_PREDICATE",
     "PUNCH_TYPES_SQL",
     "AttendanceAnomaly",
+    "AttendanceCorrection",
     "AttendanceDaily",
     "AttendanceEvent",
 ]
