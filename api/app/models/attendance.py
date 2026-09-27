@@ -1,6 +1,6 @@
-"""Attendance: an append-only event stream, and the day derived from it.
+"""Attendance: an append-only event stream, the day derived from it, and what is wrong.
 
-Two tables and one direction (DESIGN §3.2, D25):
+Three tables and one direction (DESIGN §3.2, D25):
 
 * `attendance_events` is the record. It is append-only *in the database*: the
   runtime role holds INSERT and SELECT on it and nothing else (migration 0012),
@@ -11,6 +11,11 @@ Two tables and one direction (DESIGN §3.2, D25):
 * `attendance_daily` is derived from it: one row per person per business date,
   written only by the derivation (`recompute_day`), never edited by hand. The two
   tables disagreeing means the snapshot is stale, never that the events moved.
+* `attendance_anomalies` is what the nightly pass found wrong with a day (ticket
+  23). It is the one table here that is a *judgement* rather than a fact: a missing
+  punch, a late arrival, an early leave. The unique key is
+  `(employee_id, business_date, type)`, which is what makes the pass idempotent —
+  the anomaly is a property of the day, and the same property is not true twice.
 
 **`business_date` is stored, not derived on read.** It is the Madrid calendar day
 of the punch (with the cross-midnight rule applied — see
@@ -50,6 +55,13 @@ PUNCH_TYPES_SQL = "('clock_in', 'clock_out')"
 #: corrections of two different punches may legitimately land on the same instant,
 #: and a correction's identity is its chain rather than its timestamp.
 PUNCH_DEDUPE_PREDICATE = "event_type <> 'correction'"
+
+#: The closed set of anomalies (ticket 23, DESIGN §3.2 and §7.1). Duplicated as a
+#: literal in migration 0015, for the reason `PUNCH_DEDUPE_PREDICATE` is: the
+#: migration describes the schema it applied.
+ANOMALY_TYPES_SQL = (
+    "('missing_clock_out', 'missing_clock_in', 'late', 'early_leave', 'no_punches')"
+)
 
 
 class AttendanceEvent(Base):
@@ -196,9 +208,78 @@ class AttendanceDaily(Base):
         return f"<AttendanceDaily {self.employee_id} {self.business_date} {self.status}>"
 
 
+class AttendanceAnomaly(Base):
+    """Something wrong with one person's one day, as the night's pass found it.
+
+    Written by the scan and by nothing else, and never deleted: the row is the
+    record of what was owed to whom. It carries no detail about *how* late
+    somebody was — the day's own numbers are on `attendance_daily` and its events,
+    and a second copy of them here would be a copy that eventually disagrees.
+    """
+
+    __tablename__ = "attendance_anomalies"
+    __table_args__ = (
+        CheckConstraint(f"type IN {ANOMALY_TYPES_SQL}", name="ck_attendance_anomalies_type"),
+        # The scan's idempotency. One row per person per day per kind, which is the
+        # conflict target its insert names: a second pass over the same day derives
+        # the same facts and writes none of them again.
+        UniqueConstraint(
+            "employee_id",
+            "business_date",
+            "type",
+            name="uq_attendance_anomalies_day_type",
+        ),
+        Index("ix_attendance_anomalies_employee_date", "employee_id", "business_date"),
+        # The morning reminder's queue. Partial: a row that has been told about is
+        # never asked about again, and those are the ones that accumulate.
+        Index(
+            "ix_attendance_anomalies_unnotified",
+            "business_date",
+            postgresql_where=text("notified_at IS NULL"),
+        ),
+        # "What did this correction clear", asked from the event side (ticket 24).
+        Index(
+            "ix_attendance_anomalies_resolved_by",
+            "resolved_by_event_id",
+            postgresql_where=text("resolved_by_event_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    employee_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("employees.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    business_date: Mapped[date] = mapped_column(Date, nullable=False)
+    #: One of `ANOMALY_TYPES_SQL`'s members, and the reason this table needs no
+    #: detail column: the type is the whole judgement.
+    type: Mapped[str] = mapped_column(String(24), nullable=False)
+    detected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    #: When the employee was told. Null means the morning pass has not run since
+    #: this row appeared, which is what makes a second run remind nobody twice.
+    notified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    #: The event that cleared it — a make-up punch or a correction (ticket 24).
+    #: Non-null *is* "resolved": a second boolean beside it could disagree.
+    resolved_by_event_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("attendance_events.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<AttendanceAnomaly {self.employee_id} {self.business_date} {self.type}>"
+
+
 __all__ = [
+    "ANOMALY_TYPES_SQL",
     "PUNCH_DEDUPE_PREDICATE",
     "PUNCH_TYPES_SQL",
+    "AttendanceAnomaly",
     "AttendanceDaily",
     "AttendanceEvent",
 ]

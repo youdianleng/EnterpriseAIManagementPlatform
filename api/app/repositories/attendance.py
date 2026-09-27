@@ -1,4 +1,4 @@
-"""PostgreSQL implementation of the attendance repository.
+"""PostgreSQL implementation of the attendance repositories.
 
 Three things here are worth reading before the SQL:
 
@@ -14,18 +14,27 @@ Three things here are worth reading before the SQL:
 * **The snapshot is written with `ON CONFLICT DO UPDATE`.** `recompute_day` rebuilds
   a day rather than accumulating into it, and the upsert is where "replace, never
   add" becomes true of the storage as well as the arithmetic.
+
+`PostgresAnomalyRepository` (ticket 23) is the second class here, and it reads the
+stream through the same `_events_by_date` the daily snapshot uses. That sharing is
+the point rather than a convenience: an anomaly judged from a different reading of a
+day than the day's own record was built from would contradict the record it is
+about.
 """
 
+from collections.abc import Sequence
 from datetime import date, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from app.domain.attendance.anomalies import Anomaly, AnomalyType, NewAnomaly
 from app.domain.attendance.models import (
     PUNCH_EVENT_TYPES,
+    TERMINATED_STATUS,
     AttendanceEvent,
     DayRecord,
     DayStatus,
@@ -33,10 +42,14 @@ from app.domain.attendance.models import (
     EventType,
     NewEvent,
 )
+from app.domain.attendance.notify import NotificationRoute
 from app.models.attendance import PUNCH_DEDUPE_PREDICATE
+from app.models.attendance import AttendanceAnomaly as AnomalyRow
 from app.models.attendance import AttendanceDaily as DailyRow
 from app.models.attendance import AttendanceEvent as EventRow
 from app.models.employee import Employee as EmployeeRow
+from app.models.employee import EmployeeAssignment as AssignmentRow
+from app.models.org import Department as DepartmentRow
 
 
 def _to_event(row: EventRow) -> AttendanceEvent:
@@ -233,37 +246,50 @@ class PostgresAttendanceRepository:
     async def commit(self) -> None:
         await self._session.commit()
 
+    # --- who hears about a punch (ticket 23) -------------------------------
+
+    async def notification_route(self, employee_id: UUID) -> NotificationRoute | None:
+        """The active primary assignment's three contacts.
+
+        Read the same way the approval route reads it — primary and open-ended —
+        and for the same reason: the primary position is the one somebody is
+        principally in, so a second assignment does not redirect their
+        notifications. The *rule* that picks one of the three lives in
+        `domain/attendance/notify.py`; this returns what the row says.
+        """
+        row = (
+            await self._session.execute(
+                select(
+                    AssignmentRow.department_id,
+                    AssignmentRow.manager_employee_id,
+                    AssignmentRow.notification_override_employee_id,
+                ).where(
+                    AssignmentRow.employee_id == employee_id,
+                    AssignmentRow.is_primary.is_(True),
+                    AssignmentRow.end_date.is_(None),
+                )
+            )
+        ).first()
+        if row is None:
+            return None
+        return NotificationRoute(
+            department_id=row[0],
+            manager_employee_id=row[1],
+            notification_override_employee_id=row[2],
+        )
+
+    async def department_manager(self, department_id: UUID) -> UUID | None:
+        """The fallback the approval route also uses: somebody accountable for it."""
+        return await self._session.scalar(
+            select(DepartmentRow.manager_employee_id).where(DepartmentRow.id == department_id)
+        )
+
     # --- internals ---------------------------------------------------------
 
     async def _events(
         self, employee_id: UUID, from_date: date, to_date: date
     ) -> dict[date, list[AttendanceEvent]]:
-        """A day's events, or a range's, grouped by the day each counts against.
-
-        The join is what makes a correction belong to the day it *corrects* rather
-        than to whatever `business_date` the correction row carries. The write path
-        sets both to the same date; a read that depended on that would break the
-        first time somebody wrote a correction by hand, and the two disagreeing is
-        precisely the class of mistake this module exists to make impossible.
-        """
-        target = aliased(EventRow)
-        statement = (
-            select(EventRow, target.business_date)
-            .outerjoin(target, EventRow.correction_of_event_id == target.id)
-            .where(
-                EventRow.employee_id == employee_id,
-                or_(
-                    EventRow.business_date.between(from_date, to_date),
-                    target.business_date.between(from_date, to_date),
-                ),
-            )
-            .order_by(EventRow.occurred_at, EventRow.created_at, EventRow.id)
-        )
-
-        grouped: dict[date, list[AttendanceEvent]] = {}
-        for row, target_date in (await self._session.execute(statement)).all():
-            grouped.setdefault(target_date or row.business_date, []).append(_to_event(row))
-        return grouped
+        return await _events_by_date(self._session, employee_id, from_date, to_date)
 
     async def _append_correction(self, event: NewEvent) -> AttendanceEvent:
         row = EventRow(
@@ -286,4 +312,161 @@ class PostgresAttendanceRepository:
         return _to_event(row)
 
 
-__all__ = ["PostgresAttendanceRepository"]
+class PostgresAnomalyRepository:
+    """The scan's storage (ticket 23), and the reminder's queue.
+
+    Nothing here commits except `commit`, so a pass writes its day once. `insert`
+    is the idempotency point: `ON CONFLICT DO NOTHING` against
+    `uq_attendance_anomalies_day_type` returns no row when the day already carried
+    this anomaly, and the caller reports that rather than treating it as a failure.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def employee_ids(self) -> list[UUID]:
+        """Everybody whose record is open — the population the month-end pass covers.
+
+        Terminated people are excluded, and nobody else: whether somebody was *due*
+        on a date is the schedule's question, asked one employee at a time.
+        """
+        rows = await self._session.scalars(
+            select(EmployeeRow.id)
+            .where(EmployeeRow.status != TERMINATED_STATUS)
+            .order_by(EmployeeRow.hire_date, EmployeeRow.id)
+        )
+        return list(rows)
+
+    async def events_for_day(
+        self, employee_id: UUID, business_date: date
+    ) -> list[AttendanceEvent]:
+        return (await self._events(employee_id, business_date, business_date)).get(
+            business_date, []
+        )
+
+    async def insert(self, anomaly: NewAnomaly, detected_at: datetime) -> Anomaly | None:
+        statement = (
+            pg_insert(AnomalyRow)
+            .values(
+                id=uuid4(),
+                employee_id=anomaly.employee_id,
+                business_date=anomaly.business_date,
+                type=anomaly.type.value,
+                detected_at=detected_at,
+            )
+            .on_conflict_do_nothing(constraint="uq_attendance_anomalies_day_type")
+            .returning(AnomalyRow)
+        )
+        row = (await self._session.execute(statement)).scalars().first()
+        return _to_anomaly(row) if row is not None else None
+
+    async def day_anomalies(self, employee_id: UUID, business_date: date) -> list[Anomaly]:
+        rows = await self._session.scalars(
+            select(AnomalyRow)
+            .where(
+                AnomalyRow.employee_id == employee_id,
+                AnomalyRow.business_date == business_date,
+            )
+            .order_by(AnomalyRow.type)
+        )
+        return [_to_anomaly(row) for row in rows]
+
+    async def unnotified(self, business_date: date) -> list[Anomaly]:
+        """The day's standing, untold rows, in a stable order.
+
+        Resolved rows are excluded: a reminder to make up a punch somebody has
+        already made up is the one message this pass must not send.
+        """
+        rows = await self._session.scalars(
+            select(AnomalyRow)
+            .where(
+                AnomalyRow.business_date == business_date,
+                AnomalyRow.notified_at.is_(None),
+                AnomalyRow.resolved_by_event_id.is_(None),
+            )
+            .order_by(AnomalyRow.employee_id, AnomalyRow.type)
+        )
+        return [_to_anomaly(row) for row in rows]
+
+    async def mark_notified(self, anomaly_ids: Sequence[UUID], at: datetime) -> int:
+        """Stamp the reminder, once: a row that already carries one is left alone."""
+        if not anomaly_ids:
+            return 0
+        result = await self._session.execute(
+            update(AnomalyRow)
+            .where(
+                AnomalyRow.id.in_(list(anomaly_ids)),
+                AnomalyRow.notified_at.is_(None),
+            )
+            .values(notified_at=at)
+        )
+        return result.rowcount or 0
+
+    async def resolve(self, anomaly_ids: Sequence[UUID], event_id: UUID) -> list[Anomaly]:
+        """Mark rows resolved by the event that cleared them (ticket 24's correction)."""
+        if not anomaly_ids:
+            return []
+        rows = await self._session.scalars(
+            update(AnomalyRow)
+            .where(
+                AnomalyRow.id.in_(list(anomaly_ids)),
+                AnomalyRow.resolved_by_event_id.is_(None),
+            )
+            .values(resolved_by_event_id=event_id)
+            .returning(AnomalyRow)
+        )
+        return [_to_anomaly(row) for row in rows]
+
+    async def commit(self) -> None:
+        await self._session.commit()
+
+    async def _events(
+        self, employee_id: UUID, from_date: date, to_date: date
+    ) -> dict[date, list[AttendanceEvent]]:
+        return await _events_by_date(self._session, employee_id, from_date, to_date)
+
+
+async def _events_by_date(
+    session: AsyncSession, employee_id: UUID, from_date: date, to_date: date
+) -> dict[date, list[AttendanceEvent]]:
+    """A day's events, or a range's, grouped by the day each counts against.
+
+    The join is what makes a correction belong to the day it *corrects* rather
+    than to whatever `business_date` the correction row carries. The write path
+    sets both to the same date; a read that depended on that would break the
+    first time somebody wrote a correction by hand, and the two disagreeing is
+    precisely the class of mistake this module exists to make impossible.
+    """
+    target = aliased(EventRow)
+    statement = (
+        select(EventRow, target.business_date)
+        .outerjoin(target, EventRow.correction_of_event_id == target.id)
+        .where(
+            EventRow.employee_id == employee_id,
+            or_(
+                EventRow.business_date.between(from_date, to_date),
+                target.business_date.between(from_date, to_date),
+            ),
+        )
+        .order_by(EventRow.occurred_at, EventRow.created_at, EventRow.id)
+    )
+
+    grouped: dict[date, list[AttendanceEvent]] = {}
+    for row, target_date in (await session.execute(statement)).all():
+        grouped.setdefault(target_date or row.business_date, []).append(_to_event(row))
+    return grouped
+
+
+def _to_anomaly(row: AnomalyRow) -> Anomaly:
+    return Anomaly(
+        id=row.id,
+        employee_id=row.employee_id,
+        business_date=row.business_date,
+        type=AnomalyType(row.type),
+        detected_at=row.detected_at,
+        notified_at=row.notified_at,
+        resolved_by_event_id=row.resolved_by_event_id,
+    )
+
+
+__all__ = ["PostgresAnomalyRepository", "PostgresAttendanceRepository"]

@@ -34,6 +34,13 @@ class NotificationType(StrEnum):
     APPROVAL_REJECTED = "approval.rejected"
     APPROVAL_RETURNED = "approval.returned"
     APPROVAL_WITHDRAWN = "approval.withdrawn"
+    #: Somebody finished their day. Raised for the manager of the primary position —
+    #: or for the assignment's notification override — by `attendance/notify.py`
+    #: (ticket 23).
+    ATTENDANCE_CLOCK_OUT = "attendance.clock_out"
+    #: The morning reminder to the employee about their own outstanding punches of
+    #: the day before (ticket 23). Raised by the same module, one per anomaly.
+    ATTENDANCE_ANOMALY_REMINDER = "attendance.anomaly_reminder"
 
 
 #: The bilingual key each type renders as. One table, so the backend, the
@@ -44,7 +51,27 @@ TITLE_KEY_OF: dict[NotificationType, str] = {
     NotificationType.APPROVAL_REJECTED: "notifications.approval.rejected",
     NotificationType.APPROVAL_RETURNED: "notifications.approval.returned",
     NotificationType.APPROVAL_WITHDRAWN: "notifications.approval.withdrawn",
+    NotificationType.ATTENDANCE_CLOCK_OUT: "notifications.attendance.clock_out",
+    NotificationType.ATTENDANCE_ANOMALY_REMINDER: (
+        "notifications.attendance.anomaly_reminder"
+    ),
 }
+
+#: What the morning digest carries (ticket 20), named here rather than in the job
+#: that will select it because a *type* is the thing that set is made of: adding a
+#: member is what puts a notification in the mail, and a type left out of it is
+#: delivered in-app only.
+#:
+#: Every notification is queued on the email channel (`service.DELIVERY_PLAN`) so
+#: that "was this person told" is answerable from the delivery rows; this set is
+#: what says which of those queued rows the daily digest is made of, and it exists
+#: so that ticket 20 does not have to guess from a status every row shares.
+DIGEST_CANDIDATE_TYPES: frozenset[NotificationType] = frozenset(
+    {
+        NotificationType.ATTENDANCE_CLOCK_OUT,
+        NotificationType.ATTENDANCE_ANOMALY_REMINDER,
+    }
+)
 
 
 class DeliveryChannel(StrEnum):
@@ -181,6 +208,7 @@ class NotificationPage:
 
 
 __all__ = [
+    "DIGEST_CANDIDATE_TYPES",
     "NOT_ATTEMPTED",
     "TITLE_KEY_OF",
     "Delivery",

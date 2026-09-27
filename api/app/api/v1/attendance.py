@@ -5,6 +5,13 @@ endpoint that lists somebody's punches and none that recomputes a colleague's da
 because those are ticket 24's questions and they need their own permission rather
 than a wider version of this one.
 
+**Clocking out notifies somebody else, and the caller does not choose who.** The
+service is wrapped in `AttendanceNotifier` (ticket 23), which sends the manager of
+the caller's primary position — or the assignment's notification override — a
+notification about the finished day. It is not an endpoint and has no request of its
+own: it is a consequence of the punch, raised in the same request, and a client
+cannot address it anywhere.
+
 **Clocking for somebody else is expressible, and refused.** `employee_id` defaults
 to the caller and may be given explicitly — the surface could have left the field
 out entirely (the notification centre does exactly that), but then "HR punches for
@@ -42,9 +49,12 @@ from app.domain.attendance.models import (
     EventSource,
     EventType,
 )
+from app.domain.attendance.notify import AttendanceNotifier
 from app.domain.attendance.service import AttendanceService
+from app.domain.notification.service import NotificationService
 from app.domain.schedule.service import ScheduleService
 from app.repositories.attendance import PostgresAttendanceRepository
+from app.repositories.notification import PostgresNotificationRepository
 from app.repositories.schedule import PostgresScheduleRepository
 
 router = APIRouter(prefix="/attendance", tags=["attendance"])
@@ -116,16 +126,29 @@ class RangeRead(BaseModel):
     days: list[DayRead]
 
 
-def _service(session: AsyncSession) -> AttendanceService:
-    """The module, with the schedule behind it (ticket 22).
+def _service(session: AsyncSession) -> AttendanceNotifier:
+    """The module, with the schedule behind it and the clock-out notification on top.
 
-    Building both here rather than in the service is what keeps the attendance
-    module's interface at four operations: it is handed something that answers
-    "what did the schedule expect", and it never learns what a schedule is.
+    Building the collaborators here rather than in the service is what keeps the
+    attendance module's interface at four operations: it is handed something that
+    answers "what did the schedule expect", and it never learns what a schedule is.
+    The notifier wraps the service the way `ApprovalNotifier` wraps the engine — a
+    caller constructs one object where it used to construct the service, so the
+    notification is not a step somebody has to remember after clocking out (ticket
+    23).
+
+    The repository is built once and passed twice: it is the module's own storage
+    and it is also what answers "who is this person's manager" for the notification,
+    which is the same shape the approval engine's route resolution has.
     """
-    return AttendanceService(
-        PostgresAttendanceRepository(session),
-        expectations=ScheduleService(PostgresScheduleRepository(session), session),
+    attendance = PostgresAttendanceRepository(session)
+    return AttendanceNotifier(
+        AttendanceService(
+            attendance,
+            expectations=ScheduleService(PostgresScheduleRepository(session), session),
+        ),
+        NotificationService(PostgresNotificationRepository(session), session),
+        attendance,
     )
 
 

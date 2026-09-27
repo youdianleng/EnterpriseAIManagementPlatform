@@ -81,7 +81,7 @@ def derive(
     worked_minutes = 0
     unpaired = False
 
-    for punch, instant in _with_effective_instants(punches, events):
+    for punch, instant in effective_punches(events):
         if punch.event_type is EventType.CLOCK_IN:
             if first_in is None:
                 first_in = instant
@@ -161,8 +161,8 @@ def _expected_minutes(expected: DayExpectation | None) -> int | None:
     return expected.expected_minutes
 
 
-def _with_effective_instants(
-    punches: list[AttendanceEvent], events: list[AttendanceEvent]
+def effective_punches(
+    events: list[AttendanceEvent],
 ) -> list[tuple[AttendanceEvent, datetime]]:
     """Each punch paired with the instant the day should read it at, in order.
 
@@ -178,6 +178,11 @@ def _with_effective_instants(
     already UTC and safe; a hand-built pair carrying Madrid on both sides would
     quietly produce wall-clock minutes, and the day the number is wrong on would be
     exactly the day somebody is checking it.
+
+    Public because the anomaly scan (ticket 23) reads the same day and must read it
+    the same way: an anomaly judged against uncorrected instants would contradict
+    the day it is about, and a correction that fixed a late arrival would leave the
+    lateness standing for ever.
     """
     corrections: dict[UUID, list[AttendanceEvent]] = {}
     for event in events:
@@ -185,7 +190,9 @@ def _with_effective_instants(
             corrections.setdefault(event.correction_of_event_id, []).append(event)
 
     resolved = [
-        (punch, _corrected_instant(punch, corrections).astimezone(UTC)) for punch in punches
+        (punch, _corrected_instant(punch, corrections).astimezone(UTC))
+        for punch in events
+        if punch.is_punch
     ]
     resolved.sort(key=lambda item: (item[1], item[0].created_at, str(item[0].id)))
     return resolved
@@ -211,4 +218,4 @@ def _corrected_instant(
         current = max(candidates, key=lambda item: (item.created_at, str(item.id)))
 
 
-__all__ = ["derive"]
+__all__ = ["derive", "effective_punches"]

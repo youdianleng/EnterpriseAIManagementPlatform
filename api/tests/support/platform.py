@@ -34,8 +34,11 @@ from app.main import app
 #: Two agents lost time to exactly that. A cascade cannot be wrong about an order.
 CLEANUP_TABLES = (
     "audit_log",
+    "timesheet_entries",
+    "timesheets",
     "project_tasks",
     "projects",
+    "attendance_anomalies",
     "attendance_daily",
     "attendance_events",
     "expected_hours_snapshots",
@@ -105,6 +108,30 @@ class Platform:
     async def scalar(self, statement: str, params: dict | None = None):
         rows = await self.sql(statement, params)
         return rows[0][0] if rows else None
+
+    async def refused_by_database(self, statement: str, params: dict | None = None) -> str:
+        """Run one statement the database is expected to refuse, and return the reason.
+
+        A trigger or a constraint violation aborts the transaction it happened in, so
+        a test that wants to assert *which* rule fired — and then carry on asserting —
+        cannot let the exception out: every later statement on that session would
+        report "current transaction is aborted" instead. The savepoint contains the
+        damage, the surrounding session stays usable, and nothing is committed.
+
+        Returns the database's own message, which is what a caller asserts on: the
+        constraint's name, or the sentence a trigger raised.
+        """
+        async with self.factory() as session:
+            await session.execute(text("SAVEPOINT refusal"))
+            try:
+                await session.execute(text(statement), params or {})
+            except Exception as error:  # noqa: BLE001 - the refusal is the subject
+                await session.execute(text("ROLLBACK TO SAVEPOINT refusal"))
+                return str(error)
+            await session.execute(text("RELEASE SAVEPOINT refusal"))
+            raise AssertionError(
+                f"the database accepted a statement it was expected to refuse: {statement}"
+            )
 
     async def department(self, code: str, **overrides: object) -> str:
         """Create a department through the API, as an administrator."""

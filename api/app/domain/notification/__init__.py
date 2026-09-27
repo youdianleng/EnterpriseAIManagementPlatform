@@ -9,6 +9,7 @@ it. `approval.ApprovalNotifier` is that condition made concrete.
 from app.domain.notification.approval import ApprovalNotifier
 from app.domain.notification.errors import NotificationErrorCode
 from app.domain.notification.models import (
+    DIGEST_CANDIDATE_TYPES,
     TITLE_KEY_OF,
     Delivery,
     DeliveryChannel,
@@ -24,6 +25,7 @@ from app.domain.notification.repository import NotificationRepository
 from app.domain.notification.service import NotificationService
 
 __all__ = [
+    "DIGEST_CANDIDATE_TYPES",
     "TITLE_KEY_OF",
     "ApprovalNotifier",
     "Delivery",
