@@ -10,6 +10,13 @@ ticket's behaviour:
        stream the model
     5. close the message row with the citations, the accounting and the outcome
 
+**Step 2 is also where §5.2's personal-document marker is decided** (ticket 36). The
+retrieval clause recalls a personal document for its owner and for nobody else, so the
+only personal citations an answer can carry are the asker's own — and
+`SourceNotice.of(citations)` says whether any of them is one. The marker travels on the
+`citations` event, before any text, and is stored on the message, so a client renders the
+banner at the top without inferring it from the citation flags.
+
 Six decisions a reader should have in mind, because each of them is a rule:
 
 * **The refusal is decided before the model is touched.** `search()`'s
@@ -79,6 +86,7 @@ from app.domain.answer.models import (
     CitationDebug,
     EventKind,
     RetrievalDebug,
+    SourceNotice,
     citations_json,
 )
 from app.domain.answer.prompts import (
@@ -233,6 +241,12 @@ class AnswerService:
             cleaned, filter_spec=spec, limit=self._limit
         )
         citations = tuple(Citation.of(hit) for hit in outcome.hits)
+        # §5.2/Q29's marker, decided once from the citations that will actually ground
+        # the answer (ticket 36). Computed *before* the refusal branch below so the two
+        # impossible states cannot be built: a refusal carries no citations and therefore
+        # no marker, and an answer carries the marker exactly when one of its citations
+        # is somebody's personal upload. See `SourceNotice.of`.
+        notice = SourceNotice.of(citations)
         debug = self._debug(outcome, spec)
 
         # --- 3: D20, and the model is not built into a call ----------------
@@ -247,9 +261,16 @@ class AnswerService:
             return
 
         # --- 4: the prompt, and the model ----------------------------------
+        # The marker travels **before any text**, with the citations it labels: a client
+        # that renders the label "at the top of the answer" (§5.2's 回答顶部) has to know
+        # about it while the first tokens are still being generated, and a marker that
+        # only arrived on `done` would be a banner the reader sees after reading.
         yield AnswerEvent(
             kind=EventKind.CITATIONS,
-            data={"citations": _citation_payloads(citations)},
+            data={
+                "citations": _citation_payloads(citations),
+                "source_notice": notice.as_json() if notice is not None else None,
+            },
         )
 
         messages = prompt_messages(cleaned, citations, language)
@@ -293,6 +314,10 @@ class AnswerService:
             token_out=0 if failure is not None else count_tokens("".join(text)),
             latency_ms=latency_ms,
             failure=failure,
+            # Dropped with the citations on a failure: a message with no answer and no
+            # sources has nothing to label, and a stored marker on it would say the
+            # answer quoted a personal document when no answer was produced at all.
+            source_notice=None if failure is not None else notice,
         )
         await self._finish(message_id, conversation, outcome_value, debug)
 
@@ -315,6 +340,11 @@ class AnswerService:
                 "message_id": str(message_id),
                 "conversation_id": str(conversation),
                 "citations": _citation_payloads(citations),
+                # Repeated here as well as on `citations`, for the reason the citations
+                # are: `done` is the record of what was stored, and a client that joined
+                # a stream late — or that reads the message back later — finds the
+                # marker in the same place as everything else it renders.
+                "source_notice": notice.as_json() if notice is not None else None,
                 "model": self._model.name,
                 "provider": self._model.provider,
                 "token_in": outcome_value.token_in,
@@ -373,6 +403,12 @@ class AnswerService:
                 "threshold": debug.threshold,
                 "is_refusal": True,
                 "model_called": False,
+                # Stated rather than omitted (ticket 36). A refusal has no citations, so it
+                # has nothing to label; an explicit `null` is what stops a client from
+                # having to decide whether an absent key means "no marker" or "the server
+                # did not say" — the same reason `done` carries an empty citations list
+                # rather than nothing at all.
+                "source_notice": None,
             },
         )
         yield AnswerEvent(
@@ -381,6 +417,7 @@ class AnswerService:
                 "message_id": str(message_id),
                 "conversation_id": str(conversation),
                 "citations": [],
+                "source_notice": None,
                 "model": None,
                 "provider": None,
                 "token_in": 0,

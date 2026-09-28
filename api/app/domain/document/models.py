@@ -28,6 +28,19 @@ rule *lives*:
   inventing a number. The frontend shows the status as a percentage of those steps —
   which is why the API carries `stage` as well.
 
+* **`visibility` has two degrees for a personal document and `company` is not one of
+  them** (ticket 36). An upload that states nothing is `private` — 默认仅自己 — and one
+  whose owner published it to their department is `department`; `company` is what
+  `is_company_kb` derives, and `require_coherent` refuses a personal upload that asked
+  for it. `is_company_kb` is the fact that decides which §4.2 clause applies; the
+  `visibility` column is what the *permission* turns on for a personal document, and
+  the CHECK in the migration makes the pair impossible to contradict.
+
+* **There is no way to state an owner, and no way to change one.** The owner is the
+  uploader (ticket 36's 「个人文档的所有者始终是自己，不能被转交给他人」); a body that
+  could name an owner would be a body that could hand somebody else's upload away, and
+  a transfer route would be a way to admit a reader §4.2 never admitted.
+
 * **`extracted_chars` counts characters, not bytes and not tokens.** The question it
   answers is the ticket's: did this document produce anything to retrieve? A byte
   count of the stored file cannot answer it, and a token count is `token_count` on the
@@ -88,11 +101,30 @@ REPROCESSABLE: frozenset[DocumentStatus] = frozenset(
 CLEARANCE_LEVELS: tuple[str, ...] = ("low", "medium", "high")
 
 #: What a document is for, from the design's `visibility` column. `private` is the
-#: default for a personal upload; `company` is what a knowledge-base document gets.
-#: The column is stored and returned; which clause of §4.2 applies is decided by
-#: `is_company_kb` and the owner, not by this string, which is why nothing in the
-#: access path reads it.
-VISIBILITIES: tuple[str, ...] = ("private", "department", "company")
+#: default for a personal upload; `department` is the personal document its owner
+#: published to their department; `company` is what a knowledge-base document gets.
+#:
+#: **Two of the three are personal and one is not, and ticket 36 is the ticket that
+#: made that a rule rather than a convention.** `PRIVATE` and `DEPARTMENT` are the
+#: uploader's choice for their own file (the first is what an upload that states
+#: nothing gets — the default matters, and "forgot the field" must mean private, never
+#: published); `COMPANY` is what `is_company_kb` derives and what a personal upload may
+#: not state. The database enforces the split as a CHECK as well, so a row that
+#: disagreed with itself could not be stored.
+PRIVATE_VISIBILITY = "private"
+DEPARTMENT_VISIBILITY = "department"
+COMPANY_VISIBILITY = "company"
+VISIBILITIES: tuple[str, ...] = (
+    PRIVATE_VISIBILITY,
+    DEPARTMENT_VISIBILITY,
+    COMPANY_VISIBILITY,
+)
+
+#: What a personal upload may be published as. `company` is deliberately absent: it is
+#: not a third degree of sharing, it is what moves the document to a different rule
+#: (§4.2's company clause, reached through a department and written by a role that
+#: manages the knowledge base), and the field that does that is `is_company_kb`.
+PERSONAL_VISIBILITIES: tuple[str, ...] = (PRIVATE_VISIBILITY, DEPARTMENT_VISIBILITY)
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,9 +136,18 @@ class DocumentMetadata:
     a body that could name an owner would be a body that could hand somebody else's
     upload away, and the ownership clause of §4.2 is what that would defeat.
 
+    There is likewise **no field that states or changes the owner**, and there is no
+    route that does it either: the owner is the uploader for good (ticket 36's third
+    checklist line, 「个人文档的所有者始终是自己，不能被转交给他人」). A transfer would be
+    a new owner reading a document §4.2 never admitted them to, and `documents` has no
+    UPDATE path that could express one.
+
     `is_company_kb` is the field that moves a document from one rule to another, so
     it is the one field the service checks an action for (`document.manage`), and the
-    database re-checks its coherence with the owner and the department.
+    database re-checks its coherence with the owner and the department. `visibility`
+    is checked for coherence with it here rather than trusted, so a personal upload
+    that asked to be `company` is refused with a message naming the field instead of
+    being stored as a row two readings of the rule disagree about.
     """
 
     title: str
@@ -119,16 +160,25 @@ class DocumentMetadata:
     visibility: str | None = None
 
     def effective_visibility(self) -> str:
-        """What the row stores when the caller named nothing.
+        """What the row stores when the caller named nothing, or named a degree.
 
         Derived rather than defaulted in the field, because the default depends on
-        the other fields: a company document is `company`, and a personal one is
+        the other fields: a company document is `company` and a personal one is
         `private`. A plain `default="private"` would make a company document claim a
-        visibility its own flag contradicts.
+        visibility its own flag contradicts — and, worse, an upload that forgot the
+        field entirely would be stored as whatever the default happened to be rather
+        than as the private file the ticket requires by default.
+
+        A company document is *always* `company`, whatever the caller sent, and
+        `require_coherent` refuses a personal upload that asked for `company`: the two
+        rules cannot be mixed in one row, and silently downgrading the field would
+        hide a request that asked for something the system does not offer.
         """
+        if self.is_company_kb:
+            return COMPANY_VISIBILITY
         if self.visibility:
             return self.visibility
-        return "company" if self.is_company_kb else "private"
+        return PRIVATE_VISIBILITY
 
     def require_coherent(self) -> None:
         """Refuse a metadata set the schema would refuse, saying which field it is.
@@ -159,6 +209,25 @@ class DocumentMetadata:
                 detail=(
                     f"visibility {self.effective_visibility()!r} is not one of "
                     f"{list(VISIBILITIES)}"
+                ),
+            )
+        if not self.is_company_kb and self.effective_visibility() == COMPANY_VISIBILITY:
+            raise DomainError(
+                ErrorCode.INVALID_REQUEST,
+                detail=(
+                    "visibility 'company' is not a degree of sharing: it is what "
+                    "is_company_kb derives, and a personal upload may be 'private' "
+                    f"(the default) or one of {list(PERSONAL_VISIBILITIES)}"
+                ),
+            )
+        if self.effective_visibility() == DEPARTMENT_VISIBILITY and self.department_id is None:
+            raise DomainError(
+                ErrorCode.INVALID_REQUEST,
+                detail=(
+                    "a document published to a department needs the department: "
+                    "§4.2 reaches a shared document through department_id, so without "
+                    "it the publication names nobody and is invisible to everybody "
+                    "but its owner"
                 ),
             )
         if self.is_company_kb and self.department_id is None:
@@ -340,8 +409,12 @@ class DocumentPage:
 __all__ = [
     "ARCHIVED",
     "CLEARANCE_LEVELS",
+    "COMPANY_VISIBILITY",
+    "DEPARTMENT_VISIBILITY",
     "FAILED",
     "NO_TEXT_MESSAGE",
+    "PERSONAL_VISIBILITIES",
+    "PRIVATE_VISIBILITY",
     "PROCESSING",
     "READY",
     "REPROCESSABLE",

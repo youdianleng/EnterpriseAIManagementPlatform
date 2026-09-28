@@ -34,6 +34,15 @@ Plus the two things the ticket asks for beside them: the database's own policy r
 the same rows under the restricted role (the second line of defence), and the effective
 permission condition reachable from the request path so a human can review it
 (「调试视图中显示本次生效的权限条件」).
+
+**Ticket 36 moved the predicate pins, and they are stronger rather than looser.** §4.2's
+first clause is now written as `NOT d.is_company_kb AND d.owner_employee_id = ...` — a
+statement about personal documents rather than about any document that names an owner —
+and the clause that reaches a colleague's *published* personal document is rendered only
+when the spec carries `personal_documents_via_department`, which the retrieval path
+clears. So the text these tests pin changed, the bound values did not, and
+`test_the_personal_document_clause_is_pinned_term_by_term` holds the new clause by name
+rather than leaving it to the scenarios, which are all about the company clause.
 """
 
 from collections.abc import AsyncIterator, Iterable, Sequence
@@ -48,7 +57,7 @@ from app.config import Settings
 from app.domain.access.kernel import ResourceKind, filter_for
 from app.domain.access.principal import Principal
 from app.domain.retrieval.filtering import answer_filter_for, unfiltered
-from app.repositories.retrieval import visible_document_predicate
+from app.repositories.retrieval import visible_document_clauses, visible_document_predicate
 from tests.support.platform import Actor, Platform
 from tests.support.retrieval_sample import (
     ESCALATION_DOCUMENTS,
@@ -333,8 +342,17 @@ def assert_absent(body: dict, title: str, *, forbidden_id: str, marker: str) -> 
 
 #: The bindings a predicate may carry, and which of the callers they are about.
 def predicate_of(principal: Principal) -> tuple[str, dict[str, object]]:
-    """The SQL a search under this principal is bounded by, and its bound values."""
-    return visible_document_predicate(filter_for(principal, ResourceKind.DOCUMENT))
+    """The SQL a search under this principal is bounded by, and its bound values.
+
+    **`answer_filter_for`, not `filter_for`, and ticket 36 is why.** The kernel's document
+    spec describes §4.2's reach in full — including a personal document its owner published
+    to a department, which a colleague may *open* — and the retrieval path narrows it to
+    the asker's own personal documents before the predicate is rendered. A helper that
+    built the spec with `filter_for` would pin a predicate no request runs, which is the
+    one thing these pins exist to prevent: the object under test is *the statement the
+    database ran*.
+    """
+    return visible_document_predicate(answer_filter_for(principal))
 
 
 def company_clause_parameters(principal: Principal) -> dict[str, object]:
@@ -349,9 +367,17 @@ def company_clause_parameters(principal: Principal) -> dict[str, object]:
     # **The predicate's text as well as its bindings, and this is not belt and braces.**
     # A mutation that drops a term from the `WHERE` while leaving the parameter bound
     # produces a predicate whose parameters look perfect and whose SQL reaches the whole
-    # corpus — and that is the mutation this suite exists to catch. The two clauses that
-    # carry §4.2's conditions are asserted by their column names here, so a dropped term
-    # fails by name rather than by whether the ranking happened to expose it.
+    # corpus — and that is the mutation this suite exists to catch. The clauses are
+    # asserted by their column names here, so a dropped term fails by name rather than by
+    # whether the ranking happened to expose it.
+    #
+    # Ticket 36 moved this test's own pin once: the ownership term is now
+    # `(NOT d.is_company_kb AND d.owner_employee_id = :filter_employee_id)`, so
+    # `d.is_company_kb` alone can no longer be the reason it is passed — it is in the
+    # ownership term *and* in the company terms, and the assertions below name each
+    # separately. The real anti-mutation pin for that gate is
+    # `test_the_personal_document_clause_is_pinned_term_by_term`; what this helper owes
+    # is the company clause's three terms.
     assert "d.department_id = ANY(CAST(:filter_departments AS uuid[]))" in predicate, (
         "this caller's predicate has no department term, so its company clause reaches "
         f"every department: {predicate}"
@@ -359,15 +385,92 @@ def company_clause_parameters(principal: Principal) -> dict[str, object]:
     assert "d.clearance_level = ANY(CAST(:filter_clearances AS text[]))" in predicate, (
         f"this caller's predicate has no clearance term: {predicate}"
     )
-    assert "d.is_company_kb" in predicate, (
-        f"this caller's predicate does not restrict the company clause to company "
-        f"documents, so it reaches personal uploads too: {predicate}"
+    assert "d.is_company_kb AND d.clearance_level = ANY(" in predicate, (
+        f"this caller's predicate has no company clause: {predicate}"
+    )
+    # Exactly one, because the exception clause is *also* gated on `is_company_kb` and
+    # carries a ceiling — so a bare count would be two for every caller who holds the
+    # exception role, and a dropped department term would be invisible in it.
+    assert predicate.count("d.department_id = ANY(CAST(:filter_departments AS uuid[]))") == 1, (
+        "the department term is not written exactly once, so one of its copies may be "
+        f"unguarded: {predicate}"
+    )
+    assert "d.visibility" not in predicate, (
+        "this caller's predicate carries §4.2's share term, so a *retrieval* is reaching a "
+        f"personal document that is not the asker's: {predicate}"
     )
     assert parameters.get("filter_departments"), (
         "this caller's predicate carries no department bindings, so the department term "
         f"cannot match anything: {parameters}"
     )
     return parameters
+
+
+def personal_clause(principal: Principal) -> str:
+    """§4.2's first clause as this caller's *retrieval* predicate renders it.
+
+    Named so the three tests that pin it cannot drift apart, and written to raise rather
+    than return `None` when the clause is missing: a mutation that removed it would
+    otherwise turn every assertion below into a comparison against nothing.
+    """
+    clauses, _ = visible_document_clauses(answer_filter_for(principal))
+    found = [clause for clause in clauses if "d.owner_employee_id" in clause]
+    assert len(found) == 1, (
+        f"expected exactly one ownership clause in the retrieval predicate, got {clauses}"
+    )
+    return found[0]
+
+
+def test_the_personal_document_clause_is_pinned_term_by_term(
+    platform: Platform, escalation: Escalation
+) -> None:
+    """**§4.2's clause 1, and the gate that makes it about personal documents** (ticket 36).
+
+    The four scenarios above are about the company knowledge base. This is the clause
+    they do not touch, and it is the one ticket 36 changed, so it is pinned where the
+    mutation it guards against is visible: the *text*, term by term, from the spec the
+    request path actually produces (`answer_filter_for`, not a hand-built one).
+
+    Two claims, and the second is the one a reader would not guess:
+
+    * **The ownership test is there.** Without it the disjunction has no term that
+      reaches the asker's own uploads at all, and the corpus refuses every personal
+      question — including the asker's own.
+    * **It is gated on `NOT d.is_company_kb`.** Without the gate the term admits *any*
+      document whose `owner_employee_id` equals the asker's — which, in a schema where a
+      company document has no owner, is currently the same set, and one row away from
+      being a different one. The gate is what makes the clause a statement about personal
+      documents rather than about an accident of which columns are NULL, and it is what
+      the mutation "drop `NOT d.is_company_kb` from the ownership clause" breaks.
+
+    The retrieval predicate is rendered from `answer_filter_for`, so this also pins the
+    ticket's narrowing: the clause that would reach a *colleague's* published personal
+    document is not in it, whatever the list renders — see
+    `test_the_search_does_not_recall_a_colleagues_published_personal_document`.
+    """
+    clause = personal_clause(escalation.principals["employee"])
+
+    assert clause.startswith("(NOT d.is_company_kb"), (
+        "the ownership clause is not gated on the document being personal, so it is a "
+        f"statement about any document that happens to name an owner: {clause}"
+    )
+    assert "d.owner_employee_id = :filter_employee_id" in clause, (
+        f"the ownership clause does not test ownership: {clause}"
+    )
+    assert clause.endswith(")"), clause
+
+    predicate, parameters = predicate_of(escalation.principals["employee"])
+    assert parameters["filter_employee_id"] == escalation.principals["employee"].employee_id, (
+        "the ownership clause is not bound to the caller's own employee id, so it matches "
+        f"somebody else's documents: {parameters}"
+    )
+    # And the share term ticket 36 adds is *not* in a retrieval predicate. Asserted here
+    # as well as in `test_retrieval.py` because this file is the one that owns the claim
+    # "a question cannot reach another person's personal document".
+    assert "d.visibility" not in predicate, (
+        "the retrieval predicate reaches a personal document through its visibility "
+        f"column, which is how a colleague's upload becomes corpus: {predicate}"
+    )
 
 
 # --- scenario 1: the ceiling --------------------------------------------------
@@ -744,11 +847,17 @@ async def test_the_database_refuses_the_same_rows_without_any_application_predic
     * the chunks are absent from a filterless join — a retrieval that forgot its filter
       reads nothing, which is the failure mode the design wants (silence, not disclosure);
     * the `documents` row is absent on its own — so the leak is not merely the chunks;
-    * `document_visibility_predicate` answers `false` for the row's own three columns —
-      which is the statement the policy is built from, asked directly. The three values
-      are read on the *owner* connection, because asking for them through the restricted
-      role would return no row at all (the policy applies to that lookup too) and the
-      predicate would then never be called.
+    * `document_visibility_predicate` answers `false` for the row's own columns — which is
+      the statement the policy is built from, asked directly. The values are read on the
+      *owner* connection, because asking for them through the restricted role would return
+      no row at all (the policy applies to that lookup too) and the predicate would then
+      never be called. Five of them since ticket 36: the predicate reads the two columns
+      that decide which §4.2 clause the document falls under as well as the three it
+      always read.
+    * and `document_visibility_predicate` is asked the **reverse** question as well, for a
+      personal document filed in a department: the same department and clearance with
+      `visibility = 'private'` is refused, so the policy is doing what the ticket asks
+      rather than admitting every document in a department.
 
     And the positive half is asserted beside it: the document *is* there for the owner
     connection, so "no rows" is the policy refusing rows that exist rather than a fixture
@@ -757,17 +866,18 @@ async def test_the_database_refuses_the_same_rows_without_any_application_predic
     for forbidden in unreachable_documents(escalation):
         prefix = f"{forbidden.name} ({forbidden.title!r})"
 
-        # The fixture's own half, on the owner connection: the rows exist, and the three
+        # The fixture's own half, on the owner connection: the rows exist, and the
         # columns the policy is written over are what the predicate is asked about.
         chunks = await platform.scalar(
             "SELECT count(*) FROM document_chunks WHERE document_id = :id",
             {"id": forbidden.document_id},
         )
         assert chunks > 0, f"{prefix} has no chunks, so the refusals below prove nothing"
-        owner, department, clearance = (
+        owner, department, clearance, is_company_kb, visibility = (
             await platform.sql(
                 """
-                SELECT owner_employee_id, department_id, clearance_level
+                SELECT owner_employee_id, department_id, clearance_level,
+                       is_company_kb, visibility
                   FROM documents WHERE id = :id
                 """,
                 {"id": forbidden.document_id},
@@ -809,17 +919,30 @@ async def test_the_database_refuses_the_same_rows_without_any_application_predic
             ).scalar()
             # `COALESCE(..., false)` because these are company documents: their owner is
             # NULL, so §4.2's ownership clause is SQL's `NULL`, not `false`, and the
-            # *disjunction* is NULL only when the company clause is false too. `USING`
+            # *disjunction* is NULL only when the family clause is false too. `USING`
             # treats that as "not allowed", which is the behaviour being asserted, so the
-            # question asked here is the one a policy asks: does this row's own three
-            # columns admit the caller — no.
+            # question asked here is the one a policy asks: does this row's own columns
+            # admit the caller — no.
+            #
+            # Five arguments since ticket 36: the predicate reads the two columns that
+            # decide which §4.2 clause a document falls under (`is_company_kb`,
+            # `visibility`) as well as the three it always read, because the policy it
+            # backs up was wider than the rule before that ticket — it admitted *any*
+            # document in the caller's department, personal or not.
             predicate = await session.scalar(
                 text(
                     "SELECT COALESCE(document_visibility_predicate("
                     "CAST(:owner AS uuid), CAST(:department AS uuid), "
-                    "CAST(:clearance AS text)), false)"
+                    "CAST(:clearance AS text), CAST(:company AS boolean), "
+                    "CAST(:visibility AS text)), false)"
                 ),
-                {"owner": owner, "department": department, "clearance": clearance},
+                {
+                    "owner": owner,
+                    "department": department,
+                    "clearance": clearance,
+                    "company": is_company_kb,
+                    "visibility": visibility,
+                },
             )
 
         assert leaked_chunks == 0, (

@@ -212,6 +212,7 @@ class FilterSpec:
         "own_employee_id",
         "explicit_grant_employee_id",
         "company_kb_cross_department",
+        "personal_documents_via_department",
         "include_company_kb",
         "manager_employee_id",
         "reports_employee_ids",
@@ -230,6 +231,7 @@ class FilterSpec:
         include_company_kb: bool,
         explicit_grant_employee_id: UUID | None = None,
         company_kb_cross_department: bool = False,
+        personal_documents_via_department: bool = False,
         manager_employee_id: UUID | None = None,
         reports_employee_ids: frozenset[UUID] = frozenset(),
         statuses: frozenset[str] = frozenset(),
@@ -251,6 +253,22 @@ class FilterSpec:
         #: department. Company documents only: a personal upload stays bounded by
         #: ownership and by the share clause whatever the role.
         self.company_kb_cross_department = company_kb_cross_department
+        #: True when a personal document its owner published to a department is in
+        #: this caller's reach *through that department* (ticket 36). It is the second
+        #: of the two things `visibility='department'` decides — the first is that the
+        #: document is *stored* as shared — and the flag exists because the two
+        #: consumers of a document spec want different widths of one rule:
+        #:
+        #: * the **document list** sets it, so a colleague sees the document they may
+        #:   open on the shared screen;
+        #: * the **retrieval path** clears it (`answer_filter_for`), because the
+        #:   ticket's rule is that a personal document is recalled from the pool only
+        #:   by the person who uploaded it: 「个人文档不进入公司知识库的检索池」.
+        #:
+        #: The permission is a property of the document's `visibility` column rather
+        #: than of the caller, so a store reads that column too — which is why the
+        #: column is a fact rather than a cache of this flag.
+        self.personal_documents_via_department = personal_documents_via_department
         #: Projects are reached by having been *named their manager*, which is the
         #: one way to reach a row whose department is not yours. Carried as the
         #: caller's own employee id, so a store can write the clause in the same
@@ -286,8 +304,48 @@ class FilterSpec:
             f"clearance<={sorted(self.clearance_levels)} own={self.own_employee_id is not None} "
             f"manages={self.manager_employee_id is not None} "
             f"reports={len(self.reports_employee_ids)} "
-            f"cross_dept={self.company_kb_cross_department} statuses={sorted(self.statuses)}>"
+            f"cross_dept={self.company_kb_cross_department} "
+            f"shared_personal={self.personal_documents_via_department} "
+            f"statuses={sorted(self.statuses)}>"
         )
+
+    def only_my_personal_documents(self) -> "FilterSpec":
+        """The same reach, narrowed to the caller's **own** personal documents (ticket 36).
+
+        A *question* answers from a narrower pool than a list shows: 「个人文档不进入公司知识库
+        的检索池」, 「只有提问者本人的个人文档可被召回」. So the retrieval path asks for this
+        and the document list does not, and the difference is one named field rather than a
+        second reading of §4.2.
+
+        **A method here rather than a `dataclasses.replace` at the call site, and the
+        reason is a defect this ticket found**: `FilterSpec` is a slots class with a
+        private constructor and no dataclass decorator, so `replace()` raises
+        `TypeError: replace() should be called on dataclass instances` — inside a request,
+        as a 500. Building the narrowed spec where the token lives makes that mistake
+        unrepresentable, and it keeps the "which fields survived" question answerable: the
+        copy goes through `_cleared` only, so everything else is provably the same object's
+        value.
+
+        The result is a *strict subset* of the reach this spec describes when the field it
+        clears was set, and is `self`'s identical twin when it was not. It can never widen:
+        there is no argument and no branch that sets a field.
+        """
+        return self._cleared("personal_documents_via_department")
+
+    def _cleared(self, *fields: str) -> "FilterSpec":
+        """A copy with these boolean fields set to `False`, and nothing else touched.
+
+        Private, because the only narrowing anyone may express is a named one above: a
+        general "clear any field" would be a way to build a spec with a reach nobody
+        intended, which is what the private constructor exists to prevent.
+        """
+        values = {
+            name: getattr(self, name)
+            for name in FilterSpec.__slots__
+            if name not in fields
+        }
+        values.update(dict.fromkeys(fields, False))
+        return FilterSpec(_token=_FILTER_TOKEN, **values)  # type: ignore[arg-type]
 
 
 #: Identity token proving a spec came from this module.
@@ -721,6 +779,13 @@ def filter_for(principal: Principal, kind: ResourceKind) -> FilterSpec:
         # and every row includes other people's personal uploads, which the
         # decision rule never allows. The exception roles are recorded as their
         # own flag instead, because their reach is limited to company documents.
+        #
+        # `personal_documents_via_department` is set here and cleared on the
+        # retrieval path (`domain/retrieval/filtering.py`). The *full* reach §4.2
+        # describes — and what a list shows — includes a personal document its owner
+        # published to a department. A question is narrower by the ticket's own rule:
+        # 「只有提问者本人的个人文档可被召回」. Both are this one spec shape, so the
+        # difference is a named field rather than a second implementation of §4.2.
         return FilterSpec(
             _token=_FILTER_TOKEN,
             kind=kind,
@@ -732,6 +797,7 @@ def filter_for(principal: Principal, kind: ResourceKind) -> FilterSpec:
             company_kb_cross_department=bool(
                 principal.roles & DOCUMENT_CROSS_DEPARTMENT_ROLES
             ),
+            personal_documents_via_department=True,
             # Personal uploads never enter the company pool; the document module
             # reads this flag to keep them out of shared retrieval.
             include_company_kb=True,

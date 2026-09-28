@@ -46,6 +46,7 @@ from app.api.v1.schemas.answer import (
     CitationRead,
     ConversationRead,
     MessageRead,
+    source_notice_read,
     sse_frame,
 )
 from app.core.errors import AppError, ErrorCode
@@ -224,6 +225,9 @@ def _message_read(message: StoredMessage) -> MessageRead:
         error_key=message.error_key,
         status=message.status,
         retrieval_filter=message.retrieval_filter,
+        # §5.2/Q29's personal-document marker travels back with the message (ticket 36),
+        # so a conversation read next week renders the banner the stream carried.
+        source_notice=source_notice_read(message.source_notice),
         created_at=message.created_at,
     )
 

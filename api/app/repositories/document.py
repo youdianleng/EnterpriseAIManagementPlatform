@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.access.kernel import FilterSpec
 from app.domain.document.models import (
+    DEPARTMENT_VISIBILITY,
     ChunkInput,
     Document,
     DocumentChunk,
@@ -109,17 +110,28 @@ def _visible(spec: FilterSpec):
 
     Clause by clause, in the design's order:
 
-    1. the caller's own document, whatever its classification;
+    1. the caller's own personal document, whatever its classification — gated on
+       `NOT is_company_kb`, so the ownership test is a statement about personal
+       documents and a company document reaches a caller through clause 2 (with its
+       department and its ceiling) and not by naming an owner;
     2. a company knowledge-base document within the ceiling *and* in a department the
        caller reaches;
-    3. an explicit share, still bounded by the ceiling;
+    3. a colleague's personal document published to the department, within the ceiling —
+       rendered only when the spec carries `personal_documents_via_department`, which
+       the document list sets and the retrieval path clears (ticket 36);
     4. the exception roles, for company documents, within the ceiling.
 
-    Clause 3 is the one thing here that a spec cannot yet carry out: it needs
-    `document_permissions`, which no ticket has created. `explicit_grant_employee_id`
-    is therefore not read, and the branch is written as `false` with this comment
-    rather than omitted — a missing clause is invisible, and a `false` is a place for
-    ticket 36 to put the lookup.
+    **Clause 3 is not `document_permissions`.** The design's §3.6 has a table for
+    person-by-person grants; this schema has no such table, and the share this ticket
+    asks for is the two-value `visibility` column the design already gives `documents`
+    (`private`/`department`/`company`). So the clause reads `visibility = 'department'`
+    and the unchanged `clearance_level` ceiling — 显式共享不能突破密级上限 — rather than a
+    lookup into a table nothing writes. The earlier `false` placeholder is therefore
+    replaced by the rule, not deferred.
+
+    The department a personal document is published to is carried in
+    `documents.department_id`, the same column the company clause uses, so "shared with
+    my department" is one predicate over columns that already exist.
     """
     if spec.allow_all:  # pragma: no cover - `filter_for` never produces this
         raise ValueError(
@@ -129,7 +141,12 @@ def _visible(spec: FilterSpec):
 
     clauses = []
     if spec.own_employee_id is not None:
-        clauses.append(DocumentRow.owner_employee_id == spec.own_employee_id)
+        clauses.append(
+            and_(
+                DocumentRow.is_company_kb.is_(False),
+                DocumentRow.owner_employee_id == spec.own_employee_id,
+            )
+        )
 
     company = DocumentRow.is_company_kb.is_(True)
     within_ceiling = DocumentRow.clearance_level.in_(spec.clearance_levels)
@@ -137,9 +154,17 @@ def _visible(spec: FilterSpec):
         clauses.append(
             and_(company, within_ceiling, DocumentRow.department_id.in_(spec.department_ids))
         )
+    if spec.personal_documents_via_department:
+        clauses.append(
+            and_(
+                DocumentRow.is_company_kb.is_(False),
+                DocumentRow.visibility == DEPARTMENT_VISIBILITY,
+                within_ceiling,
+                DocumentRow.department_id.in_(spec.department_ids),
+            )
+        )
     if spec.company_kb_cross_department:
         clauses.append(and_(company, within_ceiling))
-    # Clause 3, unwritten because the table it needs does not exist yet (ticket 36).
     if not clauses:  # pragma: no cover - a spec with no reach is still a valid refusal
         return DocumentRow.id.is_(None)
     return or_(*clauses)

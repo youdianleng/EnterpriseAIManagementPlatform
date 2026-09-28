@@ -40,6 +40,14 @@ can still say which predicate grounded it. `retrieval_debug` carries it as well,
 duplication is deliberate — the column can be indexed and queried across messages ("which
 answers were grounded under a permissive predicate"), which a field inside JSONB cannot be
 without an expression index nobody would find.
+
+**`source_notice` is the same shape of decision** (ticket 36). §5.2 asks the answer to be
+marked when it quotes a personal document 「回答顶部追加标记」, and the marker is stored
+rather than derived on read for two reasons: a conversation read back must render the same
+banner the stream carried, and 「which answers quoted a personal upload」 has to be a
+query over the table rather than a JSONB path. It is NULL for the ordinary case — an
+answer grounded only in the company knowledge base — because §5.2's marker is *appended*
+and its absence is the norm.
 """
 
 from datetime import datetime
@@ -139,6 +147,16 @@ class RagMessage(Base):
     )
     #: The permission predicate this answer was grounded under. See the module docstring.
     retrieval_filter: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    #: §5.2/Q29's 「以下内容来自个人文档（非公司知识库）」 marker (ticket 36): an object
+    #: `{personal_documents, message_key, text: {zh, es, en}}`, or NULL for an answer
+    #: grounded only in the company knowledge base. **A column rather than a field inside
+    #: `citations`**, for the reason `retrieval_filter` is one: "which answers quoted a
+    #: personal upload" is a question an auditor asks of the table — it is what a privacy
+    #: review of this system is made of — and a JSONB field is not answerable without an
+    #: expression index nobody would think to add. The per-citation `is_company_kb` stays
+    #: on `citations`; this is the answer-level statement the banner is rendered from.
+    source_notice: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     #: §5.3: which model answered, and which adapter. Both, because "gpt-4o via openai" and
     #: "gpt-4o via a local gateway" are different facts, and §5.3 requires a degradation to

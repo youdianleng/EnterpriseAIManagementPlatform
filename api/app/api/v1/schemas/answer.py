@@ -14,20 +14,22 @@ contract, and it is written out here because ticket 37 implements the client aga
       data: {message_id, conversation_id, question, model, provider, language}
 
     event: citations                     # before any text, so sources render first
-      data: {citations: [CitationRead, ...]}
+      data: {citations: [CitationRead, ...],
+             source_notice: SourceNoticeRead | null}    # ticket 36's marker
 
     event: delta                         # zero or more, one per increment
       data: {text}
 
     event: refusal                       # instead of citations/delta when D20 refuses
       data: {message_id, conversation_id, content, message_key,
-             best_score, threshold, is_refusal: true, model_called: false}
+             best_score, threshold, is_refusal: true, model_called: false,
+             source_notice: null}                        # ticket 36: nothing to label
 
     event: error                         # instead of delta/done when the model failed
       data: {message_id, conversation_id, code, message_key, retryable}
 
     event: done                          # always the last event, on every branch
-      data: {message_id, conversation_id, citations, model, provider,
+      data: {message_id, conversation_id, citations, source_notice, model, provider,
              token_in, token_out, latency_ms, is_refusal}
 
 Every branch ends with `done` except `error`, which is terminal by itself: a client that
@@ -41,6 +43,14 @@ as they are known shows the reader where the answer will come from while the fir
 are still being generated, and a UI that waited for the text would have to parse the
 markers out of prose to build the list — which is exactly what `[N]` markers exist to
 avoid.
+
+**`source_notice` rides on `citations`, before any text** (ticket 36). §5.2's marker is
+「回答顶部」 — at the top of the answer — so it has to reach a client that is still
+streaming, and `citations` is the last frame that arrives before the first token. The
+same object is repeated on `done` (so the record of what was stored is complete in one
+frame) and returned by `GET /answers/conversations/{id}` on each message. `null` means
+the answer is grounded only in the company knowledge base; a client that renders a banner
+must treat `null` as "no banner" rather than as "unknown".
 """
 
 import json
@@ -101,6 +111,21 @@ class CitationRead(BaseModel):
     rerank_score: float
 
 
+class SourceNoticeRead(BaseModel):
+    """§5.2/Q29's 「以下内容来自个人文档（非公司知识库）」 marker, as the wire carries it.
+
+    Present exactly when at least one citation came from a personal document; `null`
+    otherwise (ticket 36). `text` is the sentence in every language the interface ships,
+    so a client with no dictionary still renders it, and `message_key`
+    (`answer.source_notice.personal_document`) is how a client that *has* one renders its
+    own copy. Ticket 37 draws the banner; this is the whole of what it needs to read.
+    """
+
+    personal_documents: bool
+    message_key: str
+    text: dict[str, str]
+
+
 class MessageRead(BaseModel):
     """One stored answer, with everything the ticket asks a message to record.
 
@@ -127,6 +152,10 @@ class MessageRead(BaseModel):
     status: str
     #: The permission predicate this answer was grounded under (§4.3's reviewability).
     retrieval_filter: str | None
+    #: §5.2/Q29's marker, when the answer quoted a personal document (ticket 36). Read
+    #: back with the message so a conversation from last week renders the same banner the
+    #: streamed answer did, without re-deriving it from the citation flags.
+    source_notice: SourceNoticeRead | None = None
     created_at: datetime
 
 
@@ -162,6 +191,18 @@ def citation_reads(citations: Sequence[Citation]) -> list[CitationRead]:
     return [citation_read(citation) for citation in citations]
 
 
+def source_notice_read(stored: dict | None) -> SourceNoticeRead | None:
+    """The stored marker as the contract, or `None` when the answer carries none.
+
+    Re-validated through the model rather than passed through as raw JSONB, for the reason
+    `_message_read` gives about citations: the column is the record and this is the
+    contract, so a shape that drifted would fail here rather than in a client.
+    """
+    if not stored:
+        return None
+    return SourceNoticeRead.model_validate(stored)
+
+
 def sse_frame(event: AnswerEvent) -> str:
     """One `AnswerEvent` as an SSE frame: `event:` line, `data:` line, blank line.
 
@@ -189,7 +230,9 @@ __all__ = [
     "ConversationRead",
     "EventKind",
     "MessageRead",
+    "SourceNoticeRead",
     "citation_read",
     "citation_reads",
+    "source_notice_read",
     "sse_frame",
 ]

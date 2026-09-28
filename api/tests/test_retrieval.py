@@ -35,7 +35,11 @@ import pytest
 from app.domain.access.kernel import ResourceKind, filter_for
 from app.domain.access.principal import Principal
 from app.domain.document.embeddings import DeterministicEmbedder
-from app.domain.retrieval.filtering import retrieval_filter_explanation, unfiltered
+from app.domain.retrieval.filtering import (
+    answer_filter_for,
+    retrieval_filter_explanation,
+    unfiltered,
+)
 from app.domain.retrieval.models import (
     FusedCandidate,
     RankedCandidate,
@@ -535,28 +539,46 @@ def test_the_reranker_cannot_do_what_a_cross_encoder_can() -> None:
 
 
 def test_the_filter_is_a_disjunction_of_clauses() -> None:
-    """**§4.2 is four alternatives**, and joining them with `AND` is a different rule.
+    """**§4.2 is a disjunction of alternatives**, and joining them with `AND` is different rule.
 
     This is the mistake the end-to-end filter test caught: nobody's own document is also
     a company document owned by them, so an `AND` filter reaches *nothing* — which looks
     like a working permission boundary and is in fact a search that can never answer.
     The rendering is asserted here, without a database, because the two operators differ
     by one character and by the whole meaning of the rule.
+
+    **The pins were updated by ticket 36 and they are stronger, not looser.** The
+    ownership term is now gated on `NOT d.is_company_kb`, so its text changed from
+    `d.owner_employee_id = :filter_employee_id` to the parenthesised pair — and the count
+    of alternatives is asserted as "at least one" rather than "exactly one" because the
+    number of alternatives is now a function of the spec (`personal_documents_via_department`
+    adds §4.2's department-share term; see `test_a_shared_personal_document_is_a_list_
+    clause_and_not_a_retrieval_one`). What the count was really asserting — that the terms
+    are joined by `OR` and not by `AND` — is asserted directly instead, by rebuilding the
+    predicate from the clauses the renderer returned and comparing it to the whole.
     """
     one_employee = uuid4()
     principal = _principal(employee_id=one_employee, departments=frozenset({uuid4()}))
     spec = filter_for(principal, ResourceKind.DOCUMENT)
 
-    predicate, parameters = visible_document_predicate(spec)
+    clauses, parameters = visible_document_clauses(spec)
+    predicate, _ = visible_document_predicate(spec)
 
     assert " OR " in predicate, f"the clauses are not alternatives: {predicate}"
-    # §4.2's four clauses, wrapped so that the one `OR` between them is the whole
-    # operator: the `AND`s that survive are inside the company clause alone.
-    assert predicate.startswith("(("), predicate
-    assert predicate.count(" OR ") == 1, f"more than one alternative: {predicate}"
+    # The terms really are the clauses, joined by `OR` and joined by nothing else: the
+    # whole fragment is rebuilt from the list and compared. An `AND` between two terms
+    # fails here by name, where counting `" OR "` would only have noticed a *change*.
+    assert predicate == "(" + " OR ".join(f"({clause})" for clause in clauses) + ")", predicate
     assert predicate.count("(") == predicate.count(")")
     assert parameters["filter_employee_id"] == one_employee
     assert parameters["filter_departments"]
+    # §4.2's first clause, and the gate that makes it a statement about personal
+    # documents: ownership alone would be a term that admits somebody else's company
+    # document to a caller whose id the spec happens to carry.
+    assert any(
+        "NOT d.is_company_kb" in clause and "d.owner_employee_id = :filter_employee_id" in clause
+        for clause in clauses
+    ), f"no ownership clause among {clauses}"
 
     # A spec that reaches nothing through the company clause renders a `false` term
     # rather than dropping the clause: §4.2 is a disjunction, so the *absence* of an
@@ -566,7 +588,7 @@ def test_the_filter_is_a_disjunction_of_clauses() -> None:
     )
     predicate, _ = visible_document_predicate(empty)
     assert "OR (false)" in predicate, predicate
-    assert "is_company_kb" not in predicate, (
+    assert "d.is_company_kb AND d.clearance_level" not in predicate, (
         "a caller with no reachable department was given a company clause: " + predicate
     )
 
@@ -590,7 +612,10 @@ def test_no_filter_spec_means_no_clause_and_a_spec_means_one() -> None:
 
     assert clauses, "a document spec produced no clause at all"
     assert parameters["filter_employee_id"] == principal.employee_id
-    assert any("d.owner_employee_id" in clause for clause in clauses)
+    assert any(
+        "d.owner_employee_id" in clause and "NOT d.is_company_kb" in clause
+        for clause in clauses
+    ), f"no personal-document ownership clause among {clauses}"
 
 
 def _principal(
@@ -938,13 +963,21 @@ async def test_an_explicit_filter_hides_an_unreachable_document(
 async def test_the_spec_the_search_applies_is_the_one_the_document_list_applies(
     platform: Platform, cast: Cast
 ) -> None:
-    """One rule, two renderings, and they have to agree — which is the property that
-    makes this module's own `WHERE` clause (§4.3's pre-filter) worth having.
+    """One kernel, two renderings, and the list is the wider of the two **by one named field**.
 
-    The same `FilterSpec` is handed to the document list and to the search, and the two
-    must answer the same question about the same document. A retrieval clause that was
-    *wider* than the list's would leak a passage; one that was narrower would hide a
-    document from search that a user can open by hand.
+    The property this test has always carried is that the document list and the search
+    agree about a document: a retrieval clause that was wider than the list's would leak
+    a passage, and one that was narrower *without saying so* would hide a document from
+    search that a user can open by hand. Ticket 36 makes one deliberate difference —
+    a colleague's personal document published to the department is listable and is not
+    corpus — so the assertion is now split rather than dropped:
+
+    * for a caller in the document's own department and one outside it, the two renderings
+      of §4.2 still answer the same way about a **company** document (the corpus below),
+      which is the agreement that matters for the company knowledge base;
+    * and the one difference is asserted in
+      `test_a_shared_personal_document_is_a_list_clause_and_not_a_retrieval_one`, field by
+      field, so it is a decision rather than a gap.
     """
     from app.repositories.document import PostgresDocumentRepository
 
@@ -979,6 +1012,73 @@ async def test_the_spec_the_search_applies_is_the_one_the_document_list_applies(
     assert {
         UUID(value) for value in corpus.ids.values()
     }.isdisjoint({hit.document.id for hit in hidden_search.hits})
+
+
+def test_a_shared_personal_document_is_a_list_clause_and_not_a_retrieval_one() -> None:
+    """**The one place the list and the search disagree, asserted as a decision.**
+
+    Ticket 36's checklist has two lines that pull in the same direction and are not the
+    same rule: a personal document its owner published to a department 「对同事仍须满足密级
+    条件才可见」, and a question recalls 「只有提问者本人的个人文档」. So the *reach* §4.2
+    describes includes the colleague and the *pool* does not, and this is the test that
+    pins the difference where it is made rather than leaving it implied by two modules
+    happening to render different SQL.
+
+    Three assertions, and the third is what stops this being a "the list is wider,
+    trust us" test:
+
+    * the list's rendering carries §4.2's department-share term, with
+      `visibility = 'department'` and the clearance ceiling in it;
+    * the retrieval rendering — the spec `answer_filter_for` produces — does not;
+    * and the retrieval predicate is *exactly* the list's clauses minus that one term, so
+      nothing else moved with it.
+
+    A mutation that dropped the ownership gate, or that widened the company clause, fails
+    the third assertion as well as the hit-set tests; one that re-added the share term to
+    retrieval fails the second.
+    """
+    from app.domain.retrieval.filtering import answer_filter_for
+
+    colleague = _principal(
+        employee_id=uuid4(),
+        departments=frozenset({uuid4()}),
+        clearance="medium",
+    )
+    listing, listing_parameters = visible_document_clauses(
+        filter_for(colleague, ResourceKind.DOCUMENT)
+    )
+    corpus_clauses, _ = visible_document_clauses(answer_filter_for(colleague))
+
+    shared = [
+        clause
+        for clause in listing
+        if "d.visibility = 'department'" in clause
+    ]
+    assert len(shared) == 1, f"the list reaches no published personal document: {listing}"
+    assert "NOT d.is_company_kb" in shared[0], (
+        "the share term does not say the document is personal, so it would admit a "
+        f"company document through a visibility string: {shared[0]}"
+    )
+    assert "d.clearance_level = ANY(CAST(:filter_clearances AS text[]))" in shared[0], (
+        "the share term has no ceiling: 显式共享不能突破密级上限 — a colleague would read a "
+        f"published document above their clearance. {shared[0]}"
+    )
+    assert "d.department_id = ANY(CAST(:filter_departments AS uuid[]))" in shared[0], (
+        f"the share term is not bounded by the caller's departments: {shared[0]}"
+    )
+    assert listing_parameters["filter_clearances"] == ["low", "medium"]
+
+    # The retrieval rendering is the list's, minus that single term — asserted by
+    # rebuilding it, not by checking that a substring is absent.
+    assert corpus_clauses == [clause for clause in listing if clause not in shared], (
+        "the retrieval clause differs from the document list's by more than the "
+        f"department-share term: list={listing} retrieval={corpus_clauses}"
+    )
+    # And the spec itself says which one it is: the kernel's document reach sets the
+    # flag, and the shared helper a question uses clears it. A second implementation
+    # would have to agree with both, which is what the equality above rules out.
+    assert filter_for(colleague, ResourceKind.DOCUMENT).personal_documents_via_department
+    assert not answer_filter_for(colleague).personal_documents_via_department
 
 
 async def test_a_deployment_without_vectors_answers_from_full_text_and_says_so(
@@ -1225,14 +1325,18 @@ async def test_the_debug_endpoint_shows_the_filter_a_run_applied(
     # a `Principal` this test made up could carry a clearance the snapshot never gives
     # anybody, and then "the view's predicate is the helper's" would be an equality
     # between two things that are not the same decision.
+    #
+    # **`answer_filter_for`, not `filter_for`** (ticket 36): the view runs the *retrieval*
+    # spec, which is §4.2 narrowed to the asker's own personal documents, and comparing it
+    # against the kernel's wider list spec would be comparing a run against a rule no
+    # request runs. The escalation suite and `test_personal_documents.py` own the
+    # difference between the two.
     from app.domain.access.snapshot import resolve_principal
 
     async with platform.factory() as session:
         principal = await resolve_principal(session, UUID(admin.user_id))
     assert principal is not None
-    expected = retrieval_filter_explanation(
-        filter_for(principal, ResourceKind.DOCUMENT)
-    )
+    expected = retrieval_filter_explanation(answer_filter_for(principal))
 
     assert body["filter_explanation"] == expected, (
         "the predicate the view reported is not the one this caller's spec renders:\n"

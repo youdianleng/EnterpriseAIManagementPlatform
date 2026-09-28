@@ -127,6 +127,7 @@ class PostgresAnswerRepository:
                        citations = CAST(:citations AS jsonb),
                        retrieval_debug = CAST(:debug AS jsonb),
                        retrieval_filter = :filter_explanation,
+                       source_notice = CAST(:source_notice AS jsonb),
                        model_used = :model,
                        provider_used = :provider,
                        token_in = :token_in,
@@ -144,6 +145,14 @@ class PostgresAnswerRepository:
                 "citations": _json(citations_json(outcome.citations)),
                 "debug": _json(debug.as_json()),
                 "filter_explanation": filter_explanation,
+                # `None` binds as SQL NULL through the cast, which is exactly the
+                # ordinary case: an answer grounded only in the company knowledge base
+                # has no marker to store. See `SourceNotice`.
+                "source_notice": (
+                    _json(outcome.source_notice.as_json())
+                    if outcome.source_notice is not None
+                    else None
+                ),
                 "model": outcome.model,
                 "provider": outcome.provider,
                 "token_in": outcome.token_in,
@@ -213,7 +222,7 @@ class PostgresAnswerRepository:
                     """
                     SELECT id, question, content, citations, model_used, provider_used,
                            token_in, token_out, latency_ms, is_refusal, error_key, status,
-                           retrieval_filter, created_at
+                           retrieval_filter, created_at, source_notice
                       FROM rag_messages
                      WHERE conversation_id = :id
                      ORDER BY created_at, id
@@ -238,6 +247,11 @@ class PostgresAnswerRepository:
                 status=row[11],
                 retrieval_filter=row[12],
                 created_at=row[13],
+                # Appended to the column list rather than inserted beside `citations`, so
+                # the positional contract above stays legible: a new column is a new
+                # index at the end and nothing before it moves — the same convention
+                # `repositories/retrieval.py::_candidate` records for `is_company_kb`.
+                source_notice=row[14],
             )
             for row in rows
         )
@@ -292,6 +306,7 @@ class MessageRead:
         "status",
         "retrieval_filter",
         "created_at",
+        "source_notice",
     )
 
     def __init__(  # noqa: PLR0913 - one row's columns, named; a dict would hide them
@@ -311,6 +326,7 @@ class MessageRead:
         status: str,
         retrieval_filter: str | None,
         created_at: datetime,
+        source_notice: dict | None = None,
     ) -> None:
         self.id = id
         self.question = question
@@ -326,6 +342,9 @@ class MessageRead:
         self.status = status
         self.retrieval_filter = retrieval_filter
         self.created_at = created_at
+        #: §5.2/Q29's marker, as the JSONB column holds it, or `None` for an answer
+        #: grounded only in the company knowledge base (ticket 36).
+        self.source_notice = source_notice
 
 
 class ConversationRead:

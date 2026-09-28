@@ -61,8 +61,23 @@ def answer_filter_for(principal: Principal) -> FilterSpec:
 
     `ResourceKind.DOCUMENT` is the kind, and the kernel's document branch is the whole
     answer — `allow_all` is never true for documents (it would include everybody's
-    personal uploads), and the four clauses of §4.2 arrive as data for the retrieval
-    repository to render as one `OR`.
+    personal uploads), and the clauses of §4.2 arrive as data for the retrieval
+    repository to render.
+
+    **One field of the spec is cleared here, and it is this ticket's whole point.**
+    The kernel's document spec describes §4.2 in full, which includes a personal
+    document its owner published to a department — a colleague may open that document,
+    and the document list shows it to them. A *question* is narrower, because the
+    ticket states the rule for the pool: 「个人文档不进入公司知识库的检索池」, 「只有提问者
+    本人的个人文档可被召回」. Clearing `personal_documents_via_department` is what makes
+    the retrieval predicate recall a personal document for its owner and for nobody
+    else, and it is done here — at the one place a question's reach is produced —
+    rather than by a second clause in the repository, so the list and the search
+    cannot drift into two different readings of §4.2.
+
+    It is a *narrowing* of the kernel's own answer and never a widening: the field can
+    only be cleared, never set, and `filter_for` is the only thing that produces the
+    spec this replaces.
 
     The role check happens *here* rather than only at the route, so a caller reaching
     the retrieval path from anywhere — a job, a test, a future agent tool — is refused
@@ -78,7 +93,7 @@ def answer_filter_for(principal: Principal) -> FilterSpec:
                 f"({decision.detail})"
             ),
         )
-    return filter_for(principal, ResourceKind.DOCUMENT)
+    return filter_for(principal, ResourceKind.DOCUMENT).only_my_personal_documents()
 
 
 def retrieval_filter_explanation(spec: FilterSpec) -> str:

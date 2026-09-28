@@ -12,7 +12,7 @@ idempotence a retry depends on. A future OCR adapter is a change to
 `parsing.extract` and to nothing in this file — which is the property the interface was
 shaped for.
 
-Five decisions worth reading, because each of them is a rule rather than a mechanism:
+Seven decisions worth reading, because each of them is a rule rather than a mechanism:
 
 * **Permissions are the principal, and every read and write goes through the kernel.**
   `ingest` asks `can()` for the actions the upload performs and derives the identity of
@@ -29,6 +29,20 @@ Five decisions worth reading, because each of them is a rule rather than a mecha
   somebody's file and becomes the organisation's. That is `document.manage`, and the
   check is asked here rather than in the router because the *same* route serves both
   kinds — the caller chooses which by what they send.
+
+* **The owner is the uploader and nothing here can move it** (ticket 36). `_create`
+  writes `owner_employee_id` from the principal for a personal upload and `NULL` for a
+  company one, and no method in this module — and no route above it — takes an owner as
+  an argument. A transfer route is the thing that does not exist, which is the answer
+  the ticket's third line asks for: 个人文档的所有者始终是自己，不能被转交给他人.
+
+* **`visibility` is a personal document's one degree of sharing, and it is checked
+  here as well as stored.** `private` — what an upload that states nothing gets, so
+  "forgot the field" means private and never published — and `department` are the
+  owner's choice; `company` belongs to `is_company_kb` and is refused on a personal
+  upload by `DocumentMetadata.require_coherent`. A `department` publication needs the
+  department for the same reason a company document does: §4.2 reaches a shared
+  document through `department_id`, so a publication without one names nobody.
 
 * **`reprocess` clears the chunks before the job re-parses.** The *removal* is
   synchronous and happens in this transaction; the re-parse is the job's, exactly as
@@ -66,6 +80,7 @@ from app.audit import AuditAction, record
 from app.domain.access.kernel import (
     CLEARANCE_RANK,
     Action,
+    FilterSpec,
     ResourceKind,
     can,
     filter_for,
@@ -225,14 +240,36 @@ class DocumentService:
         self._embedder = embedder
 
     @property
-    def specs(self) -> object:
-        """The filter this principal's document reads are bounded by.
+    def specs(self) -> FilterSpec:
+        """The filter this caller's document reads are bounded by: §4.2 in full.
 
         Exposed because it is the *evidence* of the rule rather than a convenience:
         `tests/test_documents.py` asserts the same spec the queries use, so a read
         added without one fails a test rather than a review.
+
+        It is the *full* reach, and that is deliberate: it includes a personal document
+        a colleague published to the department, because a list shows what a caller may
+        open. §4.2's reach and the retrieval pool are not the same question, and the one
+        difference is named in `filtering.answer_filter_for` — see `corpus_specs`.
         """
         return filter_for(self._principal, ResourceKind.DOCUMENT)
+
+    @property
+    def corpus_specs(self) -> FilterSpec:
+        """The reach a *question* has: §4.2, minus the personal documents that are not mine.
+
+        Same shape as `specs` and one field narrower — the retrieval path's spec, which
+        `domain/retrieval/filtering.py::answer_filter_for` produces. It is here so a test
+        can ask the document module the same question the search answers, without
+        importing the retrieval module, and so the two cannot drift into two readings.
+
+        **Nothing in this module reads it to answer a request.** `ingest`'s duplicate
+        lookup, `status_of`, the download and the list all use `specs`: a colleague who
+        may open a shared document must also find that the same bytes are already there,
+        and a citation to a shared document must open. What the narrower reach is for is
+        the pool a grounded answer draws from.
+        """
+        return self.specs.only_my_personal_documents()
 
     # --- the interface §2.5 fixes -------------------------------------------
 
@@ -249,7 +286,7 @@ class DocumentService:
         await self._require_upload_allowed(metadata)
 
         digest = content_digest(content)
-        existing = await self._repository.by_hash_for(self.specs, digest)  # type: ignore[arg-type]
+        existing = await self._repository.by_hash_for(self.specs, digest)
         if existing is not None:
             raise DomainError(
                 DocumentErrorCode.DOCUMENT_DUPLICATE,
@@ -297,7 +334,7 @@ class DocumentService:
         two answers are the same to the client, and telling them apart would make this
         endpoint an existence oracle over everybody's private uploads.
         """
-        document = await self._repository.get_for(self.specs, document_id)  # type: ignore[arg-type]
+        document = await self._repository.get_for(self.specs, document_id)
         if document is None:
             raise DomainError(
                 DocumentErrorCode.DOCUMENT_NOT_FOUND,
@@ -372,7 +409,7 @@ class DocumentService:
         filter would be a list of everybody's uploads, and there is no way to write
         this one that forgets.
         """
-        return await self._repository.page_for(self.specs, limit=limit, offset=offset)  # type: ignore[arg-type]
+        return await self._repository.page_for(self.specs, limit=limit, offset=offset)
 
     # --- the parsing half, called by the job --------------------------------
 
@@ -697,7 +734,7 @@ class DocumentService:
             )
         except IntegrityError as error:
             await self._repository.rollback()
-            existing = await self._repository.by_hash_for(self.specs, digest)  # type: ignore[arg-type]
+            existing = await self._repository.by_hash_for(self.specs, digest)
             if existing is not None:
                 raise DomainError(
                     DocumentErrorCode.DOCUMENT_DUPLICATE,
@@ -750,10 +787,19 @@ class DocumentService:
         that hold `document.manage`). Requiring an administrator to be assigned to a
         department before they can file a policy into it would be requiring the
         permission they already hold to be expressed as a position. A *personal* upload
-        is different: it is filed into the uploader's own reach and nowhere else.
-        **May it classify that high** is the ceiling, below. And **may it create a
-        company document** is `document.manage`, because that is what turns a personal
-        file into the organisation's.
+        is different: it is filed into the uploader's own reach and nowhere else — and
+        that is what a `department` publication is, too, since the only department its
+        owner may publish into is one they work in. **May it classify that high** is the
+        ceiling, below. And **may it create a company document** is `document.manage`,
+        because that is what turns a personal file into the organisation's.
+
+        **Publishing to a department is checked as a reader's reach, not as a writer's**
+        (ticket 36). `visibility='department'` shares the file with everybody in the
+        department, so the department has to be one the uploader is in: publishing into
+        a department you do not work in would be handing your file to strangers, and the
+        `reachable` test below — which a *company* upload may pass by role — is
+        deliberately not widened for it. `DocumentMetadata.require_coherent` has already
+        refused a publication with no department at all.
         """
         decision = can(self._principal, Action.DOCUMENT_UPLOAD)
         if decision.denied:

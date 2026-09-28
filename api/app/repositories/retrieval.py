@@ -43,6 +43,16 @@ ranked, never fetched and never counted — which is the difference between "not
 set" and "marked invisible". Ticket 35 pushes a real `FilterSpec`; this module never
 invents one, and `None` means the caller gave none.
 
+**A personal document is recalled by its owner and by nobody else (ticket 36).** The
+first clause below is gated on `NOT d.is_company_kb`, so it is a statement about personal
+documents rather than about any document that happens to name an owner; the clause that
+would reach a colleague's *published* personal document is rendered only when the spec
+carries `personal_documents_via_department`, and the retrieval path clears that flag
+(`domain/retrieval/filtering.py::answer_filter_for`). So the pool is the company
+knowledge base plus the asker's own uploads, which is exactly 「个人文档不进入公司知识库的
+检索池」, and the document list — which sets the flag — still shows a colleague what they
+may open.
+
 **`visible_document_clauses` is deliberately readable and deliberately here.** The kernel
 states §4.2 as data and each store renders it; the document list's rendering is
 `repositories/document.py`'s `_visible`, and this one is the retrieval query's. They are
@@ -209,18 +219,38 @@ def visible_document_clauses(spec: FilterSpec | None) -> tuple[list[str], dict[s
 
     With a spec, the clauses are §4.2's, in the design's order and with its connectives:
 
-    1. **your own document**, whatever its classification — `d.owner_employee_id`;
+    1. **§4.2's clause 1, gated on the document being personal** (ticket 36) —
+       `NOT d.is_company_kb AND d.owner_employee_id = :filter_employee_id`. The
+       ownership *test* is what the design states; the `NOT d.is_company_kb` gate is
+       what makes this a statement about personal documents rather than about every
+       document one happens to own, and the two are read together as one clause because
+       they are one rule. A company document reaches a caller through clause 2, with
+       its department and its ceiling — an administrator owns nothing, and a personal
+       upload of somebody else's is reached through nothing at all.
     2. **a company knowledge-base document**, within the ceiling *and* in a department
        the caller reaches. The ceiling is a membership test against `clearance_levels`
        rather than a rank comparison: the kernel has already expanded the principal's own
        level into the set of levels at or below it, so re-deriving the ladder here would
        be a second copy of `CLEARANCE_RANK`;
-    3. **an explicit share** — `document_permissions` does not exist yet (ticket 36), so
-       the clause is deliberately absent, which is the same `false` the document
-       repository writes and for the same reason: a missing clause is invisible, and a
-       comment is where ticket 36 puts the lookup;
+    3. **a colleague's personal document published to the department** (ticket 36) — and
+       it is rendered **only when the spec says so**. The document list sets
+       `personal_documents_via_department`, so the colleague sees a document they may
+       open; the retrieval path clears it (`filtering.answer_filter_for`), because the
+       ticket's rule for the pool is that only the asker's own personal documents are
+       recalled: 「个人文档不进入公司知识库的检索池」. The clause carries the same
+       `clearance_level = ANY(...)` ceiling the company clause does — being published to
+       a department is not a reason to read above your clearance (D11's note: 显式共享不能
+       突破密级上限) — and `visibility = 'department'` is what the owner's publication
+       *is*;
     4. **the exception roles**, for company documents only, within the ceiling
        (`company_kb_cross_department`).
+
+    **§4.2's explicit-share clause has no clause here, and that is deliberate.** There is
+    no `document_permissions` table in this schema: the design's "share with a person"
+    is expressed as the ownership column plus the `visibility` column (owner-only, or
+    the whole department), which is the two-step this ticket's checklist asks for. So
+    the earlier placeholder — a comment promising ticket 36 would add a lookup — is
+    replaced by the clause it actually needed.
 
     `allow_all` is refused rather than honoured. The kernel never produces it for
     `ResourceKind.DOCUMENT` and says why; a permissive spec that arrived here would turn a
@@ -241,7 +271,14 @@ def visible_document_clauses(spec: FilterSpec | None) -> tuple[list[str], dict[s
     parameters: dict[str, object] = {}
 
     if spec.own_employee_id is not None:
-        clauses.append("d.owner_employee_id = :filter_employee_id")
+        # Clause 1: personal documents, and only one's own. The `is_company_kb` gate is
+        # load-bearing twice over: it is what keeps this a statement about personal
+        # documents, and it is what stops the *ownership test* being the only thing
+        # between a personal document and a caller whose principal was built from
+        # somebody else's id.
+        clauses.append(
+            "(NOT d.is_company_kb AND d.owner_employee_id = :filter_employee_id)"
+        )
         parameters["filter_employee_id"] = spec.own_employee_id
 
     clears = sorted(spec.clearance_levels)
@@ -263,6 +300,21 @@ def visible_document_clauses(spec: FilterSpec | None) -> tuple[list[str], dict[s
             parameters["filter_clearances"] = clears
             parameters["filter_departments"] = departments
 
+    # Clause 3, rendered only where the spec asks for it. See the docstring: the
+    # document list sets the flag and the retrieval path clears it.
+    if spec.personal_documents_via_department:
+        if not clears or not departments:
+            clauses.append("false")
+        else:
+            clauses.append(
+                "(NOT d.is_company_kb "
+                "AND d.visibility = 'department' "
+                "AND d.clearance_level = ANY(CAST(:filter_clearances AS text[])) "
+                "AND d.department_id = ANY(CAST(:filter_departments AS uuid[])))"
+            )
+            parameters.setdefault("filter_clearances", clears)
+            parameters.setdefault("filter_departments", departments)
+
     if spec.company_kb_cross_department:
         if not clears:
             clauses.append("false")
@@ -273,7 +325,6 @@ def visible_document_clauses(spec: FilterSpec | None) -> tuple[list[str], dict[s
             )
             parameters.setdefault("filter_clearances", clears)
 
-    # Clause 3, unwritten because the table it needs does not exist yet (ticket 36).
     if not clauses:
         return ["false"], {}
     return clauses, parameters

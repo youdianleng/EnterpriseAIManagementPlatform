@@ -56,6 +56,32 @@ DEFAULT_ANSWER_LANGUAGE = "es"
 #: whole question would be a body in a heading.
 TITLE_CHARS = 80
 
+#: §5.2's 「若命中的是个人文档，回答顶部追加标记」 — the sentence the answer carries when it
+#: quotes somebody's personal upload (ticket 36, Q29), written out in both languages the
+#: interface ships (§10.4). The API states it rather than leaving the client to compose
+#: it for the reason the refusal text is stated: it is a *fact about the sources*, and a
+#: client that assembled it from `is_company_kb` flags would be re-deciding which answers
+#: carry it. Ticket 37 renders it; nothing here draws a screen.
+PERSONAL_DOCUMENT_NOTICE_MESSAGE_KEY = "answer.source_notice.personal_document"
+
+#: The marker, in the two languages §5.2 words it in. **The Chinese is the design's own
+#: sentence** and is kept verbatim; the Spanish and English are the same statement, since
+#: an answer in Spanish that quoted a personal document still has to say so in the reader's
+#: language, and the corpus's own languages are the two the interface ships. The client
+#: renders whichever of the three its locale wants — the key above is what it looks the
+#: copy up by, and these are what the API answers when it has no dictionary to hand.
+PERSONAL_DOCUMENT_NOTICE_TEXT: dict[str, str] = {
+    "zh": "以下内容来自个人文档（非公司知识库）",
+    "es": (
+        "El contenido siguiente procede de un documento personal "
+        "(no de la base de conocimiento de la empresa)"
+    ),
+    "en": (
+        "The following content comes from a personal document "
+        "(not the company knowledge base)"
+    ),
+}
+
 
 class AnswerLanguage(StrEnum):
     """Which language an answer is written in — decided by the *question*'s.
@@ -118,6 +144,68 @@ class Citation:
             content=hit.content,
             rerank_score=hit.rerank_score,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class SourceNotice:
+    """The "this came from a personal document" marker, as the answer contract carries it.
+
+    `docs/DESIGN.md` §5.2's third answering rule is 「若命中的是个人文档，回答顶部追加标记：
+    **"以下内容来自个人文档（非公司知识库）"**」 (Q29), and ticket 36 is the ticket that makes
+    it true at the API rather than a sentence somebody remembers to add. Three decisions
+    are worth reading:
+
+    * **The condition is `any`, not `all`.** An answer that quotes one company policy and
+      one personal upload is an answer the reader has to be told about: the whole point
+      of the marker is that the reader can tell which side of the knowledge base the
+      content in front of them came from. A "mixed" answer labelled nothing would be the
+      one case where the label matters most.
+
+    * **It is built from the citations that actually grounded the answer, never from the
+      question or from the filter.** A question that merely *could* have reached a
+      personal document carries no marker — a label that appeared on every answer of a
+      person who owns any upload would stop meaning anything — and a refusal carries none
+      either, because it has no citations to label. `Citation.is_company_kb` decides it,
+      which is the field ticket 34 put there for exactly this.
+
+    * **The copy travels with the marker, in every language, and so does the message
+      key.** The API states the sentences so a client can render one without a
+      dictionary, and the key so a client that *has* a dictionary renders the localised
+      catalogue copy instead — the same two-part shape the refusal uses.
+    """
+
+    #: Whether the answer is grounded in at least one personal document. Redundant with
+    #: the decision itself, and kept as a field because it is what an operator queries:
+    #: "which answers quoted a personal upload" is a question about the `source_notice`
+    #: column, and a JSONB object with no boolean in it is not one without an expression
+    #: index nobody would find.
+    personal_documents: bool = True
+    message_key: str = PERSONAL_DOCUMENT_NOTICE_MESSAGE_KEY
+    text: dict[str, str] = field(
+        default_factory=lambda: dict(PERSONAL_DOCUMENT_NOTICE_TEXT)
+    )
+
+    @classmethod
+    def of(cls, citations: tuple["Citation", ...]) -> "SourceNotice | None":
+        """The marker this citation list requires, or `None` when none is required.
+
+        `None` rather than an "off" value is the shape the client wants and the shape the
+        column stores: §5.2's marker is *appended*, so its absence is the ordinary case —
+        an answer grounded only in the company knowledge base — and a
+        `{personal_documents: false}` object on every message would put a field on every
+        row to say nothing.
+        """
+        if not any(not citation.is_company_kb for citation in citations):
+            return None
+        return cls()
+
+    def as_json(self) -> dict[str, Any]:
+        """The column's shape, and the SSE payload's. JSON-native values only."""
+        return {
+            "personal_documents": self.personal_documents,
+            "message_key": self.message_key,
+            "text": dict(self.text),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,6 +376,11 @@ class AskOutcome:
     token_out: int = 0
     latency_ms: int = 0
     failure: AskFailure | None = None
+    #: §5.2/Q29's 「以下内容来自个人文档（非公司知识库）」 marker, or `None` when the answer is
+    #: grounded only in the company knowledge base (ticket 36). It travels on the outcome
+    #: rather than being recomputed by the repository, so the frame a client renders and
+    #: the row an auditor reads are built from the same decision.
+    source_notice: SourceNotice | None = None
 
     @property
     def answered(self) -> bool:
@@ -345,6 +438,8 @@ def new_id() -> UUID:
 
 __all__ = [
     "DEFAULT_ANSWER_LANGUAGE",
+    "PERSONAL_DOCUMENT_NOTICE_MESSAGE_KEY",
+    "PERSONAL_DOCUMENT_NOTICE_TEXT",
     "TITLE_CHARS",
     "AnswerEvent",
     "AnswerLanguage",
@@ -355,6 +450,7 @@ __all__ = [
     "ConversationRef",
     "EventKind",
     "RetrievalDebug",
+    "SourceNotice",
     "citations_json",
     "new_id",
     "title_for",
