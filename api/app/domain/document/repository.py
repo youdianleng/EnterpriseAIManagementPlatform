@@ -1,6 +1,6 @@
 """Persistence contract for the document module.
 
-Four things about this interface are load-bearing:
+Five things about this interface are load-bearing:
 
 * **Nothing commits.** The service commits once per operation, so a document, its
   chunks and the audit record of who uploaded it land together or not at all. A
@@ -20,6 +20,12 @@ Four things about this interface are load-bearing:
   behind, and "the same document parsed twice" would answer with more chunks than
   either run produced. The unique `(document_id, chunk_index)` is the guarantee
   underneath; this method is what makes it a no-op rather than a collision.
+
+* **The parent link is resolved here, not by the caller.** The split labels a child's
+  parent by *index within the same write* (`ChunkInput.parent_index`), because the
+  split has no business knowing what a uuid is; this module generates the ids, so it
+  is the only place that can turn one into the other. The delete comes first, so the
+  previous version's links cannot survive a rewrite — they are rows like any other.
 
 * **`by_hash_for` is permission-scoped, not global.** Duplicate detection asks "do
   *you* already have this file", not "does the company". A global lookup would answer
@@ -153,6 +159,26 @@ class DocumentRepository(Protocol):
         """The stored chunks, in order. For tests and for ticket 32's retrieval."""
         ...
 
+    async def chunks_missing_embedding(self, *, limit: int) -> list[UUID]:
+        """Documents holding at least one chunk with no vector, oldest first.
+
+        The re-embed worklist, and the reason the embedding failure is recoverable:
+        the chunks are there, only the vectors are missing, so the fix is a query
+        rather than a re-parse. Ordered by the document's age so a pass that is
+        interrupted resumes at the same place instead of starving the newest rows.
+        """
+        ...
+
+    async def chunk_texts(self, document_id: UUID) -> list[tuple[int, str]]:
+        """`(chunk_index, content)` for one document, in order.
+
+        For the offline evaluation script, which needs to know what text a row holds
+        without going through a service that would want a principal. Deliberately not
+        a general-purpose listing: it returns no ids and no vectors, so it cannot be
+        mistaken for a read path that answers requests.
+        """
+        ...
+
     async def replace_chunks(self, document_id: UUID, chunks: list[ChunkInput]) -> int:
         """Drop this document's chunks and write these, returning how many landed.
 
@@ -160,6 +186,34 @@ class DocumentRepository(Protocol):
         failed parse produces. A retry that skipped the delete would double the
         document's chunks, and a retry that skipped the write would keep the previous
         run's.
+
+        **Two passes over the new rows, and the second is what writes the links.**
+        Every row is inserted with its parent column NULL, the ids are read back, and
+        the children are pointed at their parents in one more statement. The
+        alternative — inserting parents first — would work and would put the *order*
+        of the list in charge of correctness, which is a contract no signature states;
+        this way the links exist because they were resolved, not because the caller
+        happened to sort the rows.
+        """
+        ...
+
+    async def set_embeddings(
+        self,
+        document_id: UUID,
+        vectors: dict[int, list[float]],
+        model: str,
+    ) -> int:
+        """Write vectors onto this document's existing rows, keyed by `chunk_index`.
+
+        A separate call from `replace_chunks` because they answer two different
+        questions: `replace_chunks` writes the *split*, which the parser decides, and
+        this writes the *vectors*, which a provider decides — and the second can fail
+        on its own, leaving the first intact. That separation is what makes an
+        embedding outage a document with chunks and no vectors rather than a document
+        with no text.
+
+        `model` travels with the vectors rather than beside them, because a vector
+        whose model is unknown cannot be compared with anything.
         """
         ...
 

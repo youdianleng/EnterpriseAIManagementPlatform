@@ -253,6 +253,34 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.timesheet_copy_source_invalid": (
             "La semana anterior no tiene horas que copiar."
         ),
+        # Ticket 29. Three sentences the employee has to be able to act on, so each
+        # names the way forward rather than the rule: a locked week is corrected with a
+        # supplementary submission, and a week outside the eight-week window cannot be
+        # corrected at all — which is what "no quedan semanas" says, and the detail
+        # states the count for any client that wants it as a number.
+        "errors.timesheet_week_locked": (
+            "Esta semana está aprobada y bloqueada. Solo se puede corregir con un envío "
+            "complementario."
+        ),
+        "errors.timesheet_week_closed": (
+            "Esta semana queda fuera de las 8 semanas de plazo: no quedan semanas de "
+            "corrección y ya no admite ningún cambio."
+        ),
+        "errors.timesheet_supplement_not_locked": (
+            "Esta semana no está bloqueada: todavía puedes editarla directamente."
+        ),
+        "errors.timesheet_supplement_open": (
+            "Ya hay un envío complementario pendiente para esta semana. Espera la "
+            "decisión antes de enviar otro."
+        ),
+        "errors.timesheet_supplement_invalid": (
+            "El envío complementario no indica ninguna corrección válida: elige las "
+            "entradas de esta semana que quieres corregir."
+        ),
+        "errors.timesheet_entry_is_reversal": (
+            "Las líneas de ajuste de un envío complementario no se pueden editar ni "
+            "borrar, y tampoco lo que ya está ajustado."
+        ),
         "errors.leave_type_not_found": "Ese tipo de permiso no existe.",
         "errors.leave_request_not_found": "No se encontró esa solicitud de permiso.",
         "errors.leave_type_code_taken": "Ya existe un tipo de permiso con ese código.",
@@ -347,6 +375,11 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.document_file_missing": (
             "El archivo original de este documento ya no está disponible en el "
             "almacenamiento. Avisa a soporte."
+        ),
+        "errors.document_embedding_unavailable": (
+            "El documento se ha procesado, pero no se han podido generar sus vectores "
+            "de búsqueda. La búsqueda semántica no lo encontrará hasta que se vuelva a "
+            "procesar; avisa a soporte."
         ),
         "errors.internal_error": "Se produjo un error interno. Inténtalo de nuevo más tarde.",
         "errors.service_unavailable": "El servicio no está disponible en este momento.",
@@ -576,6 +609,29 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.timesheet_copy_source_invalid": (
             "The previous week has no hours to copy."
         ),
+        "errors.timesheet_week_locked": (
+            "This week is approved and locked. It can only be corrected with a "
+            "supplementary submission."
+        ),
+        "errors.timesheet_week_closed": (
+            "This week is outside the 8-week window: no correction weeks are left and it "
+            "accepts no further changes."
+        ),
+        "errors.timesheet_supplement_not_locked": (
+            "This week is not locked: you can still edit it directly."
+        ),
+        "errors.timesheet_supplement_open": (
+            "A supplementary submission for this week is already waiting for a decision. "
+            "Wait for it before sending another."
+        ),
+        "errors.timesheet_supplement_invalid": (
+            "The supplementary submission states no valid correction: pick the entries of "
+            "this week you want to correct."
+        ),
+        "errors.timesheet_entry_is_reversal": (
+            "The adjustment lines of a supplementary submission cannot be edited or "
+            "removed, and neither can what has already been adjusted."
+        ),
         "errors.leave_type_not_found": "There is no such leave type.",
         "errors.leave_request_not_found": "That leave request does not exist.",
         "errors.leave_type_code_taken": "A leave type with that code already exists.",
@@ -663,6 +719,11 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         ),
         "errors.document_file_missing": (
             "This document's original file is no longer in storage. Please contact support."
+        ),
+        "errors.document_embedding_unavailable": (
+            "The document was processed, but its search vectors could not be generated. "
+            "Semantic search will not find it until it is reprocessed; please contact "
+            "support."
         ),
         "errors.internal_error": "An internal error occurred. Please try again later.",
         "errors.service_unavailable": "The service is unavailable right now.",

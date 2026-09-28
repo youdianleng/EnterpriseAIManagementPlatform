@@ -12,16 +12,17 @@ differences, each of which the service and the kernel depend on:
   version table arrives with the ticket that versions something, and moves these
   columns then.
 
-* **`current_version_id`, `chunking_version` and the embedding model are absent.** The
-  first has nothing to point at while there is one version; the last two live on
-  `document_chunks` in this implementation, where the rows they describe are, rather
-  than one level up where they would have to be trusted to agree with every chunk
-  beneath them.
+* **`current_version_id` is absent.** It has nothing to point at while there is one
+  version; `chunking_version` and the embedding model live on `document_chunks` in
+  this implementation, where the rows they describe are, rather than one level up where
+  they would have to be trusted to agree with every chunk beneath them.
 
-* **`embedding` is created and never written.** §10.3 fixes the dimension at 1536 and
-  pgvector cannot change a column's dimension in place, so the column and its HNSW
-  index exist now — ticket 32 fills them. Every column that would have to be
-  back-filled later is created now for the same reason.
+* **`embedding` and `embedding_model` are written together and never apart.** §10.3
+  fixes the dimension at 1536 and pgvector cannot change a column's dimension in
+  place, so the column and its HNSW index existed from ticket 31; ticket 32 fills them
+  — on the *child* rows, which is what retrieval searches — and records which model
+  produced each vector beside it, because two models' vectors are not comparable and a
+  re-embed has to be able to find the stale ones.
 
 Constraints worth reading: the three CHECKs state what a row *is* (`personal iff
 owner`, `company iff a department`, `ready iff text`), and the partial unique index on
@@ -185,6 +186,11 @@ class DocumentChunk(Base):
     #: `vector_cosine_ops`; a pgvector column's dimension is part of the schema, so it
     #: exists before the first embedding does or the first embedding needs a migration.
     embedding: Mapped[list | None] = mapped_column(Vector(EMBEDDING_DIMENSIONS), nullable=True)
+    #: Which model produced `embedding`, or NULL when there is none. Written with the
+    #: vector and never separately (migration 0022): vectors from two models are not
+    #: comparable, so this column is what makes a re-embed a query rather than a guess
+    #: about which rows are stale.
+    embedding_model: Mapped[str | None] = mapped_column(String(32), nullable=True)
     #: Which split produced this row. A re-index after the split changes is a query
     #: rather than a guess.
     chunking_version: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -192,6 +198,12 @@ class DocumentChunk(Base):
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
 
+    # `search_vector` is deliberately **not** declared here. It is a generated column
+    # (migration 0022) holding `to_tsvector('spanish', coalesce(heading_path,'') ||
+    # ' ' || content)`, nothing in the application writes it, and anything that reads
+    # it — the retrieval query and the tests that check the two halves agree — reads it
+    # in SQL. A second copy of that expression in Python would be a second place for
+    # the Spanish configuration to be wrong.
     __table_args__ = (
         CheckConstraint("chunk_index >= 0", name="ck_document_chunks_index"),
         CheckConstraint("token_count > 0", name="ck_document_chunks_tokens"),
@@ -202,6 +214,10 @@ class DocumentChunk(Base):
         # The idempotence guarantee. A re-run that failed to delete first cannot
         # insert a second row for the same position; the database refuses it.
         UniqueConstraint("document_id", "chunk_index", name="uq_document_chunks_position"),
+        # Migration 0022's two indexes are deliberately not declared here either, and
+        # for the same reason: they are a GIN index on the generated tsvector and a
+        # partial index on `embedding IS NULL`, and neither expression can be written
+        # in Python without restating the SQL the migration owns.
     )
 
 

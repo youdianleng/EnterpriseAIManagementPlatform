@@ -29,7 +29,6 @@ Every test names the checklist line it pins. The nine that matter most:
 
 import asyncio
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
 from uuid import UUID, uuid4
 
 import pytest
@@ -46,6 +45,10 @@ from app.domain.document.parsing import NO_TEXT_MESSAGE
 from app.domain.document.service import DocumentService
 from app.jobs.parse_documents import parse_one, parse_pending
 from app.repositories.document import PostgresDocumentRepository
+
+#: Re-exported so the document modules that came after this one can name the cast without
+#: importing this test module — see `conftest.py`, which owns the fixture.
+from tests.conftest import Cast
 from tests.support.documents import (
     RecordingFileStore,
     docx_bytes,
@@ -83,53 +86,6 @@ def document_storage(tmp_path, monkeypatch) -> str:
 
     monkeypatch.setattr(get_settings(), "document_storage_path", str(tmp_path))
     return str(tmp_path)
-
-
-@dataclass(slots=True)
-class Cast:
-    """The people and places these tests move between."""
-
-    #: An ordinary employee in the first department, with an account.
-    uploader: Actor
-    #: Somebody in the same department. Used for "the same file, another person".
-    colleague: Actor
-    #: Somebody in another department: the caller the RLS test hides a row from.
-    outsider: Actor
-    #: Administration, which is who creates company knowledge-base documents.
-    admin: Actor
-    department: str
-    other_department: str
-
-
-@pytest.fixture
-async def cast(platform: Platform) -> Cast:
-    """Two departments, four employees, and real signed-in sessions.
-
-    Real logins rather than an injected principal: the permission decision this module
-    leans on is made from the snapshot the endpoint builds, and a test that bypassed
-    that would prove nothing about which documents a caller actually reaches.
-    """
-    suffix = uuid4().hex[:8]
-    department = await platform.department(f"docs{suffix}")
-    other_department = await platform.department(f"otros{suffix}")
-    position = await platform.position(department, f"gestor{suffix}")
-    other_position = await platform.position(other_department, f"otro{suffix}")
-
-    uploader = await platform.account(roles=("employee",))
-    await platform.assign(uploader.employee_id, department, position)
-    colleague = await platform.account(roles=("employee",))
-    await platform.assign(colleague.employee_id, department, position)
-    outsider = await platform.account(roles=("employee",))
-    await platform.assign(outsider.employee_id, other_department, other_position)
-
-    return Cast(
-        uploader=uploader,
-        colleague=colleague,
-        outsider=outsider,
-        admin=await platform.account(roles=("admin",)),
-        department=department,
-        other_department=other_department,
-    )
 
 
 # --- helpers ----------------------------------------------------------------
@@ -175,7 +131,7 @@ async def ready(
     return read.json()
 
 
-async def run_parse(platform: Platform, document_id: str) -> bool:
+async def run_parse(platform: Platform, document_id: str, *, embedder: object = None) -> bool:
     """Parse one document exactly as the job does: system context, own session, one commit.
 
     `system_session` rather than a plain one, because the row-level policy on
@@ -183,11 +139,17 @@ async def run_parse(platform: Platform, document_id: str) -> bool:
     A test that skipped the flag would exercise a job that sees nothing — which is
     exactly the state this pipeline was in until the flag existed, and it failed
     silently.
+
+    `embedder` defaults to the *configured* one, which in this container is the
+    deterministic fake. A test that needs to see what the pipeline asked the embedding
+    seam for — or that needs the call to fail — passes its own.
     """
     from app.config import get_settings
+    from app.domain.document.embeddings import build_embedder
     from app.domain.document.storage import LocalFileStore
     from app.jobs.parse_documents import system_session
 
+    settings = get_settings()
     async with system_session() as session:
         document = await PostgresDocumentRepository(session).get(UUID(document_id))
         if document is None:
@@ -196,7 +158,16 @@ async def run_parse(platform: Platform, document_id: str) -> bool:
             PostgresDocumentRepository(session),
             session,
             principal=None,  # type: ignore[arg-type]
-            storage=LocalFileStore(get_settings().document_storage_path),
+            storage=LocalFileStore(settings.document_storage_path),
+            embedder=(
+                embedder
+                if embedder is not None
+                else build_embedder(
+                    settings.embeddings_provider,
+                    api_key=settings.openai_api_key,
+                    base_url=settings.openai_base_url,
+                )
+            ),
         )
         await service.parse_document(UUID(document_id))
         await session.commit()
@@ -427,19 +398,36 @@ async def test_upload_answers_before_parsing_and_leaves_the_document_processing(
 
 
 async def test_the_job_takes_a_processing_document_to_ready(platform: Platform, cast: Cast) -> None:
-    """`parse_pending`, the command's own entry point, over what the table holds."""
+    """`parse_pending`, the command's own entry point, over what the table holds.
+
+    The pass reports two worklists since ticket 32, and the second one — the documents
+    whose vectors are missing — is empty here: the embedding happens inside the parse,
+    in the same transaction that writes the chunks, so there is nothing to repair.
+    """
     response = await post_upload(cast.uploader, text_bytes(), filename="politica.txt")
     assert response.status_code == 201, response.text
 
     counted = await parse_pending()
 
-    assert counted == {"parsed": 1, "failed": 0, "missing": 0}
+    assert counted == {
+        "parsed": 1,
+        "failed": 0,
+        "missing": 0,
+        "embedded": 0,
+        "unembedded": 0,
+    }
     document = (await cast.uploader.get("/api/v1/documents")).json()["items"][0]
     assert document["status"] == DocumentStatus.READY.value
     assert document["chunk_count"] >= 1
     # A second pass has nothing to do: the status left `processing` in the same
-    # transaction that wrote the chunks.
-    assert await parse_pending() == {"parsed": 0, "failed": 0, "missing": 0}
+    # transaction that wrote the chunks, and the chunks were embedded with them.
+    assert await parse_pending() == {
+        "parsed": 0,
+        "failed": 0,
+        "missing": 0,
+        "embedded": 0,
+        "unembedded": 0,
+    }
 
 
 async def test_a_worker_that_parses_a_ready_document_rewrites_the_same_rows(

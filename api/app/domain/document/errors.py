@@ -19,6 +19,10 @@ class DocumentErrorCode:
     DOCUMENT_DUPLICATE = ErrorCode.DOCUMENT_DUPLICATE
     DOCUMENT_REPROCESS_UNSUPPORTED = ErrorCode.DOCUMENT_REPROCESS_UNSUPPORTED
     DOCUMENT_FILE_MISSING = ErrorCode.DOCUMENT_FILE_MISSING
+    #: The chunks were written and the vectors were not. Raised by the transport and
+    #: catalogued here, because the pipeline reports it to an operator rather than
+    #: failing the document: `ready` is a claim about text.
+    DOCUMENT_EMBEDDING_UNAVAILABLE = ErrorCode.DOCUMENT_EMBEDDING_UNAVAILABLE
     #: Grouped here because a caller of this module reasons about "why was this
     #: upload refused", not about which enum a code happens to live in.
     INVALID_REQUEST = ErrorCode.INVALID_REQUEST

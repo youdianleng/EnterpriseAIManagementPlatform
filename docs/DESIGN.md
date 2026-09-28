@@ -179,6 +179,8 @@ tests/             unit / integration（真实 Postgres）/ e2e（Playwright）
 | `timesheet_weeks_lock` | `week_start_date`, `locked_at`, `locked_by` | 全局周锁定 |
 | `supplementary_windows` | `employee_id`, `week_start_date`, `allowed_until` | 8 周补填窗口校验（Q30） |
 
+> **实现注记（票据 29）：** 四处与上表不同，均为有意为之。**`time_entries` 落为 `timesheet_entries`**（票据 28 取名，本注记记录这一偏离）：它属于 `timesheets` 而非与"项目任务"并列，名字说明归属；**`status` 不增 `locked`**：已通过即锁定，`approved` 就是那把锁，"锁定"由 `WeekView.is_locked` 表达——多一个状态既没有出口，又会让"是否已批准"有两个答案。**没有 `supplementary_windows` 表**：8 周窗口是**规则**而非**数据**，按"当前周（马德里业务日）减 8 周"就地计算（`timesheet.models.supplement_weeks_left`），拒绝时把剩余周数写进 detail；`allowed_until` 会把同一条规则在每人的每一周上物化一遍，而它随日历漂移，落成行就必须有人负责重算。**`timesheet_weeks_lock` 只记录"已关闭的周"**（`week_start` 主键、`locked_at`、`locked_by_employee_id`、`reason`）：周内**任何**写入路径都在关闭后被拒（服务层同一道闸 + `time_entries_guard_week_lock` 触发器），关闭由两条路径落成行——员工发起补充提交时兜底清扫其名下过期周，或某次写入触到窗外周时就地落锁。上表的 `approved_by`、`total_minutes` 同样未落列：批准人与时刻是引擎的 `approval_decisions`，合计是条目之和，存副本就是第二个会漂移的答案。补充提交的关联方向也说明一句：`supersedes_timesheet_id` 写在**新表**（补充表）上，原表一字不动——原表是审批人签过字的记录，任何"后来发生的事"都不该写在它上面；双向可查靠同一列反读（`WeekView.supplements` 与每张补充表的 `supersedes_id`）。
+
 ### 3.4 审批引擎（4 张表）
 
 | 表 | 关键字段 | 说明 |
@@ -623,6 +625,25 @@ FORBIDDEN = {"content", "messages", "prompt", "completion", "query",
 **实现位置**：维度常量定义在 `api/app/core/constants.py`（`EMBEDDING_DIMENSIONS`），迁移中以字面量写入 DDL（迁移必须描述它当时实际应用的 schema），并由 `api/tests/test_database.py` 中的测试断言两者一致——因为 pgvector 的列维度是 schema 的一部分，常量与数据库不一致只会在运行时插入失败时才暴露。
 
 **实测脚本保留在仓库中**：`api/tests/tools/probe_vector_dimensions.py`，可随时重跑复核。
+
+**票据 32 的规模复测**（HNSW 建在真实表结构上，含 RLS 策略与 GIN 索引；脚本 `api/tests/tools/probe_hnsw_scale.py`，运行环境为本机 Docker Compose 的 postgres 18 / pgvector 0.8.6 容器，2026-09-28）：
+
+| 指标 | 数值 |
+|---|---|
+| 行数 × 维度 | 20 000 × 1536（约 1 万份文档的子块规模） |
+| 建 HNSW + GIN + 部分索引 | 19.2 s |
+| 表 + 全部索引 | 255.5 MB（其中 HNSW 索引 83.6 MB，行数据 128.4 MB） |
+| 查询 p50 / p95（强制走 HNSW） | 1.00 ms / 2.02 ms |
+| 查询 p50 / p95（精确全表扫描，对照） | 0.55 ms / 0.97 ms |
+| 查询 p50 / p95（`eam_app` + 策略 + 强制走 HNSW） | 0.79 ms / 1.37 ms |
+| recall@5 | 1.000 |
+
+**读法（两点，都是反直觉的）**：
+
+1. **这个规模下规划器主动选择顺序扫描**：255 MB 的表全在 page cache 里，精确扫描 0.55 ms 比走 HNSW 的 1.00 ms 更快，因此 `ORDER BY embedding <=> …` 的默认计划是 `Sort + Seq Scan`。这不是缺陷，而是"规模不够大"的真实状态——HNSW 的价值随行数增长（代价近似对数），而全表扫描是线性的，交叉点在更强的机器/更大的语料上。**结论：这张表的查询延迟在 2 万行量级上已经是亚毫秒到毫秒级，§10.3 的维度选择在规模上成立；但"有了 HNSW 就一定更快"在本机这个规模上不成立，必须在更大语料上复测才能决定是否要调 `hnsw.ef_search` 或改索引参数。** 票据 35 会带真实数据重测。
+2. **RLS 策略在强制走索引时几乎不增加成本**（1.00 → 0.79 ms，差异在噪声内）：策略里的 `EXISTS` 只按 `documents` 主键查一次每候选行，而候选行数由 `LIMIT 5` 决定。这与 §10.6 在 5 万行上的结论一致。
+
+recall@5 = 1.000 是**合成随机向量**下的结果：2 万条随机向量近似正交，最近邻极容易分辨，所以这个数字只说明"索引没有坏"，不能说明真实语料上的召回——真实语料的召回要在票据 33 的混合检索里用真模型测。
 
 ### 10.4 界面默认语言 → **已确认：跟随浏览器**
 默认读取 `Accept-Language` 决定西语/英语，用户可手动切换，选择持久化到用户偏好（写入 `users.locale`，登录后以用户偏好覆盖浏览器推断）。

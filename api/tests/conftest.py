@@ -12,6 +12,7 @@ truncating.
 
 import os
 from collections.abc import AsyncIterator, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -24,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, create_async_e
 from sqlalchemy.pool import NullPool
 
 if TYPE_CHECKING:
-    from tests.support.platform import Platform
+    from tests.support.platform import Actor, Platform
 
 API_ROOT = Path(__file__).resolve().parents[1]
 
@@ -188,6 +189,62 @@ async def platform(settings: Settings) -> AsyncIterator["Platform"]:
 
     async with running_platform(settings) as running:
         yield running
+
+
+@dataclass(slots=True)
+class Cast:
+    """The people and places the document tests move between.
+
+    A shared fixture rather than one per module, and it lives here because pytest does
+    not collect fixtures from an imported test module: `test_chunking.py` and
+    `test_embeddings.py` are separate files about the same pipeline, and a second copy of
+    this would be a second set of departments and employees that had to keep agreeing
+    with the first.
+    """
+
+    #: An ordinary employee in the first department, with an account.
+    uploader: "Actor"
+    #: Somebody in the same department. Used for "the same file, another person".
+    colleague: "Actor"
+    #: Somebody in another department: the caller the RLS test hides a row from.
+    outsider: "Actor"
+    #: Administration, which is who creates company knowledge-base documents.
+    admin: "Actor"
+    department: str
+    other_department: str
+
+
+@pytest.fixture
+async def cast(platform: "Platform") -> Cast:
+    """Two departments, four employees, and real signed-in sessions.
+
+    Real logins rather than an injected principal: the permission decision this module
+    leans on is made from the snapshot the endpoint builds, and a test that bypassed
+    that would prove nothing about which documents a caller actually reaches.
+    """
+    from uuid import uuid4
+
+    suffix = uuid4().hex[:8]
+    department = await platform.department(f"docs{suffix}")
+    other_department = await platform.department(f"otros{suffix}")
+    position = await platform.position(department, f"gestor{suffix}")
+    other_position = await platform.position(other_department, f"otro{suffix}")
+
+    uploader = await platform.account(roles=("employee",))
+    await platform.assign(uploader.employee_id, department, position)
+    colleague = await platform.account(roles=("employee",))
+    await platform.assign(colleague.employee_id, department, position)
+    outsider = await platform.account(roles=("employee",))
+    await platform.assign(outsider.employee_id, other_department, other_position)
+
+    return Cast(
+        uploader=uploader,
+        colleague=colleague,
+        outsider=outsider,
+        admin=await platform.account(roles=("admin",)),
+        department=department,
+        other_department=other_department,
+    )
 
 
 # --- authenticating API tests ----------------------------------------------

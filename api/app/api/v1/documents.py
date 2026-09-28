@@ -68,15 +68,17 @@ _CHUNK = 1024 * 1024
 
 
 def _service(session: AsyncSession, principal: Principal) -> DocumentService:
-    """The module, wired to its repository and to the configured storage root.
+    """The module, wired to its repository, its storage root and its embedder.
 
-    The storage root comes from settings and is read here rather than inside the
-    service, so a test can hand the same service an in-memory store and exercise the
-    whole pipeline without a volume. That is the seam `docs/architecture/
-    codebase-design.md` §4 calls a real one — the second adapter is the recording
-    double in `tests/support/documents.py`.
+    The storage root and the embedding provider both come from settings and are read
+    here rather than inside the service, so a test can hand the same service an
+    in-memory store and a recording embedder and exercise the whole pipeline without a
+    volume and without a network. Those are the seams `docs/architecture/
+    codebase-design.md` §4 calls real ones — the second adapter of each is in
+    `tests/support/documents.py`.
     """
     from app.config import get_settings
+    from app.domain.document.embeddings import build_embedder
     from app.domain.document.storage import LocalFileStore
 
     settings = get_settings()
@@ -86,6 +88,11 @@ def _service(session: AsyncSession, principal: Principal) -> DocumentService:
         principal=principal,
         storage=LocalFileStore(settings.document_storage_path),
         max_upload_bytes=settings.document_max_upload_bytes,
+        embedder=build_embedder(
+            settings.embeddings_provider,
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url,
+        ),
     )
 
 

@@ -2,11 +2,19 @@
 
     python -m app.jobs.parse_documents            # everything in `processing`
     python -m app.jobs.parse_documents <uuid>     # one document, whatever its status
+    python -m app.jobs.parse_documents --embed    # only the vectors that are missing
 
 Run it from cron, from the worker container, or on demand. One pass, one exit code,
 and the same function is what the upload endpoint's contract points at: the request
 writes a row in `processing` and returns, and this is the pass that takes it to `ready`
 or to `failed`.
+
+**Two worklists, because the pipeline has two halves that fail separately (ticket 32).**
+A document waiting to be split is found by its status; a document whose text is stored
+and whose *vectors* are missing is found by `embedding IS NULL`, and the second is what
+makes an embedding outage — an expired key, an unreachable provider — a delay rather
+than a corpus that has to be walked by hand. The `--embed` form runs only the second,
+for an operator who has just configured a key.
 
 **One document, one transaction**, which is the property the ticket asks for two
 different ways. A file that cannot be read fails *that document* and leaves every
@@ -49,6 +57,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db import dispose_engine, get_session_factory
+from app.domain.document.embeddings import build_embedder
 from app.domain.document.service import (
     DEFAULT_BATCH,
     DocumentService,
@@ -80,7 +89,7 @@ async def system_session():  # noqa: ANN201 - an async context manager
 
 
 async def service_for(session: AsyncSession) -> DocumentService:
-    """The module as the job needs it: a storage root, and no principal.
+    """The module as the job needs it: a storage root, an embedder, and no principal.
 
     `principal=None` is the honest shape here rather than a fabricated one. The job is
     not acting for a user — parsing a document is the system's own pass — and the
@@ -88,9 +97,15 @@ async def service_for(session: AsyncSession) -> DocumentService:
     connection is subject to like every other: the reach the pipeline needs is the
     `app.current_system` flag `system_session` publishes, and nothing else.
 
-    That is why this constructor takes the storage and the batch size and nothing
-    else: a job that could *answer a request* would need a principal, and one that does
-    not have one cannot.
+    That is why this constructor takes the storage, the embedder and the batch size and
+    nothing else: a job that could *answer a request* would need a principal, and one
+    that does not have one cannot.
+
+    The embedder is built from settings on every pass and may be `None` — a deployment
+    that has not configured a provider chunks without embedding. Built per pass rather
+    than cached because a long-lived in-process runner that held one would keep using a
+    key that had been rotated out from under it, and because neither adapter holds
+    state worth keeping between passes.
     """
     settings = get_settings()
     return DocumentService(
@@ -99,25 +114,40 @@ async def service_for(session: AsyncSession) -> DocumentService:
         principal=None,  # type: ignore[arg-type]
         storage=LocalFileStore(settings.document_storage_path),
         max_upload_bytes=settings.document_max_upload_bytes,
+        embedder=build_embedder(
+            settings.embeddings_provider,
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url,
+        ),
     )
 
 
 async def parse_pending(*, limit: int = DEFAULT_BATCH) -> dict[str, int]:
-    """One pass over what is waiting. Returns the counts the caller logs.
+    """One pass: the documents waiting to be split, then the ones waiting to be embedded.
 
     Every document gets its own session and its own commit, so the failure of one is
     not the failure of the batch — which is what "one document per transaction" buys.
+
+    **The second worklist is what makes an embedding outage recoverable.** A document
+    whose vectors could not be produced is `ready` with chunks that hold none; the fix
+    is the operator's (set the key), the trigger is this pass, and the work is
+    `reembed` rather than a re-parse. Without it, a deployment that came up before its
+    key was configured would need somebody to walk the corpus by hand — and the failure
+    would look like retrieval "not finding" documents whose text is perfectly stored.
     """
-    counted = {"parsed": 0, "failed": 0, "missing": 0}
+    counted = {"parsed": 0, "failed": 0, "missing": 0, "embedded": 0, "unembedded": 0}
 
     async with system_session() as session:
-        pending = await (await service_for(session)).pending_documents(limit=limit)
+        service = await service_for(session)
+        pending = await service.pending_documents(limit=limit)
+        unembedded = await service.pending_embed_documents(limit=limit)
 
     for document_id in pending:
         outcome = await parse_one(document_id)
         if outcome is None:
             counted["missing"] += 1
-        elif outcome.succeeded:
+            continue
+        if outcome.succeeded:
             counted["parsed"] += 1
         else:
             counted["failed"] += 1
@@ -125,6 +155,25 @@ async def parse_pending(*, limit: int = DEFAULT_BATCH) -> dict[str, int]:
                 "document_parse_failed",
                 document_id=str(document_id),
                 reason=outcome.failure,
+            )
+        if outcome.embedding_failure:
+            counted["unembedded"] += 1
+            logger.warning(
+                "document_not_embedded",
+                document_id=str(document_id),
+                reason=outcome.embedding_failure,
+            )
+
+    for document_id in unembedded:
+        repaired = await reembed_one(document_id)
+        if repaired is not None and repaired.embedded:
+            counted["embedded"] += 1
+        elif repaired is not None and repaired.embedding_failure:
+            counted["unembedded"] += 1
+            logger.warning(
+                "document_not_embedded",
+                document_id=str(document_id),
+                reason=repaired.embedding_failure,
             )
     return counted
 
@@ -147,6 +196,22 @@ async def parse_one(document_id: UUID):  # noqa: ANN201 - ParsedDocument | None
     return outcome
 
 
+async def reembed_one(document_id: UUID):  # noqa: ANN201 - ParsedDocument | None
+    """Give one document's chunks the vectors they are missing. One transaction.
+
+    The repair half of the pass, and the reason an embedding outage is a delay rather
+    than a data loss: the text and the split are already stored, so this reads them and
+    writes vectors — no file is opened and no chunk is rewritten.
+    """
+    async with system_session() as session:
+        service = await service_for(session)
+        if await PostgresDocumentRepository(session).get(document_id) is None:
+            return None
+        outcome = await service.reembed(document_id)
+        await session.commit()
+    return outcome
+
+
 async def run_forever(interval_seconds: int) -> None:
     """The optional in-process runner, off unless a setting turns it on.
 
@@ -164,7 +229,7 @@ async def run_forever(interval_seconds: int) -> None:
     while True:
         try:
             counted = await parse_pending()
-            if counted["parsed"] or counted["failed"]:
+            if any(counted.values()):
                 logger.info("documents_parsed", **counted)
         except Exception as error:  # noqa: BLE001 - the loop must not die
             logger.error("document_parse_pass_failed", error=str(error))
@@ -176,6 +241,27 @@ async def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
 
     try:
+        if arguments and arguments[0] == "--embed":
+            # The repair pass on its own: for an operator who has just set the key and
+            # wants the corpus embedded without waiting for a parse pass to find
+            # nothing to parse. The same work `parse_pending` does second, which is why
+            # it is the same function.
+            async with system_session() as session:
+                pending = await (await service_for(session)).pending_embed_documents()
+            repaired = 0
+            for document_id in pending:
+                outcome = await reembed_one(document_id)
+                if outcome is not None and outcome.embedded:
+                    repaired += 1
+                elif outcome is not None and outcome.embedding_failure:
+                    logger.warning(
+                        "document_not_embedded",
+                        document_id=str(document_id),
+                        reason=outcome.embedding_failure,
+                    )
+            print(f"{repaired} of {len(pending)} unembedded documents embedded")
+            return 0
+
         if arguments:
             # An explicit id: parse this one whatever its status, which is what a
             # retry after a deploy looks like. A malformed id raises, and it should —
@@ -189,6 +275,8 @@ async def main(argv: list[str] | None = None) -> int:
                 f"{document_id}: {outcome.status} "
                 f"chars={outcome.extracted_chars} chunks={outcome.chunk_count}"
                 + (f" reason={outcome.failure}" if outcome.failure else "")
+                + (f" embedding_failure={outcome.embedding_failure}"
+                   if outcome.embedding_failure else "")
             )
             return 0
 
@@ -196,7 +284,8 @@ async def main(argv: list[str] | None = None) -> int:
         logger.info("documents_parsed", **counted)
         print(
             f"{counted['parsed']} parsed, {counted['failed']} failed, "
-            f"{counted['missing']} gone before parsing"
+            f"{counted['missing']} gone before parsing, "
+            f"{counted['embedded']} embedded, {counted['unembedded']} left without vectors"
         )
     finally:
         await dispose_engine()

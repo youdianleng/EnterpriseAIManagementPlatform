@@ -85,12 +85,46 @@ class Settings(BaseSettings):
     document_parse_runner_enabled: bool | None = None
     document_parse_interval_seconds: int = 2
 
+    # --- embeddings (ticket 32) ---------------------------------------------
+    # Which adapter produces the vectors. Three values, and the default is *derived*
+    # from the environment for the reason the parsing loop above is:
+    #
+    #   development, test → `fake`   reproducible bag-of-words vectors, no key, no
+    #                                network. `docker compose up` must work without an
+    #                                OpenAI account, and a test suite must be able to
+    #                                assert that a re-embed produced the *same*
+    #                                vectors.
+    #   anything else      → `openai` the real implementation, so a deployment that
+    #                                forgot the key gets a document that failed to
+    #                                embed with `ERR_DOC_009` naming the key — rather
+    #                                than a corpus of fake vectors that looks indexed
+    #                                and answers every question badly.
+    #
+    # `none` is a supported setting and not a degenerate one: chunks are written, the
+    # full-text index works, and `WHERE embedding IS NULL` is the worklist for the
+    # re-embed. The fake is never selected silently outside development, which is the
+    # property that makes the other two honest.
+    embedding_provider: str | None = None
+    # Where the real adapter posts. A setting because an installation may route
+    # through a gateway or a regional endpoint; the model and the dimension are
+    # deliberately *not* settings — vectors from two models are not comparable, so a
+    # model change is a re-embedding migration rather than an environment variable.
+    openai_api_key: str | None = None
+    openai_base_url: str = "https://api.openai.com/v1"
+
     @property
     def parses_documents_in_process(self) -> bool:
         """Whether this process runs the parsing loop. Development, unless overridden."""
         if self.document_parse_runner_enabled is not None:
             return self.document_parse_runner_enabled
         return self.is_development
+
+    @property
+    def embeddings_provider(self) -> str:
+        """Which embedding adapter this deployment uses. See `embedding_provider`."""
+        if self.embedding_provider is not None:
+            return self.embedding_provider
+        return "fake" if self.is_development or self.app_env == "test" else "openai"
 
     # --- leave (ticket 25) --------------------------------------------------
     # The annual allowance, in natural days, and the whole of `docs/DESIGN.md`'s

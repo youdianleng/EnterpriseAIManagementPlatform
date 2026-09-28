@@ -45,9 +45,17 @@ Five decisions worth reading, because each of them is a rule rather than a mecha
   pipeline with no OCR in it. `parse_document` returns a `ParsedDocument` whose
   `status` says what happened and whose `failure` carries the ticket's sentence, so the
   job, the audit record and `reprocess`'s answer all read the same three fields.
+
+* **The vectors are the second half of the pipeline and the second failure mode
+  (ticket 32).** Chunking and embedding are *implementation* of `ingest`/`reprocess`,
+  not verbs of their own — §2.5 fixes the interface and this is behind it. A document
+  whose embedding call failed is `ready` with chunks that hold no vector: `ready` is a
+  claim about text, the text is there, and the state that is missing is one retrieval
+  can see (`embedding IS NULL`) and the job can repair without re-parsing. The two
+  outcomes are separate fields on `ParsedDocument` because they are separate facts.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from uuid import UUID
 
@@ -64,6 +72,7 @@ from app.domain.access.kernel import (
 )
 from app.domain.access.permissions import DOCUMENT_CROSS_DEPARTMENT_ROLES
 from app.domain.access.principal import Principal
+from app.domain.document.embeddings import EMBED_BATCH, Embedder, EmbeddingUnavailable
 from app.domain.document.errors import DocumentErrorCode
 from app.domain.document.files import MAX_UPLOAD_BYTES, AcceptedFile, accept
 from app.domain.document.models import (
@@ -75,10 +84,13 @@ from app.domain.document.models import (
     DocumentStatus,
     ParsedDocument,
 )
-from app.domain.document.parsing import CHUNKING_VERSION, ParseRefused, parse
+from app.domain.document.parsing import CHUNKING_VERSION, Chunking, ParseRefused, chunk, extract
 from app.domain.document.repository import DocumentRepository
 from app.domain.document.storage import FileStore, content_digest
 from app.domain.errors import DomainError
+from app.logging import get_logger
+
+logger = get_logger(__name__)
 
 #: The audit trail's entity type. One string, so "everything that happened to this
 #: document" is an equality filter rather than a list.
@@ -94,6 +106,16 @@ DEFAULT_BATCH = 100
 #: documents it is asked to parse at all: the row-level policy on `documents` admits a
 #: caller's own rows and their department's, and the job is neither.
 SYSTEM_SETTING = "app.current_system"
+
+#: What `embedding_failure` says when the deployment has no embedder at all. Its own
+#: sentence because the remedy is different from a failed call's: a failed call is an
+#: operator's incident, and this is a configuration that was never asked for.
+EMBEDDINGS_DISABLED = "embeddings are switched off (EMBEDDING_PROVIDER=none)"
+
+#: How many chunk rows one document may hold. A ceiling rather than a target: it bounds
+#: what a re-embed reads into memory for one document, and a file that produced more
+#: than this is a file whose split somebody needs to look at.
+MAX_CHUNKS_PER_DOCUMENT = 20_000
 
 
 async def publish_system_context(session: AsyncSession) -> None:
@@ -129,6 +151,53 @@ class Upload:
     filename: str | None
 
 
+def write_order(split: Chunking) -> list[ChunkInput]:
+    """The split as rows, in the order they are written.
+
+    Two things happen here and nowhere else, and both are about the repository being
+    the only layer that knows what a uuid is:
+
+    * **A parent link is a `chunk_index`.** The split labels a child with the position
+      of its parent inside the split; because the split numbers its own rows, that
+      position *is* the parent's `chunk_index`, and the repository resolves it to the
+      id it generated. Nothing else in the system carries a "position", so there is no
+      second numbering scheme to get out of step with the first.
+    * **The rows are ordered children-then-parents**, which is what makes the indices
+      reproducible: the same document split the same way is assigned the same
+      `(document_id, chunk_index)` pairs on every run. The repository resolves the
+      links in a second pass and does not depend on this order — which is the point,
+      because a contract that lived only in the order of a list would be one nothing
+      states.
+    """
+    children = [chunk for chunk in split.chunks if chunk.parent is not None]
+    parents = [chunk for chunk in split.chunks if chunk.parent is None]
+    return [
+        ChunkInput(
+            chunk_index=chunk.chunk_index,
+            content=chunk.content,
+            token_count=chunk.token_count,
+            page_from=chunk.page_from,
+            page_to=chunk.page_to,
+            heading_path=chunk.heading_path,
+            chunking_version=CHUNKING_VERSION,
+            parent_index=chunk.parent,
+        )
+        for chunk in children + parents
+    ]
+
+
+def with_embedding(
+    item: ChunkInput, embedding: list[float] | None, model: str | None
+) -> ChunkInput:
+    """The same row with its vector attached — or without one, when there is none.
+
+    A function rather than a mutable field because the vector arrives after the split
+    is built and a frozen value object is how "the split" and "the vectors" stay two
+    facts that are joined once, at the write.
+    """
+    return replace(item, embedding=embedding, embedding_model=model)
+
+
 class DocumentService:
     """Ingestion, status, retrieval and retry, for one caller.
 
@@ -146,12 +215,14 @@ class DocumentService:
         principal: Principal,
         storage: FileStore,
         max_upload_bytes: int = MAX_UPLOAD_BYTES,
+        embedder: Embedder | None = None,
     ) -> None:
         self._repository = repository
         self._session = session
         self._principal = principal
         self._storage = storage
         self._max_upload_bytes = max_upload_bytes
+        self._embedder = embedder
 
     @property
     def specs(self) -> object:
@@ -241,6 +312,14 @@ class DocumentService:
         the job, and running this twice leaves the document in `processing` with the
         same rows it had after the first call. Nothing is duplicated because there is
         nothing to duplicate — the previous split is gone before the next one starts.
+
+        **"The previous split" now includes the parents and the vectors (ticket 32).**
+        Every row of the version goes, children and parents alike, in the one DELETE
+        `replace_chunks` issues — and because the self-reference carries
+        `ON DELETE CASCADE` and the delete is by `document_id`, no parent link and no
+        vector can survive into the next split. The links are rebuilt from the new
+        split rather than patched, which is what makes a retry produce the same rows
+        rather than a set that disagrees with its own text.
         """
         document = await self.status_of(document_id)
         if document.status not in REPROCESSABLE:
@@ -298,7 +377,7 @@ class DocumentService:
     # --- the parsing half, called by the job --------------------------------
 
     async def parse_document(self, document_id: UUID) -> ParsedDocument:
-        """Read the stored file, split it, and write the outcome.
+        """Read the stored file, split it, embed it, and write the outcome.
 
         **One document, one transaction.** The caller — the job — opens a session per
         document, so a file that cannot be read stops one document and not the batch,
@@ -314,6 +393,14 @@ class DocumentService:
         to leave. Any other exception is the *job's* problem and propagates, so a bug
         in this pipeline is a loud failure rather than a document quietly marked
         failed.
+
+        **An embedding failure is the third outcome, and it is neither of those.** The
+        chunks are written without vectors, the document goes to `ready` — its text is
+        there, and `ready` is a claim about text — and the sentence goes into
+        `embedding_failure` for the job to log. Raising instead would fail a document
+        whose text parsed perfectly because a key expired; marking it `failed` would
+        say the text is not there when it is. What a caller does about it is re-run the
+        job, which finds the document through `embedding IS NULL`.
         """
         document = await self._repository.get(document_id)
         if document is None:
@@ -334,30 +421,23 @@ class DocumentService:
             )
 
         try:
-            parsed, chunks = parse(content, document.media_type)
+            parsed = extract(content, document.media_type)
         except ParseRefused as refusal:
             return await self._failed(document, str(refusal))
 
-        written = [
-            ChunkInput(
-                chunk_index=chunk.chunk_index,
-                content=chunk.content,
-                token_count=chunk.token_count,
-                page_from=chunk.page_from,
-                page_to=chunk.page_to,
-                heading_path=chunk.heading_path,
-                chunking_version=CHUNKING_VERSION,
-            )
-            for chunk in chunks
+        split = chunk(parsed)
+        written, vectors, model, refusal = await self._embed(split)
+        chunks = [
+            with_embedding(item, vectors.get(item.chunk_index), model) for item in written
         ]
         updated = await self._repository.mark_parsed(
             document_id,
             status=DocumentStatus.READY,
             extracted_chars=parsed.char_count,
             page_count=parsed.page_count,
-            chunk_count=len(written),
+            chunk_count=len(chunks),
             failure_reason=None,
-            chunks=written,
+            chunks=chunks,
         )
         await record(
             self._session,
@@ -381,8 +461,15 @@ class DocumentService:
                 "page_count": updated.page_count,
                 "chunk_count": updated.chunk_count,
                 "chunking_version": CHUNKING_VERSION,
+                # The two halves of retrieval, recorded separately because they fail
+                # separately: a document can be chunked and not embedded, and the audit
+                # trail is where "which documents are missing vectors, and why" is
+                # answered after the fact.
+                "embedded_count": len(vectors),
+                "embedding_model": model,
+                "embedding_failure": refusal,
             },
-            reason="parse succeeded",
+            reason="parse succeeded" if refusal is None else f"parse succeeded; {refusal}",
         )
         return ParsedDocument(
             document_id=document_id,
@@ -390,13 +477,148 @@ class DocumentService:
             extracted_chars=updated.extracted_chars,
             page_count=updated.page_count,
             chunk_count=updated.chunk_count,
+            embedded=bool(vectors),
+            embedding_failure=refusal,
         )
+
+    async def reembed(self, document_id: UUID) -> ParsedDocument:
+        """Give a document's existing chunks the vectors they are missing.
+
+        **The repair path for an embedding outage, and it re-parses nothing.** The
+        text is already split and stored; only the vectors are absent, so re-running
+        the parser would rewrite chunks that are correct and re-read a file that has
+        not changed. This is the second half of `parse_document` in isolation, which is
+        why it can be retried as often as an operator likes.
+
+        A document with nothing missing is a no-op that answers successfully — the same
+        shape as `parse_pending` finding nothing to do — rather than an error, because
+        the job calls this for every row the worklist query returned and a race between
+        two workers must not be a failure.
+        """
+        document = await self._repository.get(document_id)
+        if document is None:
+            raise DomainError(
+                DocumentErrorCode.DOCUMENT_NOT_FOUND, detail=f"no document {document_id}"
+            )
+        stored = await self._repository.chunks(document_id, limit=MAX_CHUNKS_PER_DOCUMENT)
+        # Children only: a parent is context, is never embedded, and would otherwise be
+        # on this list for ever. `pending_embed_documents` asks the same question in SQL,
+        # which is why the two agree by construction rather than by inspection.
+        missing = [
+            row for row in stored if row.parent_chunk_id is not None and row.embedding_model is None
+        ]
+        if not missing:
+            return ParsedDocument(
+                document_id=document_id,
+                status=document.status,
+                chunk_count=document.chunk_count,
+                embedded=False,
+            )
+        if self._embedder is None:
+            return ParsedDocument(
+                document_id=document_id,
+                status=document.status,
+                chunk_count=document.chunk_count,
+                embedding_failure=EMBEDDINGS_DISABLED,
+            )
+
+        # Keyed by position in `missing`, because `_embed_texts` answers in the order
+        # it was asked and the write needs `chunk_index`.
+        try:
+            embedded = await self._embed_texts([row.content for row in missing])
+        except EmbeddingUnavailable as error:
+            return ParsedDocument(
+                document_id=document_id,
+                status=document.status,
+                chunk_count=document.chunk_count,
+                embedding_failure=str(error),
+            )
+        vectors = {
+            missing[position].chunk_index: vector for position, vector in embedded.items()
+        }
+        written = await self._repository.set_embeddings(
+            document_id, vectors, self._embedder.name
+        )
+        return ParsedDocument(
+            document_id=document_id,
+            status=document.status,
+            chunk_count=document.chunk_count,
+            embedded=written > 0,
+        )
+
+    async def pending_embed_documents(self, *, limit: int = DEFAULT_BATCH) -> list[UUID]:
+        """What has chunks and no vectors: the re-embed worklist.
+
+        **Empty when embeddings are switched off**, and that is a decision: with no
+        embedder configured every document would be on this list for ever, and the job
+        would spend its pass re-discovering a configuration that is not going to
+        change. A deployment that turns embeddings on later finds the whole corpus
+        waiting, because the query is over the rows and not over a queue.
+        """
+        if self._embedder is None:
+            return []
+        return await self._repository.chunks_missing_embedding(limit=limit)
 
     async def pending_documents(self, *, limit: int = DEFAULT_BATCH) -> list[UUID]:
         """What is waiting to be parsed, oldest first."""
         return await self._repository.pending_ids(limit=limit)
 
     # --- internals ----------------------------------------------------------
+
+    async def _embed(
+        self, split: Chunking
+    ) -> tuple[list[ChunkInput], dict[int, list[float]], str | None, str | None]:
+        """The split as rows, the vectors for the children, and what went wrong if anything.
+
+        **Children are embedded and parents are not**, which is the parent/child design
+        rather than an optimisation: retrieval ranks the small units that are about one
+        thing, and the parent is fetched afterwards as the context handed to the model.
+        Embedding a parent would put a second, blurrier copy of the same text into the
+        index and let a query match the summary instead of the answer.
+
+        The whole split is written even when the embedding fails. A document with text
+        and no vectors is searchable by full text and repairable by a re-run; a
+        document with neither is a document nobody can do anything with, and throwing
+        the chunks away because an API key expired would destroy the part that worked.
+        """
+        written = write_order(split)
+        if self._embedder is None:
+            return written, {}, None, EMBEDDINGS_DISABLED
+
+        texts = [item.content for item in written if item.parent_index is not None]
+        try:
+            vectors = await self._embed_texts(texts)
+        except EmbeddingUnavailable as error:
+            # A log line and a field, not an exception: see `parse_document`.
+            logger.warning(
+                "document_embedding_unavailable",
+                chunks=len(texts),
+                detail=str(error),
+            )
+            return written, {}, None, str(error)
+        return written, vectors, self._embedder.name, None
+
+    async def _embed_texts(self, texts: list[str]) -> dict[int, list[float]]:
+        """Vectors for these children, keyed by the `chunk_index` they belong to.
+
+        Batched because a 400-page manual is more texts than one request should carry,
+        and keyed by index rather than returned as a list because the caller's next
+        step is a write: the provider returns its vectors in the order it was asked,
+        and depending on that through two more layers is how a vector ends up on the
+        wrong row.
+        """
+        assert self._embedder is not None  # noqa: S101 - both callers check first
+        vectors: dict[int, list[float]] = {}
+        for start in range(0, len(texts), EMBED_BATCH):
+            batch = list(enumerate(texts[start : start + EMBED_BATCH], start=start))
+            embedded = await self._embedder.embed([text for _, text in batch])
+            if len(embedded) != len(batch):  # pragma: no cover - adapters guarantee it
+                raise EmbeddingUnavailable(
+                    f"asked for {len(batch)} embeddings and got {len(embedded)}"
+                )
+            for (position, _), vector in zip(batch, embedded, strict=True):
+                vectors[position] = vector
+        return vectors
 
     async def _failed(
         self, document: Document, reason: str, *, audit: bool = True
@@ -600,4 +822,13 @@ class DocumentService:
         return requested <= caller
 
 
-__all__ = ["DEFAULT_BATCH", "ENTITY_TYPE", "DocumentService", "Upload"]
+__all__ = [
+    "DEFAULT_BATCH",
+    "EMBEDDINGS_DISABLED",
+    "ENTITY_TYPE",
+    "MAX_CHUNKS_PER_DOCUMENT",
+    "DocumentService",
+    "Upload",
+    "with_embedding",
+    "write_order",
+]

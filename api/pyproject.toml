@@ -25,6 +25,12 @@ dependencies = [
     # Multipart uploads. FastAPI needs it to accept `UploadFile` at all, and its
     # absence is a startup error rather than a silent one.
     "python-multipart>=0.0.20",
+    # Token counting (ticket 32). The chunk sizes are "about 400 tokens", and a token
+    # is what `text-embedding-3-small` charges for — so this is the model's own
+    # tokenizer rather than a character estimate. It runs offline: the merge table is
+    # vendored at `app/domain/document/data/`, which is why this needs no network at
+    # first use and why `tests/test_chunking.py` asserts that file's digest.
+    "tiktoken>=0.8",
 ]
 
 [dependency-groups]

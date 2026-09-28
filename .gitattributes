@@ -11,6 +11,10 @@
 *.pdf binary
 *.woff binary
 *.woff2 binary
+# The vendored BPE merge table for the tokenizer (ticket 32). Its lines are base64 ranks,
+# so git would call it text — but a checkout that rewrote the endings would change the
+# file's digest, and tiktoken verifies that digest against the one it published.
+*.tiktoken binary
 
 # Keep diffs of generated lock files out of language statistics.
 package-lock.json linguist-generated=true

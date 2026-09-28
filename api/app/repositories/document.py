@@ -31,7 +31,7 @@ row includes other people's private uploads.
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, delete, func, insert, or_, select, update
+from sqlalchemy import and_, delete, func, insert, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.access.kernel import FilterSpec
@@ -89,7 +89,19 @@ def _to_chunk(row: ChunkRow) -> DocumentChunk:
         page_to=row.page_to,
         heading_path=row.heading_path,
         created_at=row.created_at,
+        parent_chunk_id=row.parent_chunk_id,
+        embedding_model=row.embedding_model,
     )
+
+
+def _vector_literal(vector: list[float]) -> str:
+    """A pgvector literal, at the precision the column stores.
+
+    `%g`'s seven significant digits is what `vector` keeps anyway (single precision),
+    so a round trip through this string cannot lose a value the column would have
+    held, and a full `repr(float)` would send twice the bytes for the same row.
+    """
+    return "[" + ",".join(f"{value:.7g}" for value in vector) + "]"
 
 
 def _visible(spec: FilterSpec):
@@ -198,6 +210,46 @@ class PostgresDocumentRepository:
             .limit(limit)
         )
         return [_to_chunk(row) for row in rows]
+
+    async def chunks_missing_embedding(self, *, limit: int) -> list[UUID]:
+        """Documents with at least one *child* that has no vector: the re-embed worklist.
+
+        **The predicate is `parent_chunk_id IS NOT NULL AND embedding IS NULL`, and the
+        first half is what makes the list terminate.** A parent is context and is
+        deliberately never embedded, so a query that asked only for a NULL embedding
+        would name every document that has a parent row — which is every document the
+        split produced more than one section for. The job would then re-embed the corpus
+        on every pass, for ever, and each pass would report work done.
+
+        `EXISTS` rather than a join with `DISTINCT`, so the plan is a semi-join over the
+        partial index and a document with fifty missing vectors is read once. A document
+        whose embedding call failed, one chunked while the provider was `none`, and one
+        chunked before the model was configured are the same row shape here, and they
+        want the same remedy.
+        """
+        rows = await self._session.scalars(
+            select(DocumentRow.id)
+            .where(
+                select(ChunkRow.id)
+                .where(
+                    ChunkRow.document_id == DocumentRow.id,
+                    ChunkRow.parent_chunk_id.is_not(None),
+                    ChunkRow.embedding.is_(None),
+                )
+                .exists()
+            )
+            .order_by(DocumentRow.created_at, DocumentRow.id)
+            .limit(limit)
+        )
+        return list(rows)
+
+    async def chunk_texts(self, document_id: UUID) -> list[tuple[int, str]]:
+        rows = await self._session.execute(
+            select(ChunkRow.chunk_index, ChunkRow.content)
+            .where(ChunkRow.document_id == document_id)
+            .order_by(ChunkRow.chunk_index)
+        )
+        return [(int(index), content) for index, content in rows]
 
     # --- writes -------------------------------------------------------------
 
@@ -334,32 +386,97 @@ class PostgresDocumentRepository:
         return await self._require(document_id)
 
     async def replace_chunks(self, document_id: UUID, chunks: list[ChunkInput]) -> int:
-        """Delete this document's chunks, then write these.
+        """Delete this document's chunks, then write these, links included.
 
         The delete happens even when the list is empty, which is the case a failed
         parse produces: a document that had chunks and now has none must lose them, or
         a retry that fails would leave the previous run's text retrievable beside a
         `failed` status.
+
+        **The parent links are written in a second pass, after the ids exist.** Rows
+        are inserted in `chunk_index` order with `parent_chunk_id` NULL, the flush
+        assigns each one its uuid, and then every child is pointed at the row its
+        `parent_index` names. The link survives a rewrite because it is rebuilt from
+        the split every time — the rows the previous version's links referred to are
+        gone, deleted in the statement above, so nothing can dangle.
         """
         await self._session.execute(
             delete(ChunkRow).where(ChunkRow.document_id == document_id)
         )
-        for chunk in chunks:
-            self._session.add(
-                ChunkRow(
-                    id=uuid4(),
-                    document_id=document_id,
-                    chunk_index=chunk.chunk_index,
-                    content=chunk.content,
-                    token_count=chunk.token_count,
-                    page_from=chunk.page_from,
-                    page_to=chunk.page_to,
-                    heading_path=chunk.heading_path,
-                    chunking_version=chunk.chunking_version,
-                )
+        written: list[tuple[ChunkRow, int | None]] = []
+        for chunk in sorted(chunks, key=lambda item: item.chunk_index):
+            row = ChunkRow(
+                id=uuid4(),
+                document_id=document_id,
+                chunk_index=chunk.chunk_index,
+                content=chunk.content,
+                token_count=chunk.token_count,
+                page_from=chunk.page_from,
+                page_to=chunk.page_to,
+                heading_path=chunk.heading_path,
+                chunking_version=chunk.chunking_version,
+                embedding=chunk.embedding,
+                embedding_model=chunk.embedding_model,
             )
+            self._session.add(row)
+            written.append((row, chunk.parent_index))
+        # The flush is what gives every row an id; until it runs there is nothing for a
+        # child to point at.
         await self._session.flush()
-        return len(chunks)
+
+        place = {row.chunk_index: row.id for row, _ in written}
+        linked = 0
+        for row, parent_index in written:
+            if parent_index is None:
+                continue
+            row.parent_chunk_id = place[parent_index]
+            linked += 1
+        if linked:
+            await self._session.flush()
+        return len(written)
+
+    async def set_embeddings(
+        self,
+        document_id: UUID,
+        vectors: dict[int, list[float]],
+        model: str,
+    ) -> int:
+        """Write vectors onto existing rows, by `chunk_index`.
+
+        One `UPDATE ... FROM (VALUES ...)`, so a document's vectors land in one
+        statement: a loop of updates over a ten-thousand-chunk workbook would be ten
+        thousand round trips, and the write is the same either way.
+
+        The model is written with the vector and never apart from it. A row whose
+        `embedding_model` says one thing while its vector came from another is a row
+        retrieval would happily compare against vectors it is not commensurate with —
+        the schema cannot check that, so the write is the only place it can be true.
+        """
+        if not vectors:
+            return 0
+        rows = sorted(vectors.items())
+        values = ", ".join(
+            f"({index}, CAST(:v{position} AS vector))" for position, (index, _) in enumerate(rows)
+        )
+        parameters: dict[str, object] = {
+            f"v{position}": _vector_literal(vector) for position, (_, vector) in enumerate(rows)
+        }
+        parameters["document_id"] = document_id
+        parameters["model"] = model
+        result = await self._session.execute(
+            text(
+                f"""
+                UPDATE document_chunks AS c
+                   SET embedding = v.embedding, embedding_model = :model
+                  FROM (VALUES {values}) AS v(chunk_index, embedding)
+                 WHERE c.document_id = :document_id
+                   AND c.chunk_index = v.chunk_index
+                """
+            ),
+            parameters,
+        )
+        await self._session.flush()
+        return int(result.rowcount or 0)
 
     # --- plumbing -----------------------------------------------------------
 

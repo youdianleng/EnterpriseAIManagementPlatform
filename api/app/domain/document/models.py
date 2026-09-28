@@ -1,12 +1,13 @@
 """Document value objects.
 
-Five decisions worth reading before the code, and every one of them is about where a
+Six decisions worth reading before the code, and every one of them is about where a
 rule *lives*:
 
 * **A document is the row; its chunks are derived.** `Document` carries what the
   pipeline knows about the *file* — status, where it is stored, its content hash, how
   much text came out — and `DocumentChunk` carries what retrieval reads. Ticket 32
-  fills the `embedding` column of those chunks and changes nothing here.
+  fills the `embedding` column of those chunks and writes the parent rows the
+  self-reference was left for; what the document *is* did not change.
 
 * **`owner_employee_id` is NULL exactly when the document is a company one.** The
   design says so in the schema row, the database enforces it as a CHECK, and the
@@ -29,8 +30,9 @@ rule *lives*:
 
 * **`extracted_chars` counts characters, not bytes and not tokens.** The question it
   answers is the ticket's: did this document produce anything to retrieve? A byte
-  count of the stored file cannot answer it, and a token count would need the
-  embedding model's tokenizer — which is ticket 32's, not this one's.
+  count of the stored file cannot answer it, and a token count is `token_count` on the
+  chunk rows — where the tokens actually are, and where ticket 32 counts them with the
+  embedding model's own tokenizer.
 """
 
 from dataclasses import dataclass, field
@@ -231,7 +233,13 @@ class Document:
 
 @dataclass(frozen=True, slots=True)
 class DocumentChunk:
-    """One stored chunk. The embedding is ticket 32's and is not read here."""
+    """One stored chunk — a child retrieval matches, or the parent that gives it context.
+
+    `embedding` is deliberately absent from this value object even though the column is
+    written now: nothing reads a vector back through the module (retrieval ranks in
+    SQL, where the index is), and a 1536-float list on every row of a listing would be
+    1536 floats nothing asked for. Ticket 33 reads the column; this is where it lives.
+    """
 
     id: UUID
     document_id: UUID
@@ -242,11 +250,23 @@ class DocumentChunk:
     page_to: int | None
     heading_path: str | None
     created_at: datetime
+    parent_chunk_id: UUID | None = None
+    #: The model that produced this row's vector, or `None` when it has none. Recorded
+    #: per row because vectors from two models are not comparable: this is what makes
+    #: "re-embed everything from the old model" a query.
+    embedding_model: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ChunkInput:
-    """A chunk to write: `parsing.Chunk` plus the key the split was made with."""
+    """A chunk to write: `parsing.Chunk` plus the keys the split and the model set.
+
+    `parent_index` is the position of this row's parent *within the same write*, which
+    is what the split knows — it labels children and parents by index rather than by
+    uuid, because a uuid is the repository's business. The repository resolves the
+    index to the id it generated, and a `parent_index` on a parent is `None`: the
+    self-reference means "this fragment's context block", and a parent has none.
+    """
 
     chunk_index: int
     content: str
@@ -255,6 +275,15 @@ class ChunkInput:
     page_to: int | None = None
     heading_path: str | None = None
     chunking_version: str = ""
+    parent_index: int | None = None
+    #: The vector retrieval searches with, on children only. `None` means "not
+    #: embedded" — a document that was chunked while the provider was `none`, or one
+    #: whose embedding call failed — which is exactly what `WHERE embedding IS NULL`
+    #: reports as the re-embed worklist.
+    embedding: list[float] | None = None
+    #: Which model produced `embedding`. Written together with it, never separately:
+    #: a vector whose model is unknown cannot be compared with anything.
+    embedding_model: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,6 +293,13 @@ class ParsedDocument:
     `failure` is a value and not an exception: a scanned file is an ordinary outcome
     of a pipeline that does not do OCR, and every caller — the job, the audit record,
     `reprocess`'s answer — has to say what happened either way.
+
+    **`embedded` is the second outcome and it is not the same as `ready`.** A document
+    whose vectors could not be produced has text, has chunks, is `ready` and is *not*
+    searchable by vector — which is a state an operator has to be able to see, because
+    the remedy is theirs (set the key, re-run the parse) and a silent one would look
+    like a document that simply answers nothing. `embedding_failure` carries the
+    sentence for the log.
     """
 
     document_id: UUID
@@ -272,6 +308,8 @@ class ParsedDocument:
     page_count: int | None = None
     chunk_count: int = 0
     failure: str | None = None
+    embedded: bool = False
+    embedding_failure: str | None = None
 
     @property
     def succeeded(self) -> bool:

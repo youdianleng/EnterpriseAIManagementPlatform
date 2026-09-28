@@ -280,6 +280,30 @@ class ErrorCode(StrEnum):
     #: The engine refused the submission — a request already filed, or a rejection
     #: that is final. Carries the engine's own code in the detail.
     TIMESHEET_SUBMISSION_REFUSED = "ERR_TSH_013"
+    #: Ticket 29. The week is approved, and approved is permanent: no write path may
+    #: touch its entries, and the only way to change what it says is a supplementary
+    #: submission. Its own code rather than `NOT_EDITABLE` because the remedy differs —
+    #: one waits for a decision, the other files a correction — and the client's copy
+    #: has to be able to say which.
+    TIMESHEET_WEEK_LOCKED = "ERR_TSH_014"
+    #: The global week lock: the week has fallen out of the eight-week supplementary
+    #: window, so *no* write path may touch it — not a new entry, not a copy, not a
+    #: correction. The detail names how many weeks remain, which is none.
+    TIMESHEET_WEEK_CLOSED = "ERR_TSH_015"
+    #: A supplement was asked for a week that is not locked. There is nothing to
+    #: correct: an open week is edited directly, which is a shorter path than a
+    #: correction document with an approval round of its own.
+    TIMESHEET_SUPPLEMENT_NOT_LOCKED = "ERR_TSH_016"
+    #: The week already has a supplement nobody has decided. Two undecided corrections
+    #: would be two answers to what the week now says, and the second would be written
+    #: against a net that is still moving.
+    TIMESHEET_SUPPLEMENT_OPEN = "ERR_TSH_017"
+    #: A supplement that states no correction, names an entry of another week, names
+    #: the same entry twice, or names a reversal: the document was written wrong.
+    TIMESHEET_SUPPLEMENT_INVALID = "ERR_TSH_018"
+    #: A reversal, or an entry a reversal points at, was edited or removed. The pair
+    #: means something only while both halves still negate each other.
+    TIMESHEET_ENTRY_IS_REVERSAL = "ERR_TSH_019"
 
     # Leave: the type catalogue, the year's allowance, and the request that spends
     # it (ticket 25). Four themes, and the boundary between them is what a client
@@ -407,6 +431,14 @@ class ErrorCode(StrEnum):
     #: The row names a file the storage root does not hold. A data error, not a
     #: permission one, and its own code so an operator can tell the two apart.
     DOCUMENT_FILE_MISSING = "ERR_DOC_008"
+    #: Embedding (ticket 32). The text was chunked and stored and the vectors could not
+    #: be produced — no API key, a revoked one, a rate limit, an unreachable endpoint.
+    #: A 503 rather than a 500 because it is a *configuration* of this deployment and
+    #: not a defect in the request, and its own code because the remedy is one an
+    #: operator performs: set `OPENAI_API_KEY` and re-run the parse. The document stays
+    #: `ready` — `ready` is a claim about text — and the chunks stay unembedded, which
+    #: is the state `WHERE embedding IS NULL` reports as work to do.
+    DOCUMENT_EMBEDDING_UNAVAILABLE = "ERR_DOC_009"
 
     # Cross-cutting.
     INTERNAL_ERROR = "ERR_INTERNAL_001"
@@ -651,6 +683,24 @@ ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
     ErrorCode.TIMESHEET_COPY_SOURCE_INVALID: ErrorDefinition(
         422, "errors.timesheet_copy_source_invalid"
     ),
+    # Ticket 29. The locked week, the closed week, the supplement's two state refusals
+    # and the reversal the caller tried to edit are all 409: the caller owns the
+    # document, nothing about the request is malformed, and what they are being told is
+    # what state it is in. Only a supplement somebody wrote wrong is a 422.
+    ErrorCode.TIMESHEET_WEEK_LOCKED: ErrorDefinition(409, "errors.timesheet_week_locked"),
+    ErrorCode.TIMESHEET_WEEK_CLOSED: ErrorDefinition(409, "errors.timesheet_week_closed"),
+    ErrorCode.TIMESHEET_SUPPLEMENT_NOT_LOCKED: ErrorDefinition(
+        409, "errors.timesheet_supplement_not_locked"
+    ),
+    ErrorCode.TIMESHEET_SUPPLEMENT_OPEN: ErrorDefinition(
+        409, "errors.timesheet_supplement_open"
+    ),
+    ErrorCode.TIMESHEET_ENTRY_IS_REVERSAL: ErrorDefinition(
+        409, "errors.timesheet_entry_is_reversal"
+    ),
+    ErrorCode.TIMESHEET_SUPPLEMENT_INVALID: ErrorDefinition(
+        422, "errors.timesheet_supplement_invalid"
+    ),
     # 403 with its own code so the client can route to the change-password screen
     # instead of showing a permission error.
     ErrorCode.PASSWORD_CHANGE_REQUIRED: ErrorDefinition(403, "errors.password_change_required"),
@@ -731,6 +781,13 @@ ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
         422, "errors.document_upload_too_large"
     ),
     ErrorCode.DOCUMENT_UPLOAD_EMPTY: ErrorDefinition(422, "errors.document_upload_empty"),
+    # 503 for the one embedding failure that reaches a client: nothing about the
+    # request is wrong and nothing about the document is wrong, and the deployment is
+    # missing a key. A retry after an operator fixes it is the remedy, which is what
+    # 503 means and what 500 would not.
+    ErrorCode.DOCUMENT_EMBEDDING_UNAVAILABLE: ErrorDefinition(
+        503, "errors.document_embedding_unavailable", expose_detail=False
+    ),
     ErrorCode.INTERNAL_ERROR: ErrorDefinition(500, "errors.internal_error", expose_detail=False),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorDefinition(
         503, "errors.service_unavailable", expose_detail=False
