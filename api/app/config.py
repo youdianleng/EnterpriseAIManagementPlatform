@@ -56,6 +56,42 @@ class Settings(BaseSettings):
     personnel_apply_runner_enabled: bool = False
     personnel_apply_interval_seconds: int = 900
 
+    # --- documents (ticket 31) ----------------------------------------------
+    # Where an uploaded original is kept, inside the API container. A volume is
+    # mounted here by compose; a directory that does not exist yet is created on the
+    # first upload rather than at startup, so a deployment that never receives a
+    # document does not need one.
+    #
+    # Not a `res://`-style path and deliberately not part of what a client sees: the
+    # stored path is a *key* relative to this root, so moving the root between
+    # environments does not change a single row.
+    document_storage_path: str = "/data/documents"
+    # The per-file ceiling, refused rather than truncated. 50 MB is what the ticket
+    # names, and a setting rather than a literal so an installation that stores
+    # scanned manuals can raise it without a code change.
+    document_max_upload_bytes: int = 50 * 1024 * 1024
+    # The in-process parsing loop, **on only in development**, and off in production
+    # for the reason `personnel_apply_runner_enabled` is off everywhere: a loop that
+    # lives inside the API dies whenever the API is redeployed, and a scheduler nobody
+    # can turn off is worse than none. Production runs the command
+    # (`python -m app.jobs.parse_documents`) from cron or the worker container.
+    #
+    # Development is the case that needs it: `docker compose up` has no cron and no
+    # worker, so without this an upload sits in `processing` for ever and the screen
+    # honestly says so — which reads as a broken pipeline rather than as an
+    # unconfigured one. Deriving it from `app_env` rather than defaulting it on means
+    # the behaviour is a property of the environment and not something a deployment has
+    # to remember to turn off.
+    document_parse_runner_enabled: bool | None = None
+    document_parse_interval_seconds: int = 2
+
+    @property
+    def parses_documents_in_process(self) -> bool:
+        """Whether this process runs the parsing loop. Development, unless overridden."""
+        if self.document_parse_runner_enabled is not None:
+            return self.document_parse_runner_enabled
+        return self.is_development
+
     # --- leave (ticket 25) --------------------------------------------------
     # The annual allowance, in natural days, and the whole of `docs/DESIGN.md`'s
     # D7: "30 自然日 ... 额度可配置 (`annual_leave_days=30`)". A setting rather than

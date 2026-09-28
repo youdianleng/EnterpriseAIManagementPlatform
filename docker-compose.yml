@@ -84,10 +84,26 @@ services:
       WEB_BASE_URL: ${WEB_BASE_URL:-http://localhost:3000}
       DIGEST_DEFAULT_LANGUAGE: ${DIGEST_DEFAULT_LANGUAGE:-es}
       DIGEST_MAX_ATTEMPTS: ${DIGEST_MAX_ATTEMPTS:-3}
+      # Where an uploaded original is kept (ticket 31). Content-addressed under this
+      # root, so the same bytes are one file wherever they were uploaded from; the
+      # mount below is what keeps them across a container rebuild, which is the whole
+      # point of keeping the original at all.
+      DOCUMENT_STORAGE_PATH: ${DOCUMENT_STORAGE_PATH:-/data/documents}
+      # The parsing pipeline's in-process runner, **on in development only**. A
+      # development stack has no cron and no worker, so without it an upload sits in
+      # `processing` for ever and the screen honestly says so — which reads as a broken
+      # pipeline rather than as an unconfigured one. Production runs the command from a
+      # scheduler, and this stays off there.
+      DOCUMENT_PARSE_RUNNER_ENABLED: ${DOCUMENT_PARSE_RUNNER_ENABLED:-true}
+      DOCUMENT_PARSE_INTERVAL_SECONDS: ${DOCUMENT_PARSE_INTERVAL_SECONDS:-2}
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
       - ./api:/app
+      # A named volume rather than a bind mount: these are the company's originals,
+      # they are not source code, and a bind mount inside the API's own tree would put
+      # hundreds of uploaded files where a `git status` has to look at them.
+      - document_storage:/data/documents
     depends_on:
       postgres:
         condition: service_healthy
@@ -147,5 +163,8 @@ services:
 
 volumes:
   postgres_data:
+  # The uploaded originals. A volume rather than a bind mount so `down -v` is the one
+  # command that removes them and nothing in the source tree has to know they exist.
+  document_storage:
   web_node_modules:
   web_next_cache:

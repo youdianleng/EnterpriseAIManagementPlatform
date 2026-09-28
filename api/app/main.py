@@ -14,6 +14,7 @@ from app.api.v1 import attendance as attendance_v1
 from app.api.v1 import audit as audit_v1
 from app.api.v1 import auth as auth_v1
 from app.api.v1 import departments as departments_v1
+from app.api.v1 import documents as documents_v1
 from app.api.v1 import employees as employees_v1
 from app.api.v1 import holidays as holidays_v1
 from app.api.v1 import leave as leave_v1
@@ -47,11 +48,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     logger = get_logger(__name__)
     logger.info("app_started", environment=settings.app_env, version=__version__)
     await _publish_role_catalogue(logger)
-    runner = _start_personnel_runner(settings)
+    runners = _start_runners(settings)
     try:
         yield
     finally:
-        if runner is not None:
+        for runner in runners:
             runner.cancel()
             with suppress(asyncio.CancelledError):
                 await runner
@@ -62,19 +63,28 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         logger.info("app_stopped")
 
 
-def _start_personnel_runner(settings) -> "asyncio.Task[None] | None":  # noqa: ANN001 - Settings
-    """The optional in-process applier, off unless the setting turns it on.
+def _start_runners(settings) -> list["asyncio.Task[None]"]:  # noqa: ANN001 - Settings
+    """The optional in-process loops, each off unless its own setting turns it on.
 
-    Two servers running it is safe — each change is taken with `FOR UPDATE SKIP
-    LOCKED` — but the command remains the supported way to run it, because a loop
-    that lives inside the API dies whenever the API does, and the API is the thing
-    that gets redeployed.
+    Both are the *same function* the command runs, wrapped in a sleep — so a deployment
+    that installs a real scheduler and turns these off changes nothing about what the
+    work does. `personnel_apply_runner_enabled` is off everywhere by default and
+    `parses_documents_in_process` is on in development; each says why in `config.py`.
     """
-    if not settings.personnel_apply_runner_enabled:
-        return None
-    from app.jobs.apply_personnel_changes import run_forever
+    runners: list[asyncio.Task[None]] = []
+    if settings.personnel_apply_runner_enabled:
+        from app.jobs.apply_personnel_changes import run_forever
 
-    return asyncio.create_task(run_forever(settings.personnel_apply_interval_seconds))
+        runners.append(
+            asyncio.create_task(run_forever(settings.personnel_apply_interval_seconds))
+        )
+    if settings.parses_documents_in_process:
+        from app.jobs.parse_documents import run_forever as parse_forever
+
+        runners.append(
+            asyncio.create_task(parse_forever(settings.document_parse_interval_seconds))
+        )
+    return runners
 
 
 async def _publish_role_catalogue(logger) -> None:  # noqa: ANN001 - structlog logger
@@ -141,6 +151,7 @@ def create_app() -> FastAPI:
     app.include_router(app_info.router, prefix=API_PREFIX)
     app.include_router(attendance_v1.router, prefix=API_PREFIX)
     app.include_router(departments_v1.router, prefix=API_PREFIX)
+    app.include_router(documents_v1.router, prefix=API_PREFIX)
     app.include_router(employees_v1.router, prefix=API_PREFIX)
     app.include_router(holidays_v1.router, prefix=API_PREFIX)
     app.include_router(leave_v1.router, prefix=API_PREFIX)

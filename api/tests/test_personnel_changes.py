@@ -1302,24 +1302,36 @@ async def test_the_in_process_runner_is_off_unless_the_setting_turns_it_on() -> 
 
     A scheduler nobody can turn off is worse than a command somebody runs, so the
     default is asserted here rather than left to whoever reads a settings file.
+
+    `_start_runners` returns every loop this process decided to run, which is one list
+    for two jobs since ticket 31 added the parsing pipeline beside the applier. The
+    assertion is on *which* loop is present, not on the list's length, so the two
+    settings stay independent: a change that made one depend on the other would fail
+    here.
     """
     from contextlib import suppress
 
     from app.config import Settings, get_settings
-    from app.main import _start_personnel_runner
+    from app.main import _start_runners
 
+    # The parsing loop is on in development — where this suite runs — and this test is
+    # about the *other* one, so it is pinned off. Otherwise the assertion below would
+    # be about a list whose length depends on the environment.
     assert get_settings().personnel_apply_runner_enabled is False
-    assert _start_personnel_runner(get_settings()) is None
+    assert _start_runners(Settings(document_parse_runner_enabled=False)) == []
 
     enabled = Settings(
-        personnel_apply_runner_enabled=True, personnel_apply_interval_seconds=3600
+        personnel_apply_runner_enabled=True,
+        personnel_apply_interval_seconds=3600,
+        document_parse_runner_enabled=False,
     )
-    task = _start_personnel_runner(enabled)
+    runners = _start_runners(enabled)
 
-    assert task is not None
-    task.cancel()
-    with suppress(asyncio.CancelledError):
-        await task
+    assert len(runners) == 1
+    for runner in runners:
+        runner.cancel()
+        with suppress(asyncio.CancelledError):
+            await runner
 
 
 # --- the production path raises the notifications ---------------------------

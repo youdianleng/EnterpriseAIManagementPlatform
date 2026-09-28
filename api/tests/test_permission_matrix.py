@@ -580,6 +580,15 @@ def test_the_generated_matrix_covers_every_dimension() -> None:
     # records, a report's, the company's, HR's confirmation, the settle sweep and the
     # monthly file), and the sum is asserted literally so that a fifth arriving as a
     # failing test rather than as extra coverage.
+    #
+    # **Ticket 31 adds none, and that is the correct answer rather than an omission.**
+    # Its five surfaces — read, list, upload, manage the knowledge base, classify a
+    # company document — are the five actions tickets 12 and 13 catalogued before
+    # there was a document table to use them on, and the download endpoint is guarded
+    # by `document.read` on purpose: a citation that cannot be opened is not a
+    # citation, so a second action for the file would be a second rule to keep in step
+    # with §4.2. The count is therefore unchanged, and `test_documents.py` asserts what
+    # the endpoints do with the reach those actions produce.
     assert len(cases) == 7 * 54 * 13
     assert 0 < permitted < len(cases), "the expectation answers the same way everywhere"
 

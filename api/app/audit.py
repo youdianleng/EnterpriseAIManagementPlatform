@@ -94,6 +94,17 @@ class AuditAction(StrEnum):
     # Later tickets, named now so the catalogue is the one place a reader has to
     # look to know what this system can tell them about itself.
     DOCUMENT_UPLOADED = "document.uploaded"  # 31
+    #: Parsing (ticket 31). Two actions rather than one, and the pair is the point:
+    #: "this document is ready" and "this document could not be read" are different
+    #: facts about a company's knowledge base, and an incident review asks which
+    #: documents were *refused* — a scanned file that nobody noticed is a gap in the
+    #: answers the assistant gives, not a failed request in a log.
+    #:
+    #: Written by the job, and therefore `initiated_by="system"`: no user is acting,
+    #: so attributing them to whoever happened to upload the file would be a lie the
+    #: trail tells about itself.
+    DOCUMENT_PARSED = "document.parsed"  # 31
+    DOCUMENT_PARSE_FAILED = "document.parse_failed"  # 31
     DOCUMENT_VISIBILITY_CHANGED = "document.visibility_changed"  # 36
     SALARY_RECORD_READ = "salary.record_read"  # 43
     PAYSLIP_UPLOADED = "payslip.uploaded"  # 44

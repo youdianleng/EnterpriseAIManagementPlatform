@@ -28,7 +28,7 @@ const OUT = join(HERE, "..", "..", ".scratch", "visual");
 const API = process.env.EAM_API_URL ?? "http://localhost:8000";
 
 const LOCALES = ["es", "en"];
-const PATHS = ["", "/style-guide", "/notifications", "/timesheets", "/login"];
+const PATHS = ["", "/style-guide", "/notifications", "/timesheets", "/documents", "/login"];
 const VIEWPORTS = [
   { name: "320", width: 320, height: 720 },
   // 375 as well as 320, because the ticket names 375 explicitly and the timesheet grid
@@ -440,13 +440,16 @@ async function main() {
   const username = process.env.EAM_USERNAME;
   const password = process.env.EAM_PASSWORD;
   let sessionCookie = null;
+  const request = await playwright_request.newContext();
   if (username && password) {
-    const request = await playwright_request.newContext();
     try {
       sessionCookie = await signIn(request, username, password);
       if (sessionCookie) ok(`signed in as ${username} through the API`);
-    } finally {
+    } catch (error) {
+      console.error(error);
       await request.dispose();
+      await browser.close();
+      process.exit(1);
     }
   } else {
     console.log("[note] EAM_USERNAME/EAM_PASSWORD not set — signed-in pages skipped");
@@ -553,11 +556,15 @@ async function main() {
     await checkStyleGuide(browser, sessionCookie);
     await checkNotifications(browser, sessionCookie);
     await checkTimesheets(browser, sessionCookie);
+    await checkDocuments(browser, sessionCookie, request);
   } else {
     console.log("[note] signed-in checks skipped (no usable credentials)");
   }
 
   await browser.close();
+  // The request context outlives the credential check because the documents half
+  // uploads a fixture through it.
+  await request.dispose();
 
   console.log();
   if (failures.length > 0) {
@@ -763,6 +770,240 @@ async function checkNotifications(browser, sessionCookie) {
   }
 
   await context.close();
+}
+
+/**
+ * The documents screen (ticket 31).
+ *
+ * `PATHS` already covers its headings, overflow and accessible names in both languages
+ * at every width. What is asserted here is what the screen is *for*, and each one is a
+ * line of the ticket rather than a preference:
+ *
+ *   - **a status and a progress for every document** — the upload answers immediately
+ *     with the document in `processing`, so the screen has to say so, and the bar has
+ *     to be a real `<progress>` with a text label beside it rather than a coloured
+ *     rectangle;
+ *   - **the failure reason** — a document that produced no text shows *why*, in the
+ *     pipeline's own words (`no text extracted; upload a text version`), which is the
+ *     ticket's acceptance criterion for a scanned file and the one thing a reader has
+ *     to be able to act on;
+ *   - **a labelled upload control** — a file input with a `<label for>`, and a form
+ *     that refuses an empty submit locally instead of costing a round trip;
+ *   - and **both languages**, because every string on this screen comes from the
+ *     catalogue and a missing key would render as an empty box rather than as a
+ *     failure.
+ *
+ * The fixtures are uploaded through the API here rather than committed anywhere: a
+ * real text file that the pipeline will take to `ready`, and a genuinely text-free PDF
+ * — produced by the same library the server reads it with — which the pipeline must
+ * refuse. That is what makes the failure assertion a claim about the product rather
+ * than about a mocked status.
+ */
+async function checkDocuments(browser, sessionCookie, request) {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await context.addCookies([sessionCookie]);
+  const page = await context.newPage();
+
+  const list = page.locator('[data-testid="document-list"]');
+  const upload = page.locator('input[type="file"]');
+
+  await page.goto(`${BASE}/es/documents`, { waitUntil: "networkidle" });
+
+  // --- the upload control -------------------------------------------------
+  expect((await upload.count()) === 1, "documents: there is one file input");
+  const fileControl = upload.first();
+  expect(
+    (await fileControl.getAttribute("aria-describedby")) !== null,
+    "documents: the file input is described by its hint",
+  );
+  const labelled = await page.evaluate(() => {
+    const input = document.querySelector('input[type="file"]');
+    if (!input) return false;
+    if (input.id && document.querySelector(`label[for="${input.id}"]`)) return true;
+    return input.closest("label") !== null;
+  });
+  expect(labelled, "documents: the file input carries a label");
+  const accepted = await fileControl.getAttribute("accept");
+  expect(
+    /\.pdf/.test(accepted ?? "") && /\.docx/.test(accepted ?? ""),
+    `documents: the file input names the accepted formats ("${accepted}")`,
+  );
+
+  // An empty submit is refused locally, with a message tied to a field.
+  await page.getByRole("button", { name: /^subir$|^upload$/i }).first().click();
+  await page.waitForTimeout(150);
+  const described = await page.locator('[aria-invalid="true"][aria-describedby]').count();
+  expect(described >= 1, "documents: an empty submit is refused with a described field");
+
+  // --- a real upload, through the API ------------------------------------
+  //
+  // The bytes carry the timestamp, so **a second run of this script is a fresh upload
+  // rather than a duplicate**. That matters here for a reason worth stating: the
+  // product recognises the same content hash and answers 409, which is the behaviour
+  // `tests/test_documents.py` pins — and a check that failed on its own second run
+  // would be reporting that correct behaviour as a defect. The titles carry the stamp
+  // too, so the rows this run created are recognisable in the screenshots.
+  const stamp = Date.now();
+  const textTitle = `Politica de vacaciones ${stamp}`;
+  const scanTitle = `Escaneado ${stamp}`;
+  const uploaded = await apiUpload(request, {
+    filename: "politica.txt",
+    contentType: "text/plain",
+    body: `Politica de vacaciones: veintitres dias laborables. Referencia ${stamp}.\n\nAnexo I: permisos.`,
+    title: textTitle,
+  });
+  expect(uploaded.ok(), `documents: the text fixture uploaded (${uploaded.status()})`);
+  const scan = await apiUpload(request, {
+    filename: "escaneado.pdf",
+    contentType: "application/pdf",
+    body: scannedPdf(stamp),
+    title: scanTitle,
+  });
+  expect(scan.ok(), `documents: the scanned fixture uploaded (${scan.status()})`);
+
+  // The pipeline is a separate process, so this waits for the row to leave
+  // `processing` rather than for a fixed delay: the whole point of the screen is that
+  // the status moves, and a timed wait would be a race on a loaded machine.
+  await waitForParsed(request, uploaded, 40);
+  await waitForParsed(request, scan, 40);
+
+  await page.reload({ waitUntil: "networkidle" });
+
+  const rows = await list.locator("li").count();
+  expect(rows >= 2, `documents: the list shows the uploaded documents (found ${rows})`);
+
+  // Every row states its status in words and draws a real progress element.
+  const statuses = await page.locator('[data-testid="document-status"]').allInnerTexts();
+  expect(
+    statuses.length >= 2 && statuses.every((text) => text.trim().length > 0),
+    `documents: every document states its status in words (${statuses.join(", ")})`,
+  );
+  const progress = await list.locator("progress").count();
+  expect(progress >= 2, `documents: every document draws its progress (found ${progress})`);
+  const progressLabelled = await list
+    .locator("progress")
+    .evaluateAll((elements) =>
+      elements.every((element) => (element.getAttribute("aria-label") ?? "").trim().length > 0),
+    );
+  expect(progressLabelled, "documents: every progress element has an accessible name");
+
+  // The scanned file failed, and the screen says why — the ticket's own sentence.
+  const failure = page.locator('[data-testid="document-failure"]').first();
+  expect(
+    (await failure.count()) > 0,
+    "documents: a document that produced no text shows its failure reason",
+  );
+  if ((await failure.count()) > 0) {
+    const reason = (await failure.innerText()).replace(/\s+/g, " ");
+    expect(
+      /no text extracted; upload a text version/i.test(reason),
+      `documents: the reason is the ticket's sentence ("${reason}")`,
+    );
+  }
+
+  // The ready one is downloadable, and the link points at the content endpoint.
+  const download = list.locator('a[href*="/content"]').first();
+  expect((await download.count()) > 0, "documents: a document links to its original");
+  if ((await download.count()) > 0) {
+    const href = (await download.getAttribute("href")) ?? "";
+    expect(
+      /\/api\/v1\/documents\/[0-9a-f-]{36}\/content$/.test(href),
+      `documents: the download points at the permission-guarded endpoint ("${href}")`,
+    );
+  }
+
+  await page.screenshot({ path: join(OUT, "documents-es.png"), fullPage: true });
+
+  // --- English, same screen, other language ------------------------------
+  await page.goto(`${BASE}/en/documents`, { waitUntil: "networkidle" });
+  const english = (await list.innerText()).replace(/\s+/g, " ");
+  expect(/Ready/i.test(english) || /Processing failed/i.test(english),
+    "documents en: the statuses are in English");
+  expect(!/Listo/.test(english), "documents en: no Spanish leaked into the English screen");
+  expect(
+    (await page.getByRole("button", { name: /^upload$/i }).count()) === 1,
+    "documents en: the upload control is in English",
+  );
+  await page.screenshot({ path: join(OUT, "documents-en.png"), fullPage: true });
+
+  // --- narrow, where Spanish copy wraps ----------------------------------
+  await page.setViewportSize({ width: 320, height: 720 });
+  await page.goto(`${BASE}/es/documents`, { waitUntil: "networkidle" });
+  await page.screenshot({ path: join(OUT, "documents-320-es.png"), fullPage: true });
+
+  await context.close();
+}
+
+/**
+ * One upload through the API, with the session the browser is using.
+ *
+ * `fetch` with a `FormData` body from Node would need a `File`; Playwright's request
+ * context takes `multipart` directly, which is the same wire shape the browser sends.
+ */
+function apiUpload(request, { filename, contentType, body, title }) {
+  return request.post(`${API}/api/v1/documents`, {
+    multipart: {
+      file: { name: filename, mimeType: contentType, buffer: Buffer.from(body) },
+      title,
+      clearance_level: "low",
+    },
+  });
+}
+
+/**
+ * Wait until the pipeline has finished with a document.
+ *
+ * Reads the row rather than a queue: `status` leaves `processing` when the parsing job
+ * has written its outcome, so this is the same signal the screen polls on.
+ */
+async function waitForParsed(request, response, attempts) {
+  const { id } = await response.json();
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const read = await request.get(`${API}/api/v1/documents/${id}`);
+    if (read.ok()) {
+      const document = await read.json();
+      if (document.status !== "processing") return document;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return null;
+}
+
+/**
+ * A PDF with a page and no text at all: the scanned file the ticket refuses.
+ *
+ * Written by hand rather than committed as a binary, and produced the same way a
+ * scanner's output looks to a text extractor — a page whose content stream draws
+ * nothing. The server reads it with `pypdf`, which finds no characters, so this is the
+ * case rather than a stand-in for it.
+ *
+ * The `stamp` goes into the document's metadata rather than into a content stream:
+ * every run therefore has different bytes — which is what keeps a repeat run a fresh
+ * upload rather than a duplicate — while the *pages* stay text-free, which is the
+ * property under test. Putting the stamp in the content would make the file parse.
+ */
+function scannedPdf(stamp) {
+  const info = `<< /Producer (visual-check ${stamp}) >>`;
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << >> /Contents 4 0 R >>",
+    "<< /Length 0 >>\nstream\n\nendstream",
+    info,
+  ];
+  let body = "%PDF-1.4\n";
+  const offsets = [];
+  objects.forEach((object, index) => {
+    offsets.push(body.length);
+    body += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xref = body.length;
+  body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets) {
+    body += `${`${offset}`.padStart(10, "0")} 00000 n \n`;
+  }
+  body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R /Info 5 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return body;
 }
 
 /**

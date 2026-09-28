@@ -3,6 +3,7 @@
 from app.models.account import User
 from app.models.approval import ApprovalDecision, ApprovalRequest, ApprovalStep
 from app.models.audit import AuditLog
+from app.models.document import Document, DocumentChunk
 from app.models.employee import Employee, EmployeeAssignment, EmployeePrivate, JobPosition
 from app.models.leave import (
     LeaveBalance,
@@ -30,6 +31,8 @@ __all__ = [
     "ApprovalStep",
     "AuditLog",
     "Department",
+    "Document",
+    "DocumentChunk",
     "Employee",
     "EmployeeAssignment",
     "EmployeePrivate",

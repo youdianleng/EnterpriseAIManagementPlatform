@@ -13,6 +13,7 @@ export const es: Dictionary = {
     home: "Inicio",
     notifications: "Notificaciones",
     timesheets: "Horas",
+    documents: "Documentos",
     main: "Navegación principal",
   },
   backend: {
@@ -227,6 +228,73 @@ export const es: Dictionary = {
       "No se pudo enviar la semana. Revisa el estado de la solicitud e inténtalo de nuevo.",
     project_task_not_recordable:
       "Esa tarea no admite horas: puede estar desactivada o pertenecer a un proyecto no activo.",
+    document_upload_type_unsupported:
+      "Ese tipo de archivo no se admite. Sube un PDF, un Word (.docx), un Excel (.xlsx), un texto (.txt) o un Markdown (.md).",
+    document_upload_too_large:
+      "El archivo supera el límite de 50 MB por documento. Divídelo o reduce su tamaño antes de subirlo.",
+    document_upload_empty:
+      "El archivo está vacío o no tiene nombre. Elige un archivo con contenido.",
+    document_duplicate:
+      "Ya existe un documento con este mismo contenido. Ábrelo en lugar de subirlo otra vez.",
+    document_not_ready:
+      "Este documento todavía no se ha procesado, o el procesado ha fallado. Consulta su estado antes de abrirlo.",
+    document_reprocess_unsupported:
+      "Este documento no se puede reprocesar en su estado actual.",
+    document_file_missing:
+      "El archivo original de este documento ya no está disponible en el almacenamiento. Avisa a soporte.",
+  },
+  documents: {
+    title: "Documentos",
+    intro:
+      "Aquí están los documentos que puedes consultar: los tuyos, los de tu departamento y los de la empresa que tu nivel de acceso permite. La subida se procesa en segundo plano.",
+    listHeading: "Documentos visibles: {shown} de {total}",
+    empty: "Todavía no hay documentos",
+    emptyHint:
+      "Cuando subas un documento aparecerá aquí con su estado de procesamiento.",
+    loading: "Cargando documentos…",
+    error: "No se pudieron cargar los documentos.",
+    retry: "Reintentar",
+    status: {
+      processing: "Procesando",
+      ready: "Listo",
+      failed: "Falló el procesado",
+      archived: "Archivado",
+    },
+    progress: "Paso {stage} de {total}",
+    progressLabel: "Progreso del procesamiento",
+    parsed: "{pages} · {chunks} · {characters}",
+    failureReason: "Motivo",
+    companyDocument: "Documento de empresa",
+    clearance: "Nivel de acceso",
+    department: "Departamento",
+    owner: "Propietario",
+    noDepartment: "Sin departamento",
+    uploadedAt: "Subido el {date}",
+    download: "Descargar el original",
+    reprocess: "Volver a procesar",
+    reprocessing: "Reprocesando…",
+    upload: {
+      heading: "Subir un documento",
+      description:
+        "El archivo original se conserva tal cual. El texto se extrae en segundo plano y verás el estado aquí mismo.",
+      fileLabel: "Archivo",
+      fileHint: "Formatos admitidos: {formats}. Tamaño máximo: 50 MB.",
+      titleLabel: "Título",
+      titlePlaceholder: "Por ejemplo: Política de vacaciones 2026",
+      departmentLabel: "Departamento",
+      departmentPlaceholder: "Sin departamento (solo para ti)",
+      clearanceLabel: "Nivel de acceso",
+      categoryLabel: "Categoría",
+      tagsLabel: "Etiquetas",
+      tagsHint: "Separadas por comas. Se guardan sin repetir.",
+      submit: "Subir",
+      submitting: "Subiendo…",
+      required: "Elige un archivo y escribe un título.",
+      formats: "PDF, DOCX, XLSX, TXT o Markdown",
+      accepted: "Archivo aceptado…",
+      queued:
+        "Documento subido. Se está procesando: el estado cambiará a «Listo» cuando termine.",
+    },
   },
   timesheets: {
     title: "Horas de la semana",

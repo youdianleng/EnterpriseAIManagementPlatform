@@ -62,7 +62,12 @@ export function SiteHeader({
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         {identity && (
           <nav aria-label={dict.nav.main}>
-            <ul className="flex items-center gap-3 text-sm">
+            {/* `flex-wrap` and `min-w-0`, because the navigation grew to five links
+                with the document list: at 320px a single-line `ul` is wider than the
+                viewport, and a flex item's automatic minimum size makes the *page*
+                scroll rather than the list wrap. Design system §7 requires every
+                screen to work at 320px, so the list wraps instead. */}
+            <ul className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-sm">
               <li>
                 <Link href={`/${locale}`} className="text-fg-muted hover:text-fg">
                   {dict.nav.home}
@@ -73,6 +78,13 @@ export function SiteHeader({
                     that would be refused this page (§4.1). */}
                 <Link href={`/${locale}/timesheets`} className="text-fg-muted hover:text-fg">
                   {dict.nav.timesheets}
+                </Link>
+              </li>
+              <li>
+                {/* The document list. Every role may open it; which documents it shows
+                    is §4.2's answer, applied by the API rather than advertised here. */}
+                <Link href={`/${locale}/documents`} className="text-fg-muted hover:text-fg">
+                  {dict.nav.documents}
                 </Link>
               </li>
               <li>
@@ -113,7 +125,7 @@ export function SiteHeader({
         />
 
         {identity && (
-          <div className="flex items-center gap-3 border-l border-border pl-4">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 border-l border-border pl-4">
             <p className="text-sm">
               <span className="text-fg-subtle">{dict.auth.shell.signedInAs}</span>{" "}
               <span className="font-medium">{identity.name}</span>{" "}

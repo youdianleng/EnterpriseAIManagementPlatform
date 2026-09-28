@@ -10,6 +10,7 @@ import { cookies } from "next/headers";
 
 import { ApiError, API_SERVER_BASE_URL } from "@/lib/api/client";
 import type { AuthSession, OwnProfile, PasswordPolicy } from "@/lib/api/auth";
+import type { DocumentPage } from "@/lib/api/documents";
 import type { NotificationPage, UnreadCount } from "@/lib/api/notifications";
 import type { TimesheetStatusRead, TimesheetWeek } from "@/lib/api/timesheets";
 
@@ -135,6 +136,21 @@ export async function readServerWeekStatus(
     return await serverRequest<TimesheetStatusRead>(
       `/api/v1/timesheets/week/status?week=${encodeURIComponent(week)}`,
     );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The documents this caller may read, for the list's first paint.
+ *
+ * Null when they cannot be read, which the screen renders as its error state with a
+ * retry — the same shape the notification centre uses. `total` travels with the page,
+ * so a heading that says "3 of 12" is the server's count and not the page's length.
+ */
+export async function readServerDocuments(limit = 50): Promise<DocumentPage | null> {
+  try {
+    return await serverRequest<DocumentPage>(`/api/v1/documents?limit=${limit}`);
   } catch {
     return null;
   }

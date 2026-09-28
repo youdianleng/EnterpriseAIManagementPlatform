@@ -13,6 +13,7 @@ export const en: Dictionary = {
     home: "Home",
     notifications: "Notifications",
     timesheets: "Hours",
+    documents: "Documents",
     main: "Main navigation",
   },
   backend: {
@@ -197,6 +198,70 @@ export const en: Dictionary = {
       "The week could not be submitted. Check the request's state and try again.",
     project_task_not_recordable:
       "That task does not accept time: it may be switched off, or belong to a project that is not active.",
+    document_upload_type_unsupported:
+      "That file type is not accepted. Upload a PDF, a Word file (.docx), an Excel file (.xlsx), a plain text file (.txt) or Markdown (.md).",
+    document_upload_too_large:
+      "The file is over the 50 MB limit for one document. Split it or reduce its size before uploading.",
+    document_upload_empty: "The file is empty or has no name. Choose a file with content.",
+    document_duplicate:
+      "A document with this same content already exists. Open it instead of uploading it again.",
+    document_not_ready:
+      "This document has not been processed yet, or processing failed. Check its status before opening it.",
+    document_reprocess_unsupported:
+      "This document cannot be reprocessed in its current state.",
+    document_file_missing:
+      "This document's original file is no longer in storage. Please contact support.",
+  },
+  documents: {
+    title: "Documents",
+    intro:
+      "These are the documents you may read: your own, your department's, and the company's within your clearance. An upload is processed in the background.",
+    listHeading: "Documents in reach: {shown} of {total}",
+    empty: "No documents yet",
+    emptyHint: "When you upload a document it appears here with its processing status.",
+    loading: "Loading documents…",
+    error: "The documents could not be loaded.",
+    retry: "Try again",
+    status: {
+      processing: "Processing",
+      ready: "Ready",
+      failed: "Processing failed",
+      archived: "Archived",
+    },
+    progress: "Step {stage} of {total}",
+    progressLabel: "Processing progress",
+    parsed: "{pages} · {chunks} · {characters}",
+    failureReason: "Reason",
+    companyDocument: "Company document",
+    clearance: "Clearance",
+    department: "Department",
+    owner: "Owner",
+    noDepartment: "No department",
+    uploadedAt: "Uploaded on {date}",
+    download: "Download the original",
+    reprocess: "Process again",
+    reprocessing: "Reprocessing…",
+    upload: {
+      heading: "Upload a document",
+      description:
+        "The original file is kept exactly as it was. Its text is extracted in the background and the status appears here.",
+      fileLabel: "File",
+      fileHint: "Accepted formats: {formats}. Maximum size: 50 MB.",
+      titleLabel: "Title",
+      titlePlaceholder: "For example: Holiday policy 2026",
+      departmentLabel: "Department",
+      departmentPlaceholder: "No department (only you)",
+      clearanceLabel: "Clearance",
+      categoryLabel: "Category",
+      tagsLabel: "Tags",
+      tagsHint: "Comma separated. Stored without duplicates.",
+      submit: "Upload",
+      submitting: "Uploading…",
+      required: "Choose a file and type a title.",
+      formats: "PDF, DOCX, XLSX, TXT or Markdown",
+      accepted: "File accepted…",
+      queued: "Document uploaded. It is being processed: the status becomes “Ready” when it finishes.",
+    },
   },
   timesheets: {
     title: "Weekly hours",

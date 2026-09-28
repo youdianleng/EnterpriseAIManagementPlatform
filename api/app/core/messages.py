@@ -317,6 +317,37 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.overtime_period_invalid": (
             "El periodo indicado no es válido: usa el formato AAAA-MM."
         ),
+        # Documents (ticket 31). Each says what the person can do next: a refused
+        # file is chosen again, a duplicate is opened, and a document with nothing
+        # extracted is replaced by a text version — which is the ticket's own
+        # wording for a scanned file.
+        "errors.document_not_found": "No se encontró el documento.",
+        "errors.document_upload_type_unsupported": (
+            "Ese tipo de archivo no se admite. Sube un PDF, un Word (.docx), un Excel "
+            "(.xlsx), un texto (.txt) o un Markdown (.md)."
+        ),
+        "errors.document_upload_too_large": (
+            "El archivo supera el límite de 50 MB por documento. Divídelo o reduce su "
+            "tamaño antes de subirlo."
+        ),
+        "errors.document_upload_empty": (
+            "El archivo está vacío o no tiene nombre. Elige un archivo con contenido."
+        ),
+        "errors.document_not_ready": (
+            "Este documento todavía no se ha procesado, o el procesado ha fallado. "
+            "Consulta su estado antes de abrirlo."
+        ),
+        "errors.document_duplicate": (
+            "Ya existe un documento con este mismo contenido. Ábrelo en lugar de "
+            "subirlo otra vez."
+        ),
+        "errors.document_reprocess_unsupported": (
+            "Este documento no se puede reprocesar en su estado actual."
+        ),
+        "errors.document_file_missing": (
+            "El archivo original de este documento ya no está disponible en el "
+            "almacenamiento. Avisa a soporte."
+        ),
         "errors.internal_error": "Se produjo un error interno. Inténtalo de nuevo más tarde.",
         "errors.service_unavailable": "El servicio no está disponible en este momento.",
     },
@@ -605,6 +636,34 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
             "on the record."
         ),
         "errors.overtime_period_invalid": "That is not a period: use YYYY-MM.",
+        # Documents (ticket 31). The scanned-file refusal is the ticket's own
+        # sentence: no OCR, and a text version is what to upload instead.
+        "errors.document_not_found": "The document was not found.",
+        "errors.document_upload_type_unsupported": (
+            "That file type is not accepted. Upload a PDF, a Word file (.docx), an "
+            "Excel file (.xlsx), a plain text file (.txt) or Markdown (.md)."
+        ),
+        "errors.document_upload_too_large": (
+            "The file is over the 50 MB limit for one document. Split it or reduce its "
+            "size before uploading."
+        ),
+        "errors.document_upload_empty": (
+            "The file is empty or has no name. Choose a file with content."
+        ),
+        "errors.document_not_ready": (
+            "This document has not been processed yet, or processing failed. Check its "
+            "status before opening it."
+        ),
+        "errors.document_duplicate": (
+            "A document with this same content already exists. Open it instead of "
+            "uploading it again."
+        ),
+        "errors.document_reprocess_unsupported": (
+            "This document cannot be reprocessed in its current state."
+        ),
+        "errors.document_file_missing": (
+            "This document's original file is no longer in storage. Please contact support."
+        ),
         "errors.internal_error": "An internal error occurred. Please try again later.",
         "errors.service_unavailable": "The service is unavailable right now.",
     },

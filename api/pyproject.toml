@@ -15,6 +15,16 @@ dependencies = [
     "pgvector>=0.3.6",
     "email-validator>=2.2",
     "argon2-cffi>=23.1",
+    # Document parsing (ticket 31). One library per format, and each is a real
+    # parser rather than a hand-rolled reader: a PDF's text is behind a compressed
+    # object graph, and "extract nothing" has to mean "the file holds no text",
+    # which only a parser that understands the format can say.
+    "pypdf>=5.1",
+    "python-docx>=1.1",
+    "openpyxl>=3.1",
+    # Multipart uploads. FastAPI needs it to accept `UploadFile` at all, and its
+    # absence is a startup error rather than a silent one.
+    "python-multipart>=0.0.20",
 ]
 
 [dependency-groups]

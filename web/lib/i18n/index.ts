@@ -23,6 +23,8 @@ export type Dictionary = {
     notifications: string;
     /** Weekly timesheets: your own hours, which every role may fill in. */
     timesheets: string;
+    /** The document list: what this caller may read, and where uploads are filed. */
+    documents: string;
     /** Accessible name of the signed-in navigation landmark. */
     main: string;
   };
@@ -241,6 +243,75 @@ export type Dictionary = {
     timesheet_copy_target_not_empty: string;
     timesheet_submission_refused: string;
     project_task_not_recordable: string;
+    /** Document refusals the uploader can act on: choose another file, or open the one
+     *  they already have. The type refusal and the ceiling both belong to "pick a
+     *  file", which is the moment the uploader can still do something about it. */
+    document_upload_type_unsupported: string;
+    document_upload_too_large: string;
+    document_upload_empty: string;
+    document_duplicate: string;
+    document_not_ready: string;
+    document_reprocess_unsupported: string;
+    document_file_missing: string;
+  };
+  documents: {
+    title: string;
+    intro: string;
+    /** The list's heading, with how many of the total are on screen. */
+    listHeading: string;
+    empty: string;
+    emptyHint: string;
+    loading: string;
+    error: string;
+    retry: string;
+    /** The statuses, as words: colour alone never carries a status (§5). */
+    status: {
+      processing: string;
+      ready: string;
+      failed: string;
+      archived: string;
+    };
+    /** How far along the pipeline is, with both numbers interpolated. */
+    progress: string;
+    /** Accessible name of the progress element; the visible text is `progress`. */
+    progressLabel: string;
+    /** What the pipeline found, when it found something. */
+    parsed: string;
+    /** What it found instead, when it found nothing — the ticket's own sentence. */
+    failureReason: string;
+    /** A company document, which belongs to the organisation rather than to a person. */
+    companyDocument: string;
+    clearance: string;
+    department: string;
+    owner: string;
+    /** Shown where an owner would be, for a document that has none. */
+    noDepartment: string;
+    uploadedAt: string;
+    download: string;
+    reprocess: string;
+    reprocessing: string;
+    upload: {
+      heading: string;
+      description: string;
+      fileLabel: string;
+      fileHint: string;
+      titleLabel: string;
+      titlePlaceholder: string;
+      departmentLabel: string;
+      departmentPlaceholder: string;
+      clearanceLabel: string;
+      categoryLabel: string;
+      tagsLabel: string;
+      tagsHint: string;
+      submit: string;
+      submitting: string;
+      required: string;
+      /** The five formats, named once so the hint and the refusal agree. */
+      formats: string;
+      accepted: string;
+      /** Shown after a successful upload, before the job has parsed it. */
+      queued: string;
+    };
   };
   timesheets: {
     title: string;

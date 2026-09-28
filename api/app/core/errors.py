@@ -374,6 +374,40 @@ class ErrorCode(StrEnum):
     #: and the refusal names that instead.
     OVERTIME_NOT_WITHDRAWABLE = "ERR_OVT_010"
 
+    # Documents and the knowledge base (ticket 31). Five themes, and the boundary
+    # between them is what a client shows. The upload itself is unusable
+    # (`UPLOAD_TYPE_UNSUPPORTED`, `UPLOAD_TOO_LARGE`, `UPLOAD_EMPTY`) — a 422 the
+    # caller fixes by choosing another file, and the two type refusals are the
+    # ticket's "其他类型被拒绝并给出可读的西/英提示": the client renders its own
+    # catalogue wording from the code rather than the API's sentence. The document is
+    # not in a state that admits the act (`NOT_READY`, `REPROCESS_UNSUPPORTED`) — a
+    # 409, because the caller may well own it and is being told what its status is.
+    # Duplication is its own 409 (`DUPLICATE`) carrying the row that already holds
+    # the bytes, which is an answer rather than a failure. And the two access
+    # refusals are 403s: `FILE_MISSING` is a data error surfaced as a 404 whose code
+    # says which one, because "the row says there is a file and there is not" is a
+    # different incident from "no such document".
+    DOCUMENT_NOT_FOUND = "ERR_DOC_001"
+    DOCUMENT_UPLOAD_TYPE_UNSUPPORTED = "ERR_DOC_002"
+    #: Over the 50 MB ceiling. Refused, never truncated: half a document that parses
+    #: successfully is worse than a refusal, because nothing downstream can tell.
+    DOCUMENT_UPLOAD_TOO_LARGE = "ERR_DOC_003"
+    #: Zero bytes, or a name with no usable extension. Its own code because the
+    #: remedy ("choose a file") differs from the type refusal's ("choose another
+    #: format").
+    DOCUMENT_UPLOAD_EMPTY = "ERR_DOC_004"
+    #: Parsing has not finished, or failed: there is nothing to read yet.
+    DOCUMENT_NOT_READY = "ERR_DOC_005"
+    #: The same bytes are already a document *this caller can see*. Carries the
+    #: existing document's id: the answer is "open the one you have", not "try again".
+    DOCUMENT_DUPLICATE = "ERR_DOC_006"
+    #: Re-running the pipeline on a document that is being parsed right now, or is
+    #: archived. A 409 like `NOT_READY`: the status is the reason, not the caller.
+    DOCUMENT_REPROCESS_UNSUPPORTED = "ERR_DOC_007"
+    #: The row names a file the storage root does not hold. A data error, not a
+    #: permission one, and its own code so an operator can tell the two apart.
+    DOCUMENT_FILE_MISSING = "ERR_DOC_008"
+
     # Cross-cutting.
     INTERNAL_ERROR = "ERR_INTERNAL_001"
     SERVICE_UNAVAILABLE = "ERR_INTERNAL_002"
@@ -676,6 +710,27 @@ ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
         422, "errors.overtime_request_invalid"
     ),
     ErrorCode.OVERTIME_PERIOD_INVALID: ErrorDefinition(422, "errors.overtime_period_invalid"),
+    # Documents (ticket 31). 404 for the two lookups — a document that does not
+    # exist, and one whose file the storage root has lost, which is a data error and
+    # gets its own code so an operator can tell it from a permission refusal. 409 for
+    # the two states (nothing to read yet; a status that refuses a re-run) and for
+    # the duplicate, which is the one 409 in this catalogue that carries a *success*:
+    # the row it names is the document the caller already has. 422 for the three the
+    # caller fixes by choosing another file.
+    ErrorCode.DOCUMENT_NOT_FOUND: ErrorDefinition(404, "errors.document_not_found"),
+    ErrorCode.DOCUMENT_FILE_MISSING: ErrorDefinition(404, "errors.document_file_missing"),
+    ErrorCode.DOCUMENT_NOT_READY: ErrorDefinition(409, "errors.document_not_ready"),
+    ErrorCode.DOCUMENT_DUPLICATE: ErrorDefinition(409, "errors.document_duplicate"),
+    ErrorCode.DOCUMENT_REPROCESS_UNSUPPORTED: ErrorDefinition(
+        409, "errors.document_reprocess_unsupported"
+    ),
+    ErrorCode.DOCUMENT_UPLOAD_TYPE_UNSUPPORTED: ErrorDefinition(
+        422, "errors.document_upload_type_unsupported"
+    ),
+    ErrorCode.DOCUMENT_UPLOAD_TOO_LARGE: ErrorDefinition(
+        422, "errors.document_upload_too_large"
+    ),
+    ErrorCode.DOCUMENT_UPLOAD_EMPTY: ErrorDefinition(422, "errors.document_upload_empty"),
     ErrorCode.INTERNAL_ERROR: ErrorDefinition(500, "errors.internal_error", expose_detail=False),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorDefinition(
         503, "errors.service_unavailable", expose_detail=False
