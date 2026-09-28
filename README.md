@@ -130,10 +130,37 @@ row-level policies, as a role that cannot rewrite the audit trail.
 ## Tests and probes
 
 ```bash
-docker compose exec -T api python -m pytest -q                      # the suite
-docker compose exec -T api sh -c "uvx ruff check app tests"         # lint
-docker compose exec -T api python /app/tests/tools/probe_auth.py    # one probe
-cd web && npx tsc --noEmit && node scripts/visual-check.mjs         # frontend
+docker compose exec -T api python -m pytest                        # the suite (~18 min)
+docker compose exec -T api sh -c "uvx ruff check app tests"        # lint
+docker compose exec -T api python /app/tests/tools/probe_auth.py   # one probe
+cd web && npx tsc --noEmit && node scripts/visual-check.mjs        # frontend
+```
+
+**Do not add `-q` to the pytest command.** `api/pyproject.toml` already sets
+`addopts = "-q"`, and a second one makes pytest quiet enough to drop its summary
+line — the run then prints nothing but dots and an exit code, so "did it pass, and
+how many" becomes unanswerable. It takes arguments that *replace* nothing: add
+`-p no:warnings` or a path, not another `-q`.
+
+**Never kill a run half-way.** An interrupted pytest leaves its backend connections
+open, and the next run against the same database deadlocks with `40P01` errors that
+look like a code fault. Recover by terminating them and dropping the scratch
+database:
+
+```bash
+docker compose exec -T postgres psql -U eam -d postgres -c \
+  "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
+   WHERE datname='eam_test_x' AND pid <> pg_backend_pid();"
+docker compose exec -T postgres psql -U eam -d postgres -c "DROP DATABASE eam_test_x;"
+```
+
+**Two runs at once need two databases and two Redis databases.** The name comes from
+`TEST_DATABASE_NAME` (default `eam_test`); the fixture creates it, and migrations
+must be applied to it separately:
+
+```bash
+docker compose exec -T -e TEST_DATABASE_NAME=eam_test_x -e REDIS_URL=redis://redis:6379/5 \
+  api python -m pytest
 ```
 
 Two kinds of check. **Pytest** drives the application in-process against a
