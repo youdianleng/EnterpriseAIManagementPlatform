@@ -1222,7 +1222,14 @@ async def test_the_parsing_loop_is_on_in_development_and_off_elsewhere() -> None
     assert settings.is_development, f"APP_ENV is {settings.app_env!r} in this container"
     assert settings.parses_documents_in_process is True
 
-    production = Settings(app_env="production")
+    # `None` is stated rather than inherited, and that is the point of this line:
+    # `docker-compose.yml` exports `DOCUMENT_PARSE_RUNNER_ENABLED=true` so a
+    # `docker compose up` stack parses without a scheduler, and a `Settings` built here
+    # inherits it. This assertion is about the *derivation* — off outside development —
+    # so inheriting would make it assert the ambient environment instead. It did, from
+    # the moment the API container was rebuilt from that compose file. The two
+    # assertions below are the explicit-pin half of the same rule.
+    production = Settings(app_env="production", document_parse_runner_enabled=None)
     assert production.parses_documents_in_process is False
 
     # An installation that installs a real scheduler turns it off explicitly, and the
