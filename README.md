@@ -158,8 +158,11 @@ how many" becomes unanswerable. It takes arguments that *replace* nothing: add
 
 **Never kill a run half-way.** An interrupted pytest leaves its backend connections
 open, and the next run against the same database deadlocks with `40P01` errors that
-look like a code fault. Recover by terminating them and dropping the scratch
-database:
+look like a code fault. Note *how* it is interrupted: killing a backgrounded
+`docker compose exec ... pytest` from the host kills the client, not the pytest inside
+the container, which keeps running and can deadlock the next attempt against the same
+database on its own. Recovery for either case is to terminate that database's backends
+and drop it:
 
 ```bash
 docker compose exec -T postgres psql -U eam -d postgres -c \
