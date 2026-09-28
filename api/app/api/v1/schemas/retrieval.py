@@ -77,9 +77,13 @@ class SearchHitRead(BaseModel):
 class SearchRead(BaseModel):
     """One search's answer, evidence and all.
 
-    `filtered` is not a diagnostic and is always present: a `false` here means the
-    search applied no permission filter, which is the fact ticket 35 exists to make
-    impossible to overlook.
+    `filtered` is not a diagnostic and is always present: `true` means a permission
+    predicate travelled with the query, and `false` means the search saw the whole
+    corpus. Every *request* path pushes one — ticket 35's line — so `false` is what the
+    offline evaluation and the module's own unit tests produce through the explicitly
+    named `unfiltered()`. The field stays on the response rather than being dropped once
+    the request path became universally filtered, because "did this run have a
+    boundary?" is the one fact a reader of a body should never have to infer.
     """
 
     query: str
@@ -142,10 +146,14 @@ class RetrievalDebugRead(BaseModel):
     dropped: list[CandidateTraceRead]
     filtered: bool
     #: What the permission condition actually was, in the query's own words — ticket 35's
-    #: 「检索调试视图中显示本次生效的权限条件」, and the reason it is a string rather than a
-    #: nested structure: it is read by a human checking why a document did or did not come
-    #: back, and it has to be the *statement* the database ran, not a re-description of
-    #: it. `None` means no filter was pushed and the whole corpus was searched.
+    #: 「检索调试视图中显示本次生效的权限条件」. It is the predicate and its bound values,
+    #: rendered by the repository that rendered the `WHERE`, so a reviewer reads the
+    #: *statement* the database ran rather than a re-description of it: which departments
+    #: the caller reaches and which clearance levels are inside their ceiling, by value.
+    #: A string rather than a nested structure because the reader is a human checking why
+    #: a document did or did not come back. `None` means no filter was pushed and the
+    #: whole corpus was searched — a state the request paths no longer produce and the
+    #: service still reports honestly when driven that way.
     filter_explanation: str | None
 
 

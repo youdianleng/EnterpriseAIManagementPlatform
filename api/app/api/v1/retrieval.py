@@ -4,11 +4,16 @@ Two routes, and they answer two different people:
 
 **`GET /retrieval/search`** is what a question runs. It is guarded by
 `document.read`, which is the action the caller needs in order to read a document at
-all — *which* documents is §4.2's question, and this ticket deliberately does not answer
-it: the service takes a `FilterSpec` and applies it in the same SQL, and until ticket 35
-pushes a real one the response says `filtered: false` out loud. That is the shape the
-ticket asks for (「本工单只保证接口留出了过滤入口」) with the one addition that makes it
-safe to ship: a caller cannot miss the fact that no filter was applied.
+all, and *which* documents is §4.2's question — answered by
+`domain/retrieval/filtering.py::answer_filter_for`, the shared helper ticket 34 built
+and ticket 35 pushes here. The spec travels into `RetrievalService.search` and is
+rendered into the `WHERE` of **both** legs of the *same* SQL statement, so a document
+this caller may not open is never ranked, never fetched and never counted. That is
+`docs/architecture/codebase-design.md` constraint C, and it is why the response's
+`filtered` is `true` on this path and never `false`: **there is no request that
+searches the whole corpus any more.** Ticket 33 shipped this route with
+`filtered: false` out loud (「本工单只保证接口留出了过滤入口」) so the gap could not be
+overlooked; ticket 35 closes it.
 
 **`GET /retrieval/debug`** is the authorised view the ticket asks for
 (「仅授权角色可见」), and "authorised" is a catalogue entry rather than a hard-coded
@@ -16,12 +21,17 @@ role list: `retrieval.debug`, held by administration and HR — the two roles th
 the knowledge base and can act on "why did this not come back". It shows both legs'
 top twenty, the fusion's arithmetic, the reranker's contribution and every candidate
 that was dropped, with the reason. It is the *same* run the ordinary search makes, so
-the view cannot disagree with what a user's question returned.
+the view cannot disagree with what a user's question returned — including about the
+filter: it pushes the *same* spec, through the same helper, and reports the predicate
+the database ran (「调试视图中显示本次生效的权限条件」).
 
 **`legs_used` is always reported, and `filtered` always too.** A deployment with no
-embedding provider answers from full text alone; a caller that did not push a filter
-searches the whole corpus. Both are legitimate states and neither may be left for the
-reader to infer from a signature, which is why they are response fields.
+embedding provider answers from full text alone; that is a legitimate state and it is
+not left for the reader to infer from a signature. `filtered` is kept on the response
+for the same reason the outcome carries it: the *service* can still be driven
+unfiltered — the offline evaluation does, deliberately, through the named
+`unfiltered()` — and a field that says whether a predicate was pushed is what makes
+that difference visible rather than a matter of which call site ran.
 """
 
 from fastapi import APIRouter, Depends, Query
@@ -31,6 +41,7 @@ from app.api.v1.deps import current_principal, db_session, require
 from app.api.v1.schemas.retrieval import SearchRead, debug_read, search_read
 from app.domain.access import Action, Principal
 from app.domain.access.kernel import ResourceKind
+from app.domain.retrieval.filtering import answer_filter_for
 from app.domain.retrieval.models import DEFAULT_LIMIT, MAX_LIMIT
 from app.domain.retrieval.service import RetrievalService
 from app.repositories.retrieval import PostgresChunkSearchRepository
@@ -55,9 +66,10 @@ def _service(session: AsyncSession) -> RetrievalService:
     not ready. A `none` deployment is not a broken one: the text leg answers, and
     `legs_used` reports `["text"]`.
 
-    The `FilterSpec` is deliberately *not* built here. Ticket 35 owns the principal-to-
-    spec translation for retrieval, and a route that built one now would be the second
-    place §4.2 is decided.
+    The `FilterSpec` is deliberately *not* built here either, and ticket 35 does not
+    build it at the route: it comes from `answer_filter_for(principal)`, the one
+    principal-to-spec translation, so this module and the answer path cannot decide
+    §4.2 differently. The route passes what the helper produced straight through.
     """
     from app.config import get_settings
     from app.domain.document.embeddings import build_embedder
@@ -96,8 +108,16 @@ async def search_route(
     threshold: §5.2/D20's refusal is the honest answer to a question the corpus does
     not cover, and it is not an error — nothing about the request was wrong. The
     scores travel with it so the caller can see how close it was.
+
+    **The permission condition is a parameter of the search, not a step after it.**
+    `answer_filter_for` is asked once here and handed to the service, which pushes it
+    into both legs of the one statement that ranks. A route that called `search()`
+    without it would be a route that searched the whole corpus — which is the failure
+    this line exists to make impossible to write by accident, and the escalation suite
+    pins it from the hit set.
     """
-    return search_read(await _service(session).search(q, limit=limit))
+    spec = answer_filter_for(principal)
+    return search_read(await _service(session).search(q, filter_spec=spec, limit=limit))
 
 
 @router.get(
@@ -117,8 +137,18 @@ async def debug_route(
     view's own shape and it is read by an operator rather than parsed by a client; the
     envelope and the permission are what this route owes, and `debug_read` owns the
     shape.
+
+    **It runs the same filtered search, on purpose.** `retrieval.debug` is
+    administration's and HR's, and neither role reaches another department's documents
+    by being privileged: §4.2's clauses are the whole rule for a document, so the view
+    pushes the *caller's* spec through the same helper the search uses. A view that
+    searched unfiltered would show a reviewer passages the search cannot return, and
+    「为什么没检索到」 would then have two different answers depending on who asked. The
+    predicate it used travels back as `filter_explanation`, which is the review the
+    ticket asks for.
     """
-    trace = await _service(session).explain(q, limit=limit)
+    spec = answer_filter_for(principal)
+    trace = await _service(session).explain(q, filter_spec=spec, limit=limit)
     return debug_read(trace).model_dump(mode="json")
 
 

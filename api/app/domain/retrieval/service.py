@@ -21,10 +21,14 @@ Five decisions worth reading before the code:
   letting the generation step notice — is exactly the failure the ticket forbids.
 
 * **An unfiltered search is possible and it says so.** `filter_spec=None` runs with no
-  permission predicate at all, which is right for the offline evaluation and for the
-  system's own pass, and wrong for a request. Rather than making it impossible, the
-  outcome carries `filtered`, because ticket 35's whole subject is that a retrieval
-  which quietly forgot the filter must not be able to look like one that applied it.
+  permission predicate at all, and since ticket 35 that is *only* right for the offline
+  evaluation and the system's own pass, both of which mean it and say so through
+  `filtering.unfiltered()`. Every request path pushes the caller's spec — the two
+  retrieval routes and the answer path all go through
+  `filtering.answer_filter_for` — so `None` here is a deliberate act rather than a
+  default anybody can reach by omission. Rather than making it impossible, the outcome
+  carries `filtered`, because a retrieval which quietly forgot the filter must not be
+  able to look like one that applied it.
 
 * **An embedding failure loses the vector leg; it does not fail the search.**
   `EmbeddingUnavailable` — no key, a revoked one, a rate limit — is caught here and the

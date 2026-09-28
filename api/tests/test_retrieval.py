@@ -35,6 +35,7 @@ import pytest
 from app.domain.access.kernel import ResourceKind, filter_for
 from app.domain.access.principal import Principal
 from app.domain.document.embeddings import DeterministicEmbedder
+from app.domain.retrieval.filtering import retrieval_filter_explanation, unfiltered
 from app.domain.retrieval.models import (
     FusedCandidate,
     RankedCandidate,
@@ -86,6 +87,52 @@ class Corpus:
     ids: dict[str, str]
     admin: Actor
 
+async def upload_document(
+    platform: Platform,
+    actor: Actor,
+    document,  # noqa: ANN001 - a `SampleDocument`
+    *,
+    department: str,
+    clearance: str = "low",
+    is_company_kb: bool = True,
+) -> str:
+    """One document through the real upload endpoint and the real parse, and its id.
+
+    Factored out of `index` because the escalation suite needs the same thing with the
+    two fields `index` fixes: *which* department the document is filed into and at what
+    clearance. A second copy of this in that module would be the third place an upload
+    fixture lives, and the one most likely to drift from the pipeline it is pretending
+    to be.
+
+    `actor` must be able to file into `department` at `clearance`: the service refuses an
+    upload above its own author's ceiling, and a company document filed by a role whose
+    remit is the knowledge base. Both are `test_documents.py`'s subject; here they are a
+    precondition the caller sets up.
+    """
+    from tests.support.documents import markdown_bytes
+
+    response = await actor.post(
+        "/api/v1/documents",
+        files={
+            "file": (
+                document.filename,
+                markdown_bytes(document.body),
+                "application/octet-stream",
+            )
+        },
+        data={
+            "title": document.title,
+            "is_company_kb": "true" if is_company_kb else "false",
+            "department_id": department,
+            "clearance_level": clearance,
+        },
+    )
+    assert response.status_code == 201, response.text
+    document_id = response.json()["id"]
+    assert await run_parse(platform, document_id, embedder=DeterministicEmbedder())
+    return document_id
+
+
 async def index(platform: Platform, cast: Cast, *documents) -> Corpus:  # noqa: ANN001
     """Upload and parse the sample corpus, and answer with it.
 
@@ -95,33 +142,15 @@ async def index(platform: Platform, cast: Cast, *documents) -> Corpus:  # noqa: 
     which is generated and would therefore be *right* while the pages and the parent
     links were invented.
     """
-    from tests.support.documents import markdown_bytes
-
     admin = await platform.account(roles=("admin",))
     await platform.assign(
         admin.employee_id, cast.department, await platform.position(cast.department, "kbase")
     )
     ids: dict[str, str] = {}
     for document in documents:
-        response = await admin.post(
-            "/api/v1/documents",
-            files={
-                "file": (
-                    document.filename,
-                    markdown_bytes(document.body),
-                    "application/octet-stream",
-                )
-            },
-            data={
-                "title": document.title,
-                "is_company_kb": "true",
-                "department_id": cast.department,
-            },
+        ids[document.title] = await upload_document(
+            platform, admin, document, department=cast.department
         )
-        assert response.status_code == 201, response.text
-        document_id = response.json()["id"]
-        assert await run_parse(platform, document_id, embedder=DeterministicEmbedder())
-        ids[document.title] = document_id
     return Corpus(ids=ids, admin=admin)
 
 
@@ -1041,20 +1070,24 @@ async def test_the_debug_view_shows_both_legs_the_fusion_and_why_others_were_dro
     assert trace.outcome.reranked[0].breakdown.prior > 0.0
 
 
-async def test_a_caller_without_a_filter_sees_that_fact_in_the_debug_view(
+async def test_a_service_driven_without_a_filter_says_so_in_the_debug_view(
     platform: Platform, cast: Cast
 ) -> None:
-    """Ticket 35's whole subject, on the debug surface too: an unfiltered run says so.
+    """The module's own record of an unfiltered run, which no request path can produce.
 
-    The view is the place a human reviews what a search could reach, so a `filtered`
-    that was present on the search and missing here would be the one surface where the
-    fact is invisible.
+    A `RetrievalService` can still be driven with no spec — the offline evaluation does,
+    deliberately, and says so through `filtering.unfiltered()` — and the trace reports
+    that as `filtered: false` with no predicate. The distinction the ticket turns on is
+    that this is a *decision* at the call site rather than a default a route could fall
+    into: the two HTTP routes below push a spec on every request, and the escalation
+    suite asserts what that spec keeps out of the hit set.
     """
     await index(platform, cast, *DOCUMENTS[:1])
     async with service(platform) as retrieval:
-        trace = await retrieval.explain("vacaciones")
+        trace = await retrieval.explain("vacaciones", filter_spec=unfiltered())
 
     assert trace.outcome.filtered is False
+    assert trace.filter_explanation is None, "an unfiltered run printed a predicate"
     assert all(row.reason for row in trace.candidates)
     assert trace.leg_limit == 20
 
@@ -1070,6 +1103,11 @@ async def test_the_search_endpoint_answers_with_the_fused_five(
     The route's own composition — settings-driven embedder, fusion constant and
     threshold — is only reachable here, and so is the fact that a permitted caller gets
     a body a client can cite from.
+
+    **`filtered` is `true`, and since ticket 35 it never says anything else here.** The
+    route resolves the caller's spec through `answer_filter_for` and pushes it into both
+    legs, so `false` on this response would be a request that searched the whole corpus —
+    which is the fact the field exists to make impossible to overlook.
     """
     corpus = await index(platform, cast, *DOCUMENTS)
     response = await corpus.admin.get(
@@ -1080,7 +1118,7 @@ async def test_the_search_endpoint_answers_with_the_fused_five(
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["insufficient_evidence"] is False
-    assert body["filtered"] is False, "no FilterSpec was pushed, and the body must say so"
+    assert body["filtered"] is True, "a request searched without a permission condition"
     assert body["legs_used"] == ["vector", "text"]
     assert body["fusion_k"] == 60
     assert 1 <= len(body["hits"]) <= 5
@@ -1162,37 +1200,57 @@ async def test_the_debug_endpoint_shows_the_filter_a_run_applied(
 ) -> None:
     """**Ticket 35's「调试视图中显示本次生效的权限条件」**, on this ticket's surface.
 
-    An unfiltered run says `filtered: false` and carries no predicate; a run under the
-    kernel's own spec carries the predicate the database was given, verbatim, so a
-    reviewer checking "why did this document not come back" reads the condition that
-    excluded it rather than a description of one. Both halves are asserted, because a
-    view that always printed a predicate would make the unfiltered case invisible and a
-    view that never printed one would be the surface ticket 35 has to add.
+    The request path now pushes a spec on every call, so the view carries the predicate
+    the database was given, verbatim, and the two halves that matter are asserted: the
+    explanation is §4.2's *disjunction* — the rule is four alternatives, and an
+    explanation that showed one conjunct would suggest a search that can never answer —
+    and it names *this caller's* values, so a reviewer reads the departments they reach,
+    the clearance levels inside their ceiling, and their own employee id for the
+    ownership clause.
+
+    The second claim is the one that makes the view worth reading: the predicate the
+    debug view reports is the same predicate the *service* built for that caller, not a
+    re-description printed by a second translation. The escalation suite pins the last
+    step — that the document the predicate excludes is absent from the hit set.
     """
     corpus = await index(platform, cast, *DOCUMENTS[:1])
     params = {"q": "¿Cuántos días de permiso por matrimonio?"}
     admin = corpus.admin
 
-    unfiltered = (await admin.get("/api/v1/retrieval/debug", params=params)).json()
-    assert unfiltered["filtered"] is False
-    assert unfiltered["filter_explanation"] is None
+    body = (await admin.get("/api/v1/retrieval/debug", params=params)).json()
+    assert body["filtered"] is True, "the debug view ran on a request path unfiltered"
+    assert body["filter_explanation"], "the view printed no permission condition"
 
-    # The service's own trace, under a spec the kernel produced — the shape ticket 35
-    # will hand the route.
-    outsider = _principal(departments=frozenset({UUID(cast.other_department)}))
-    async with service(platform) as retrieval:
-        trace = await retrieval.explain(
-            params["q"], filter_spec=filter_for(outsider, ResourceKind.DOCUMENT)
-        )
+    # The route's own principal, resolved from the real snapshot rather than hand-built:
+    # a `Principal` this test made up could carry a clearance the snapshot never gives
+    # anybody, and then "the view's predicate is the helper's" would be an equality
+    # between two things that are not the same decision.
+    from app.domain.access.snapshot import resolve_principal
 
-    assert trace.outcome.filtered is True
-    assert trace.filter_explanation is not None
-    assert "d.owner_employee_id" in trace.filter_explanation
-    assert " OR " in trace.filter_explanation, (
-        "the explanation is not §4.2's disjunction: " + trace.filter_explanation
+    async with platform.factory() as session:
+        principal = await resolve_principal(session, UUID(admin.user_id))
+    assert principal is not None
+    expected = retrieval_filter_explanation(
+        filter_for(principal, ResourceKind.DOCUMENT)
     )
-    assert str(outsider.employee_id) in trace.filter_explanation, (
-        "the explanation does not show the value the predicate was bound to"
+
+    assert body["filter_explanation"] == expected, (
+        "the predicate the view reported is not the one this caller's spec renders:\n"
+        f"view:     {body['filter_explanation']}\n"
+        f"expected: {expected}"
+    )
+    assert "d.owner_employee_id" in body["filter_explanation"]
+    assert " OR " in body["filter_explanation"], (
+        "the explanation is not §4.2's disjunction: " + body["filter_explanation"]
+    )
+    assert str(cast.department) in body["filter_explanation"], (
+        "the explanation does not name the department the caller reaches"
+    )
+    assert str(cast.other_department) not in body["filter_explanation"], (
+        "the explanation names a department the caller does not reach"
+    )
+    assert str(admin.employee_id) in body["filter_explanation"], (
+        "the explanation omits §4.2's ownership clause"
     )
 
 
@@ -1230,4 +1288,4 @@ async def test_the_debug_endpoint_shows_what_the_rerank_window_dropped(
     )
 
 
-__all__ = ["Corpus", "index", "service"]
+__all__ = ["Corpus", "index", "service", "upload_document"]
