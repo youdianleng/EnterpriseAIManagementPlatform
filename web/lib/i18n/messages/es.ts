@@ -226,6 +226,18 @@ export const es: Dictionary = {
       "Esta semana ya tiene horas. Vacíala antes de copiar la anterior.",
     timesheet_submission_refused:
       "No se pudo enviar la semana. Revisa el estado de la solicitud e inténtalo de nuevo.",
+    timesheet_week_locked:
+      "Esta semana está aprobada y bloqueada. Solo se puede corregir con un envío complementario.",
+    timesheet_week_closed:
+      "Esta semana queda fuera de las {weeks} semanas de plazo: no quedan semanas de corrección y ya no admite ningún cambio.",
+    timesheet_supplement_not_locked:
+      "Esta semana no está bloqueada: todavía puedes editarla directamente.",
+    timesheet_supplement_open:
+      "Ya hay un envío complementario pendiente para esta semana. Espera la decisión antes de enviar otro.",
+    timesheet_supplement_invalid:
+      "El envío complementario no indica ninguna corrección válida: elige las entradas de esta semana que quieres corregir.",
+    timesheet_entry_is_reversal:
+      "Las líneas de ajuste de un envío complementario no se pueden editar ni borrar, y tampoco lo que ya está ajustado.",
     project_task_not_recordable:
       "Esa tarea no admite horas: puede estar desactivada o pertenecer a un proyecto no activo.",
     document_upload_type_unsupported:
@@ -377,6 +389,56 @@ export const es: Dictionary = {
         pending: "Pendiente",
         skipped: "Omitida",
       },
+    },
+    lock: {
+      locked: "Bloqueada",
+      lockedHint:
+        "Esta semana está aprobada y bloqueada: sus horas no se pueden editar. Si hay que corregirla, se envía una corrección que la ajusta sin tocar el original.",
+      closed: "Fuera de plazo",
+      closedHint:
+        "Esta semana queda fuera de las {weeks} semanas de plazo de corrección. No admite ningún cambio, ni siquiera una corrección.",
+      supplementWindow: "Puedes corregir esta semana durante {weeks} semanas más.",
+    },
+    supplement: {
+      heading: "Envío complementario",
+      intro:
+        "Corrige una entrada bloqueada: se añade una línea de ajuste con los minutos originales en negativo y una línea nueva con los minutos correctos. La semana original no se modifica.",
+      open: "Corregir esta semana",
+      openHint:
+        "Disponible mientras la semana siga dentro del plazo de corrección ({weeks} semanas).",
+      entryLabel: "Entrada del {date}",
+      newMinutes: "Minutos corregidos",
+      remove: "Estas horas no deberían existir",
+      removeHint: "Deja la entrada a cero con una línea de ajuste y sin línea nueva.",
+      unchanged: "Sin cambios",
+      submit: "Enviar la corrección",
+      submitting: "Enviando…",
+      cancel: "Cancelar",
+      nothingChanged: "Cambia al menos una entrada antes de enviar la corrección.",
+      invalidMinutes: "Escribe un número entero de minutos entre 1 y 1440 (24 h).",
+      opened: "Corrección abierta. Envíala a revisión cuando esté lista.",
+      inFlight: "Corrección en curso: {status}",
+      inFlightHint:
+        "Puedes editar las líneas nuevas de la corrección mientras esté en borrador, y enviarla a revisión con el mismo botón que una semana normal.",
+      linkOriginal: "Corrige la semana del {date}",
+      sheetsHeading: "Hojas de esta semana",
+      sheetOriginal: "Semana original",
+      sheetSupplement: "Corrección",
+    },
+    adjustments: {
+      heading: "Ajustes de la corrección",
+      day: "Ajuste del día",
+      task: "Neto por tarea",
+      gross: "Registrado",
+      reversed: "Ajustado",
+      net: "Neto",
+      reversalRow: "Línea de ajuste",
+      reversalOf: "Ajuste de una entrada bloqueada",
+      replacement: "Línea nueva",
+    },
+    tasks: {
+      heading: "Neto por tarea",
+      empty: "Todavía no hay horas que mostrar.",
     },
   },
   footer: {

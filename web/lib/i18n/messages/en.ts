@@ -196,6 +196,18 @@ export const en: Dictionary = {
       "This week already has hours. Clear it before copying the previous one.",
     timesheet_submission_refused:
       "The week could not be submitted. Check the request's state and try again.",
+    timesheet_week_locked:
+      "This week is approved and locked. It can only be corrected with a supplementary submission.",
+    timesheet_week_closed:
+      "This week is outside the {weeks}-week window: no correction weeks are left and it accepts no further changes.",
+    timesheet_supplement_not_locked:
+      "This week is not locked: you can still edit it directly.",
+    timesheet_supplement_open:
+      "A supplementary submission for this week is already waiting for a decision. Wait for it before sending another.",
+    timesheet_supplement_invalid:
+      "The supplementary submission states no valid correction: pick the entries of this week you want to correct.",
+    timesheet_entry_is_reversal:
+      "The adjustment lines of a supplementary submission cannot be edited or removed, and neither can what has already been adjusted.",
     project_task_not_recordable:
       "That task does not accept time: it may be switched off, or belong to a project that is not active.",
     document_upload_type_unsupported:
@@ -344,6 +356,56 @@ export const en: Dictionary = {
         pending: "Waiting",
         skipped: "Skipped",
       },
+    },
+    lock: {
+      locked: "Locked",
+      lockedHint:
+        "This week is approved and locked: its hours cannot be edited. If it has to be corrected, a supplementary submission adjusts it without touching the original.",
+      closed: "Window closed",
+      closedHint:
+        "This week is outside the {weeks}-week correction window. It accepts no changes at all, not even a correction.",
+      supplementWindow: "You can correct this week for {weeks} more weeks.",
+    },
+    supplement: {
+      heading: "Supplementary submission",
+      intro:
+        "Correct a locked entry: an adjustment line carries the original minutes as a negative, and a new line carries the corrected minutes. The original week is not modified.",
+      open: "Correct this week",
+      openHint:
+        "Available while the week is still inside the correction window ({weeks} weeks).",
+      entryLabel: "Entry of {date}",
+      newMinutes: "Corrected minutes",
+      remove: "These hours should not exist",
+      removeHint: "Cancels the entry with an adjustment line and no new line.",
+      unchanged: "No change",
+      submit: "Send the correction",
+      submitting: "Sending…",
+      cancel: "Cancel",
+      nothingChanged: "Change at least one entry before sending the correction.",
+      invalidMinutes: "Enter a whole number of minutes from 1 to 1440 (24 h).",
+      opened: "Correction opened. Submit it for review when it is ready.",
+      inFlight: "Correction in progress: {status}",
+      inFlightHint:
+        "You can edit the correction's new lines while it is a draft, and submit it with the same button as an ordinary week.",
+      linkOriginal: "Corrects the week of {date}",
+      sheetsHeading: "Sheets of this week",
+      sheetOriginal: "Original week",
+      sheetSupplement: "Correction",
+    },
+    adjustments: {
+      heading: "Correction adjustments",
+      day: "Adjustment on the day",
+      task: "Net per task",
+      gross: "Recorded",
+      reversed: "Adjusted",
+      net: "Net",
+      reversalRow: "Adjustment line",
+      reversalOf: "Adjusts a locked entry",
+      replacement: "New line",
+    },
+    tasks: {
+      heading: "Net per task",
+      empty: "There are no hours to show yet.",
     },
   },
   notifications: {

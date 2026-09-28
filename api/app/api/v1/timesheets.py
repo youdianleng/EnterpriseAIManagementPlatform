@@ -1,6 +1,6 @@
-"""Timesheet endpoints: your own week, and the act of filing it.
+"""Timesheet endpoints: your own week, the act of filing it, and the correction.
 
-Eight routes, and every one of them answers about the caller. That is the ticket's
+Nine routes, and every one of them answers about the caller. That is the ticket's
 只能为本人填报 rule made structural rather than merely checked: `employee_id` defaults
 to the caller, naming somebody else is a 403 decided by the kernel (`require_own`,
 over the three self-only actions), and no route exists that would let a caller read a
@@ -24,10 +24,13 @@ a 9-hour day against 8 expected" is exactly the moment it is worth saying. It ne
 blocks anything: the ticket is explicit that a long day is a warning and not a
 refusal, and the day's expected hours are nowhere near the per-entry ceiling.
 
-**Locking is the approval engine's.** A submitted week refuses edits because the
-engine's request is open; a rejection returns the week to the employee, who corrects
-it and files a new request. The status endpoint publishes the engine's own history —
-every round, every decision — so 历史提交记录 is read rather than duplicated.
+**Locking is the approval engine's, and the way through it is a supplement.** A
+submitted week refuses edits because the engine's request is open; an approval locks
+it for ever, and the route that changes what a locked week says is
+`POST /timesheets/supplements` — which writes a *new* sheet beside the original with
+a reversal and a replacement per corrected entry. The original is not edited by any
+route here. Filing the correction is the same `POST /timesheets/submit`, because it
+is the same two-level approval over a second document.
 """
 
 from datetime import date
@@ -40,7 +43,9 @@ from app.api.v1.deps import current_principal, db_session, require, require_own
 from app.api.v1.schemas.timesheet import (
     EntryUpdate,
     EntryWrite,
+    SheetStatusRead,
     StatusRead,
+    SupplementWrite,
     TimesheetPageRead,
     WeekRead,
     approval_read,
@@ -176,23 +181,46 @@ async def read_status(
 ) -> StatusRead:
     """The week's status, and the engine's history of it.
 
-    `approval` is the engine's own `ApprovalState`: every round, every step and every
-    decision with its comment. That is the 历史提交记录 the ticket asks to keep — a
-    rejection followed by a correction and a resubmission is two rounds of one
+    `approval` is the original sheet's own `ApprovalState`: every round, every step and
+    every decision with its comment. That is the 历史提交记录 the ticket asks to keep —
+    a rejection followed by a correction and a resubmission is two rounds of one
     request, and both stay readable. Nothing mirrors it here, because two copies of
     "who rejected this and why" are two versions of the truth.
+
+    `sheets` adds each correction's history beside it. A supplement is a document with
+    an approval round of its own, so "the week" has several histories once it has been
+    corrected, and a client that showed only the original's would hide the round the
+    employee is actually waiting on.
     """
     await _subject(request, principal, Action.TIMESHEET_READ_OWN, employee_id)
     service = _service(session, principal)
+    sheets = await service.sheets_of(week)
     view = await service.read_week(week)
-    state = await service.status_of(week)
+    histories: list[SheetStatusRead] = []
+    for sheet in sheets:
+        state = await service.state_of_sheet(sheet.id)
+        histories.append(
+            SheetStatusRead(
+                timesheet_id=sheet.id,
+                status=sheet.status,
+                is_supplementary=sheet.is_supplementary,
+                corrects_timesheet_id=sheet.supersedes_id,
+                submitted_at=sheet.submitted_at,
+                approval_request_id=sheet.approval_request_id,
+                approval=None if state is None else approval_read(state),
+            )
+        )
+    primary = next((sheet for sheet in sheets if not sheet.is_supplementary), None)
+    state = None if primary is None else await service.state_of_sheet(primary.id)
     return StatusRead(
         week_start=view.week_start,
         status=view.status,
         is_editable=view.is_editable,
+        is_locked=view.is_locked,
         submitted_at=view.submitted_at,
         approval_request_id=view.approval_request_id,
         approval=None if state is None else approval_read(state),
+        sheets=histories,
     )
 
 
@@ -271,6 +299,44 @@ async def submit_week(
     await _subject(request, principal, Action.TIMESHEET_SUBMIT_OWN, employee_id)
     service = _service(session, principal)
     return await _week(service, await service.submit(week))
+
+
+# --- supplementary submissions (ticket 29) ----------------------------------
+
+
+@router.post(
+    "/supplements",
+    response_model=WeekRead,
+    status_code=201,
+    summary="Correct a locked week with a supplementary submission",
+    dependencies=[Depends(write_own)],
+)
+async def open_supplement(
+    request: Request,
+    payload: SupplementWrite,
+    week: date = WEEK_QUERY,
+    employee_id: UUID | None = SUBJECT_QUERY,
+    principal: Principal = Depends(current_principal),
+    session: AsyncSession = Depends(db_session),
+) -> WeekRead:
+    """Open a correction beside a locked week, with a reversal per changed entry.
+
+    The original is not edited: the response is the week's grid with the correction's
+    rows in it, and the day totals are the *net* of the two sheets — which is what a
+    reader takes a total to mean. `entries_total_minutes` therefore moves by exactly
+    the difference the corrections ask for, and `reversal_total_minutes` says how much
+    of it was cancelled.
+
+    Refused when the week is not approved (there is nothing to correct), when the
+    window has closed (nothing may write there at all), when a supplement is already
+    in flight, or when a correction names something that is not a live entry of this
+    week's original sheet. Filing it afterwards is `POST /timesheets/submit`, because
+    the correction goes through the same two levels as any other week.
+    """
+    await _subject(request, principal, Action.TIMESHEET_WRITE_OWN, employee_id)
+    service = _service(session, principal)
+    view = await service.open_supplement(week, payload.to_inputs())
+    return await _week(service, view)
 
 
 # --- entries ----------------------------------------------------------------

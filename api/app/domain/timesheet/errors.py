@@ -24,6 +24,15 @@ class TimesheetErrorCode:
     TIMESHEET_COPY_SOURCE_INVALID = ErrorCode.TIMESHEET_COPY_SOURCE_INVALID
     TIMESHEET_COPY_TARGET_NOT_EMPTY = ErrorCode.TIMESHEET_COPY_TARGET_NOT_EMPTY
     TIMESHEET_SUBMISSION_REFUSED = ErrorCode.TIMESHEET_SUBMISSION_REFUSED
+    #: Ticket 29: the two locks, the supplement's own refusals, and the reversal that
+    #: may not be edited. Grouped here because a caller of this module reasons about
+    #: "why was this week refused", not about which enum a code happens to live in.
+    TIMESHEET_WEEK_LOCKED = ErrorCode.TIMESHEET_WEEK_LOCKED
+    TIMESHEET_WEEK_CLOSED = ErrorCode.TIMESHEET_WEEK_CLOSED
+    TIMESHEET_SUPPLEMENT_NOT_LOCKED = ErrorCode.TIMESHEET_SUPPLEMENT_NOT_LOCKED
+    TIMESHEET_SUPPLEMENT_OPEN = ErrorCode.TIMESHEET_SUPPLEMENT_OPEN
+    TIMESHEET_SUPPLEMENT_INVALID = ErrorCode.TIMESHEET_SUPPLEMENT_INVALID
+    TIMESHEET_ENTRY_IS_REVERSAL = ErrorCode.TIMESHEET_ENTRY_IS_REVERSAL
     #: Grouped here because a caller of this module reasons about "why was this week
     #: refused", not about which enum a code happens to live in.
     INVALID_REQUEST = ErrorCode.INVALID_REQUEST

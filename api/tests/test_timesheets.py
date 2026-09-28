@@ -21,10 +21,19 @@ Every test names the checklist line it pins. The seven that matter most:
 * `test_a_rejected_week_can_be_corrected_and_refiled_with_the_history_kept` — the
   rejection path, with both rounds readable from the engine.
 * `test_filling_in_somebody_elses_week_is_forbidden` — the 403 the ticket names.
+
+**The fixture week is computed from today, and ticket 29 is why.** Until then it was a
+fixed Monday in the past (`2026-03-09`) so that "today" could never change what a test
+means. Ticket 29's global week lock closes every week that has fallen out of the
+eight-week supplementary window to *every* write path, and a fixed date is by
+construction outside that window a few months later — so the week these tests work in
+is now "two weeks ago": still in the past, still inside the window with room to spare,
+and relative to the same clock the server reads (`madrid_today`, the module that owns
+which day it is). `test_timesheet_lock.py` is where the window itself is tested.
 """
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -32,14 +41,18 @@ import pytest
 from app.core.errors import ErrorCode
 from app.domain.approval.models import ApprovalStatus, DecisionKind
 from app.domain.approval.service import ApprovalService
+from app.domain.attendance.business_day import madrid_today
 from app.domain.timesheet.models import MAX_ENTRY_MINUTES, TimesheetStatus, monday_of
 from app.domain.timesheet.service import ENTITY_TYPE
 from app.repositories.approval import PostgresApprovalRepository
 from tests.support.platform import Actor, Platform
 
-#: A Monday, in the past, so "today" can never change what one of these tests means.
-#: 2026-03-09 is the Monday of ISO week 11.
-WEEK = date(2026, 3, 9)
+#: The week these tests work in: the Monday two weeks back, which is in the past (so
+#: a correction to the module cannot make them mean something else) and inside ticket
+#: 29's eight-week supplementary window (so the global week lock does not refuse the
+#: writes they are about). Computed from the same clock the server reads, because a
+#: fixed date walks out of a moving window.
+WEEK = monday_of(madrid_today(datetime.now(UTC))) - timedelta(weeks=2)
 
 
 def day(offset: int) -> str:
@@ -319,7 +332,8 @@ async def test_a_week_is_seven_days_from_monday_and_says_so(
     assert len(body["days"]) == 7, "a grid is seven columns, and gaps are columns too"
     assert [row["entry_date"] for row in body["days"]] == [day(offset) for offset in range(7)]
     assert [row["weekday"] for row in body["days"]] == list(range(7))
-    assert body["days"][0]["entry_date"] == "2026-03-09"  # a Monday
+    assert body["days"][0]["entry_date"] == WEEK.isoformat()  # a Monday
+    assert datetime.fromisoformat(body["days"][0]["entry_date"]).weekday() == 0
     assert body["status"] == "draft"
     assert body["has_timesheet"] is False, "reading a week must not create it"
     assert await platform.scalar("SELECT count(*) FROM timesheets") == 0
@@ -351,7 +365,7 @@ async def test_a_week_is_seven_days_from_monday_and_says_so(
 
 async def test_a_week_key_that_is_not_a_monday_is_refused(platform: Platform, cast: Cast) -> None:
     """The one defect that would make every total in the product wrong at once."""
-    response = await read_week(cast.employee, week=date(2026, 3, 10))
+    response = await read_week(cast.employee, week=WEEK + timedelta(days=1))
 
     assert response.status_code == 422, response.text
     assert response.json()["error"]["code"] == ErrorCode.TIMESHEET_WEEK_NOT_MONDAY.value
@@ -1145,8 +1159,12 @@ async def test_an_entry_outside_the_projects_own_dates_is_refused(
     platform: Platform, cast: Cast
 ) -> None:
     """Before the start and after the end, both refused with the project's own window."""
-    early, early_task = await make_target(cast, start="2026-04-01")
-    finished, finished_task = await make_target(cast, start="2025-01-01", end="2026-02-28")
+    early, early_task = await make_target(cast, start=(WEEK + timedelta(days=30)).isoformat())
+    finished, finished_task = await make_target(
+        cast,
+        start=(WEEK - timedelta(days=400)).isoformat(),
+        end=(WEEK - timedelta(days=30)).isoformat(),
+    )
 
     too_early = await add_entry(
         cast.employee,
@@ -1172,7 +1190,11 @@ async def test_an_entry_outside_the_projects_own_dates_is_refused(
     assert await platform.scalar("SELECT count(*) FROM timesheet_entries") == 0
 
     # The control: a project whose window contains the week accepts it.
-    inside = await make_target(cast, start="2026-03-01", end="2026-03-31")
+    inside = await make_target(
+        cast,
+        start=(WEEK - timedelta(days=8)).isoformat(),
+        end=(WEEK + timedelta(days=22)).isoformat(),
+    )
     accepted = await add_entry(
         cast.employee,
         entry_date=day(0),
@@ -1191,7 +1213,11 @@ async def test_the_database_refuses_an_entry_outside_the_projects_dates_too(
     An entry written on the Monday is moved, by direct SQL, onto the Saturday of the
     same week — past the project's end date. Nothing in the application is involved.
     """
-    project, task = await make_target(cast, start="2026-03-01", end="2026-03-13")
+    project, task = await make_target(
+        cast,
+        start=(WEEK - timedelta(days=8)).isoformat(),
+        end=(WEEK + timedelta(days=4)).isoformat(),
+    )
     assert (
         await add_entry(cast.employee, project_id=project["id"], task_id=task["id"], minutes=60)
     ).status_code == 201

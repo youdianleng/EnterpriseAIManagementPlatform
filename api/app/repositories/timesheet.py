@@ -14,6 +14,11 @@ Two things here are worth reading before the code:
   total computed over a page — a timesheet that disagrees with itself. A week is at
   most fifty rows per day by construction.
 
+* **The global week lock is written here and read by the database.** `lock_week` and
+  `lock_expired_weeks` are the only writers of `timesheet_weeks_lock`, and the trigger
+  ticket 29's migration installs reads the same rows — so the fact the service refuses
+  on and the fact a console is refused by are one row rather than two opinions.
+
 Nothing commits: the service commits once, so an entry and the audit record of who
 wrote it land together or not at all.
 """
@@ -21,13 +26,15 @@ wrote it land together or not at all.
 from datetime import date
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, literal, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.timesheet.models import (
     UNSET,
     EntryInput,
     EntryPatch,
+    EntryType,
     Timesheet,
     TimesheetEntry,
     TimesheetPage,
@@ -36,6 +43,7 @@ from app.domain.timesheet.models import (
 from app.models.employee import Employee as EmployeeRow
 from app.models.timesheet import Timesheet as TimesheetRow
 from app.models.timesheet import TimesheetEntry as EntryRow
+from app.models.timesheet import TimesheetWeekLock as WeekLockRow
 
 
 def _to_timesheet(row: TimesheetRow) -> Timesheet:
@@ -48,6 +56,8 @@ def _to_timesheet(row: TimesheetRow) -> Timesheet:
         submitted_at=row.submitted_at,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        supersedes_id=row.supersedes_timesheet_id,
+        is_supplementary=row.is_supplementary,
     )
 
 
@@ -65,6 +75,8 @@ def _to_entry(row: EntryRow) -> TimesheetEntry:
         note=row.note,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        entry_type=EntryType(row.entry_type),
+        reverses_entry_id=row.reverses_entry_id,
     )
 
 
@@ -81,13 +93,34 @@ class PostgresTimesheetRepository:
         return _to_timesheet(row) if row is not None else None
 
     async def get_week(self, employee_id: UUID, week_start: date) -> Timesheet | None:
+        """The week's original sheet. Supplements are read with `sheets_in_week`."""
         row = await self._session.scalar(
             select(TimesheetRow).where(
                 TimesheetRow.employee_id == employee_id,
                 TimesheetRow.week_start == week_start,
+                TimesheetRow.supersedes_timesheet_id.is_(None),
             )
         )
         return _to_timesheet(row) if row is not None else None
+
+    async def sheets_in_week(
+        self, employee_id: UUID, week_start: date
+    ) -> list[Timesheet]:
+        rows = await self._session.scalars(
+            select(TimesheetRow)
+            .where(
+                TimesheetRow.employee_id == employee_id,
+                TimesheetRow.week_start == week_start,
+            )
+            # The original first, then the corrections in the order they were filed:
+            # "the week, and what has been said about it since" is the order a reader
+            # takes them in, and NULLS FIRST is that order rather than a coincidence
+            # of how the link happens to be stored.
+            .order_by(
+                TimesheetRow.supersedes_timesheet_id.nulls_first(), TimesheetRow.created_at
+            )
+        )
+        return [_to_timesheet(row) for row in rows]
 
     async def week_exists(self, employee_id: UUID, week_start: date) -> bool:
         return bool(
@@ -107,6 +140,21 @@ class PostgresTimesheetRepository:
             employee_id=employee_id,
             week_start=week_start,
             status=TimesheetStatus.DRAFT.value,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return _to_timesheet(row)
+
+    async def create_supplement(
+        self, employee_id: UUID, week_start: date, supersedes_id: UUID
+    ) -> Timesheet:
+        row = TimesheetRow(
+            id=uuid4(),
+            employee_id=employee_id,
+            week_start=week_start,
+            status=TimesheetStatus.DRAFT.value,
+            supersedes_timesheet_id=supersedes_id,
+            is_supplementary=True,
         )
         self._session.add(row)
         await self._session.flush()
@@ -151,7 +199,16 @@ class PostgresTimesheetRepository:
     async def list_weeks(
         self, employee_id: UUID, *, limit: int = 50, offset: int = 0
     ) -> TimesheetPage:
-        statement = select(TimesheetRow).where(TimesheetRow.employee_id == employee_id)
+        """The caller's own weeks, newest first. Originals only: see the protocol.
+
+        A supplement is a correction *of* a week and shares its Monday, so listing it
+        as a week of its own would show one week twice with two statuses and no way to
+        tell which was the record.
+        """
+        statement = select(TimesheetRow).where(
+            TimesheetRow.employee_id == employee_id,
+            TimesheetRow.supersedes_timesheet_id.is_(None),
+        )
         total = await self._session.scalar(
             select(func.count()).select_from(statement.subquery())
         )
@@ -165,6 +222,58 @@ class PostgresTimesheetRepository:
             offset=offset,
         )
 
+    # --- the global week lock ----------------------------------------------
+
+    async def week_is_locked(self, week_start: date) -> bool:
+        return bool(
+            await self._session.scalar(
+                select(func.count())
+                .select_from(WeekLockRow)
+                .where(WeekLockRow.week_start == week_start)
+            )
+        )
+
+    async def lock_week(
+        self,
+        week_start: date,
+        *,
+        reason: str | None = None,
+        locked_by_employee_id: UUID | None = None,
+    ) -> bool:
+        statement = (
+            pg_insert(WeekLockRow)
+            .values(
+                week_start=week_start,
+                reason=reason,
+                locked_by_employee_id=locked_by_employee_id,
+            )
+            # A second call must not restamp when the week was closed, which is the
+            # question a closed payroll month is asked afterwards.
+            .on_conflict_do_nothing(index_elements=[WeekLockRow.week_start])
+            .returning(WeekLockRow.week_start)
+        )
+        return (await self._session.scalar(statement)) is not None
+
+    async def lock_expired_weeks(
+        self, employee_id: UUID, *, before: date, reason: str
+    ) -> list[date]:
+        weeks = (
+            select(TimesheetRow.week_start)
+            .where(
+                TimesheetRow.employee_id == employee_id,
+                TimesheetRow.week_start < before,
+            )
+            .distinct()
+            .subquery()
+        )
+        statement = (
+            pg_insert(WeekLockRow)
+            .from_select(["week_start", "reason"], select(weeks.c.week_start, literal(reason)))
+            .on_conflict_do_nothing(index_elements=[WeekLockRow.week_start])
+            .returning(WeekLockRow.week_start)
+        )
+        return list(await self._session.scalars(statement))
+
     # --- entries -----------------------------------------------------------
 
     async def entries_in_week(
@@ -174,13 +283,31 @@ class PostgresTimesheetRepository:
             select(EntryRow)
             .where(EntryRow.employee_id == employee_id, EntryRow.week_start == week_start)
             # Day first, then insertion order: the grid groups by day, and within a
-            # day the order somebody typed the rows in is the order they expect.
+            # day the order somebody typed the rows in is the order they expect. A
+            # reversal was written later than what it cancels, so it reads under it.
+            .order_by(EntryRow.entry_date, EntryRow.created_at, EntryRow.id)
+        )
+        return [_to_entry(row) for row in rows]
+
+    async def entries_in_sheet(self, timesheet_id: UUID) -> list[TimesheetEntry]:
+        rows = await self._session.scalars(
+            select(EntryRow)
+            .where(EntryRow.timesheet_id == timesheet_id)
             .order_by(EntryRow.entry_date, EntryRow.created_at, EntryRow.id)
         )
         return [_to_entry(row) for row in rows]
 
     async def get_entry(self, entry_id: UUID) -> TimesheetEntry | None:
         row = await self._session.scalar(select(EntryRow).where(EntryRow.id == entry_id))
+        return _to_entry(row) if row is not None else None
+
+    async def reversal_for(self, entry_id: UUID) -> TimesheetEntry | None:
+        row = await self._session.scalar(
+            select(EntryRow)
+            .where(EntryRow.reverses_entry_id == entry_id)
+            .order_by(EntryRow.created_at)
+            .limit(1)
+        )
         return _to_entry(row) if row is not None else None
 
     async def add_entry(
@@ -197,6 +324,8 @@ class PostgresTimesheetRepository:
             minutes=data.minutes,
             is_billable=data.is_billable,
             note=data.note,
+            entry_type=data.entry_type.value,
+            reverses_entry_id=data.reverses_entry_id,
         )
         self._session.add(row)
         await self._session.flush()

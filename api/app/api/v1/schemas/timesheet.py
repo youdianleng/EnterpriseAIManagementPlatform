@@ -4,7 +4,7 @@ The response shapes are deliberately *flat* where the grid reads them (a day's
 entries, its total and its expectation in one object) and deliberately *absent* where
 a value is the server's answer (`is_billable` is returned and never accepted).
 
-Two conventions worth naming:
+Three conventions worth naming:
 
 * **`is_billable` is not a request field.** It comes from the task's configuration,
   through `ProjectService.resolve_record_target`, exactly as ticket 27's decision
@@ -12,6 +12,13 @@ Two conventions worth naming:
   carries it so a client can show which rows a report will bill.
 * **`week` travels as a query parameter and is a date**, so a client can open a week
   before a row exists and the grid is always for a week somebody named.
+* **Ticket 29's three reads are the server's answers, not the client's arithmetic.**
+  `supplement_weeks_left`, `can_supplement` and `week_closed` come from the API, so
+  the screen offering "correct this week" and the endpoint refusing it cannot
+  disagree about which side of the eight-week window the week is on. Each entry
+  carries its own `entry_type`, `reverses_entry_id` and `timesheet_id`, which is what
+  lets one grid draw a locked original's rows and a draft correction's rows in the
+  same table without guessing which is which.
 """
 
 from datetime import date, datetime
@@ -23,8 +30,12 @@ from app.api.v1.schemas.base import StrictModel
 from app.domain.approval.models import ApprovalState, ApprovalStatus, StepStatus
 from app.domain.timesheet.models import (
     MAX_ENTRY_MINUTES,
+    SUPPLEMENT_WINDOW_WEEKS,
+    CorrectionInput,
+    EntryType,
     OverBudgetDay,
     ProjectLabel,
+    TaskNet,
     Timesheet,
     TimesheetEntry,
     TimesheetStatus,
@@ -40,6 +51,10 @@ class EntryWrite(StrictModel):
     refuses an unknown field rather than ignoring it, so a client that sends
     `is_billable: true` is told this system does not accept it — which is clearer
     than the value being silently dropped.
+
+    No `entry_type` either, and for the same reason: a reversal is written by the
+    supplementary flow from a correction the server validated, never posted by a
+    client that would like a negative row in its own week.
     """
 
     entry_date: date
@@ -70,19 +85,67 @@ class EntryUpdate(StrictModel):
     note: str | None = Field(default=None, max_length=500)
 
 
+class CorrectionWrite(StrictModel):
+    """One locked entry a supplementary submission corrects.
+
+    `minutes` is the corrected amount, or `null` for "this entry should not exist" —
+    the reversal on its own. `project_id` and `task_id` may move the work to another
+    target, and are omitted when the correction is only about the amount, which is
+    the ordinary case.
+    """
+
+    entry_id: UUID
+    minutes: int | None = Field(default=None, gt=0, le=MAX_ENTRY_MINUTES)
+    note: str | None = Field(default=None, max_length=500)
+    project_id: UUID | None = None
+    task_id: UUID | None = None
+
+    def to_input(self) -> CorrectionInput:
+        return CorrectionInput(
+            entry_id=self.entry_id,
+            minutes=self.minutes,
+            note=self.note,
+            project_id=self.project_id,
+            task_id=self.task_id,
+        )
+
+
+class SupplementWrite(StrictModel):
+    """A supplementary submission: what the locked week should have said.
+
+    At least one correction: a supplement that changes nothing is a document with no
+    subject, and the approval it would spend two people's attention on would decide
+    nothing.
+    """
+
+    corrections: list[CorrectionWrite] = Field(min_length=1, max_length=50)
+
+    def to_inputs(self) -> list[CorrectionInput]:
+        return [correction.to_input() for correction in self.corrections]
+
+
 class EntryRead(BaseModel):
     """One entry as the grid reads it: the row, plus what it names.
 
     The codes and names are read rather than stored, so a task renamed last month
     shows its current name here and its old one nowhere — which is right for a grid
     somebody is filling in, and why the audit trail carries ids and minutes.
+
+    `entry_type` and `reverses_entry_id` are what make a correction legible: a row
+    with `reversal` and a negative `minutes` is one half of a pair, and the id says
+    which locked entry the other half is. `timesheet_id` says which *sheet* the row
+    belongs to, so a week holding a locked original and a draft correction can draw
+    each row as what it is.
     """
 
     id: UUID
+    timesheet_id: UUID
     entry_date: date
     project_id: UUID
     task_id: UUID
     minutes: int
+    entry_type: EntryType
+    reverses_entry_id: UUID | None
     is_billable: bool
     note: str | None
     project_code: str | None = None
@@ -97,15 +160,31 @@ class DayRead(BaseModel):
     `expected_minutes` is null when no schedule reaches this person on this date,
     which is a different fact from a schedule that expects nothing — the grid can say
     "no schedule configured" rather than showing a confident zero.
+
+    `total_minutes` is the net of the day; `gross_minutes` and `reversal_minutes` are
+    what it was reached from. A reader has to be able to see "8 h − 2 h" rather than a
+    silent 6 h, which is the whole reason the correction is rows and not an edit.
     """
 
     entry_date: date
     weekday: int
     entries: list[EntryRead]
     total_minutes: int
+    gross_minutes: int
+    reversal_minutes: int
     expected_minutes: int | None
     expectation_source: str | None
     is_holiday: bool
+
+
+class TaskNetRead(BaseModel):
+    """One task's week, after its reversals: the per-task half of the net view."""
+
+    project_id: UUID
+    task_id: UUID
+    gross_minutes: int
+    reversal_minutes: int
+    net_minutes: int
 
 
 class OverBudgetRead(BaseModel):
@@ -119,6 +198,22 @@ class OverBudgetRead(BaseModel):
     total_minutes: int
     expected_minutes: int
     over_minutes: int
+
+
+class SupplementRead(BaseModel):
+    """A correction filed against a week, as the grid lists it.
+
+    `corrects_timesheet_id` is the original it points at, which is the same week: the
+    link answers "what is this document correcting", and the week it shares with the
+    original is what makes the two sheets one grid.
+    """
+
+    timesheet_id: UUID
+    status: TimesheetStatus
+    submitted_at: datetime | None
+    approval_request_id: UUID | None
+    corrects_timesheet_id: UUID | None
+    week_start: date
 
 
 class WeekRead(BaseModel):
@@ -137,6 +232,22 @@ class WeekRead(BaseModel):
     over_budget: bool
     over_budget_days: list[OverBudgetRead]
     days: list[DayRead]
+    # --- ticket 29: the lock, the correction, and the window -----------------
+    is_locked: bool
+    week_closed: bool
+    #: How many weeks of supplementary filing this week still has. Zero means closed
+    #: to every write, and it is the number the refusal names.
+    supplement_weeks_left: int
+    supplement_window_weeks: int
+    can_supplement: bool
+    is_supplementary: bool
+    corrects_timesheet_id: UUID | None
+    editable_timesheet_id: UUID | None
+    sheets: list[SupplementRead]
+    supplements: list[SupplementRead]
+    gross_total_minutes: int
+    reversal_total_minutes: int
+    tasks: list[TaskNetRead]
 
 
 class TimesheetRead(BaseModel):
@@ -145,6 +256,7 @@ class TimesheetRead(BaseModel):
     week_start: date
     status: TimesheetStatus
     is_editable: bool
+    is_locked: bool
     submitted_at: datetime | None
 
 
@@ -181,13 +293,32 @@ class ApprovalRead(BaseModel):
     decisions: list[DecisionRead]
 
 
+class SheetStatusRead(BaseModel):
+    """One sheet's own approval state, for the week's status read.
+
+    Each supplement has a request of its own, so "the week's history" is several
+    histories; the client shows the original's and the correction's beside each other
+    rather than picking one and hiding the other.
+    """
+
+    timesheet_id: UUID
+    status: TimesheetStatus
+    is_supplementary: bool
+    corrects_timesheet_id: UUID | None
+    submitted_at: datetime | None
+    approval_request_id: UUID | None
+    approval: ApprovalRead | None
+
+
 class StatusRead(BaseModel):
     week_start: date
     status: TimesheetStatus
     is_editable: bool
+    is_locked: bool
     submitted_at: datetime | None
     approval_request_id: UUID | None
     approval: ApprovalRead | None
+    sheets: list[SheetStatusRead]
 
 
 # --- projections ------------------------------------------------------------
@@ -196,10 +327,13 @@ class StatusRead(BaseModel):
 def entry_read(entry: TimesheetEntry, label: ProjectLabel | None) -> EntryRead:
     return EntryRead(
         id=entry.id,
+        timesheet_id=entry.timesheet_id,
         entry_date=entry.entry_date,
         project_id=entry.project_id,
         task_id=entry.task_id,
         minutes=entry.minutes,
+        entry_type=entry.entry_type,
+        reverses_entry_id=entry.reverses_entry_id,
         is_billable=entry.is_billable,
         note=entry.note,
         project_code=None if label is None else label.project_code,
@@ -215,6 +349,27 @@ def over_budget_read(day: OverBudgetDay) -> OverBudgetRead:
         total_minutes=day.total_minutes,
         expected_minutes=day.expected_minutes,
         over_minutes=day.over_minutes,
+    )
+
+
+def task_net_read(task: TaskNet) -> TaskNetRead:
+    return TaskNetRead(
+        project_id=task.project_id,
+        task_id=task.task_id,
+        gross_minutes=task.gross_minutes,
+        reversal_minutes=task.reversal_minutes,
+        net_minutes=task.net_minutes,
+    )
+
+
+def sheet_read(sheet: Timesheet) -> SupplementRead:
+    return SupplementRead(
+        timesheet_id=sheet.id,
+        status=sheet.status,
+        submitted_at=sheet.submitted_at,
+        approval_request_id=sheet.approval_request_id,
+        corrects_timesheet_id=sheet.supersedes_id,
+        week_start=sheet.week_start,
     )
 
 
@@ -239,12 +394,29 @@ def week_read(view: WeekView, labels: dict[UUID, ProjectLabel]) -> WeekRead:
                 weekday=day.weekday,
                 entries=[entry_read(row, labels.get(row.task_id)) for row in day.entries],
                 total_minutes=day.total_minutes,
+                gross_minutes=day.gross_minutes,
+                reversal_minutes=day.reversal_minutes,
                 expected_minutes=day.expected_minutes,
                 expectation_source=day.expectation_source,
                 is_holiday=day.is_holiday,
             )
             for day in view.days
         ],
+        is_locked=view.is_locked,
+        week_closed=view.week_closed,
+        supplement_weeks_left=view.supplement_weeks_left,
+        supplement_window_weeks=SUPPLEMENT_WINDOW_WEEKS,
+        can_supplement=view.can_supplement,
+        is_supplementary=view.is_supplementary,
+        corrects_timesheet_id=(
+            None if view.timesheet is None else view.timesheet.supersedes_id
+        ),
+        editable_timesheet_id=view.editable_sheet_id,
+        sheets=[sheet_read(sheet) for sheet in view.sheets],
+        supplements=[sheet_read(sheet) for sheet in view.supplements],
+        gross_total_minutes=view.gross_total_minutes,
+        reversal_total_minutes=view.reversal_total_minutes,
+        tasks=[task_net_read(task) for task in view.tasks],
     )
 
 
@@ -253,6 +425,7 @@ def timesheet_read(sheet: Timesheet) -> TimesheetRead:
         week_start=sheet.week_start,
         status=sheet.status,
         is_editable=sheet.is_editable,
+        is_locked=sheet.is_locked,
         submitted_at=sheet.submitted_at,
     )
 
@@ -284,19 +457,26 @@ def approval_read(state: ApprovalState) -> ApprovalRead:
 
 __all__ = [
     "ApprovalRead",
+    "CorrectionWrite",
     "DayRead",
     "DecisionRead",
     "EntryRead",
     "EntryUpdate",
     "EntryWrite",
     "OverBudgetRead",
+    "SheetStatusRead",
     "StatusRead",
+    "SupplementRead",
+    "SupplementWrite",
+    "TaskNetRead",
     "TimesheetPageRead",
     "TimesheetRead",
     "WeekRead",
     "approval_read",
     "entry_read",
     "over_budget_read",
+    "sheet_read",
+    "task_net_read",
     "timesheet_read",
     "week_read",
 ]

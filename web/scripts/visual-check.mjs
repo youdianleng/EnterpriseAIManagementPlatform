@@ -298,6 +298,10 @@ async function checkTimesheets(browser, sessionCookie) {
 
   // --- the empty, editable week: structure and keyboard (§6.1) ------------------
   await page.goto(`${BASE}/es/timesheets`, { waitUntil: "networkidle" });
+  // The grid is a client component, so it is waited for rather than sampled: on a
+  // loaded machine the first commit after `networkidle` can still be the shell, and a
+  // column count taken then would describe a page that had not drawn the week.
+  await grid.waitFor({ state: "visible", timeout: 30000 });
 
   const columns = await grid.locator("thead th").count();
   expect(columns === 7, `timesheets: seven day columns, Monday to Sunday (found ${columns})`);
@@ -368,8 +372,14 @@ async function checkTimesheets(browser, sessionCookie) {
   await page.goto(`${BASE}/es/timesheets?week=${week}`, { waitUntil: "networkidle" });
 
   const warning = page.getByText(/por encima de la jornada prevista/i).first();
+  // Waited for, not sampled: this notice is rendered by the client component, and the
+  // week it belongs to is the one `timesheet-data-check.mjs` fills.
+  const noticed = await warning
+    .waitFor({ state: "visible", timeout: 30000 })
+    .then(() => true)
+    .catch(() => false);
   expect(
-    (await warning.count()) > 0,
+    noticed && (await warning.count()) > 0,
     `timesheets: the over-budget notice is shown for the week of ${week}`,
   );
   if ((await warning.count()) > 0) {
@@ -399,6 +409,15 @@ async function checkTimesheets(browser, sessionCookie) {
   for (const width of [320, 375]) {
     await page.setViewportSize({ width, height: 812 });
     await page.goto(`${BASE}/es/timesheets?week=${week}`, { waitUntil: "networkidle" });
+    // Which of the two the screen shows is decided by an effect after the first
+    // commit, so counting straight after the navigation can describe a page that has
+    // not measured its viewport yet — the grid *and* the notice are both absent for
+    // that pass. Waiting for whichever one is going to appear is what makes the two
+    // counts below describe the rendered screen.
+    await page
+      .locator('#timesheet-desktop-only, [data-testid="timesheet-grid"]')
+      .first()
+      .waitFor({ state: "visible", timeout: 20000 });
     const notice = page.locator("#timesheet-desktop-only");
     expect((await notice.count()) === 1, `timesheets ${width}px: the desktop notice is shown`);
     expect(
@@ -429,6 +448,210 @@ async function checkTimesheets(browser, sessionCookie) {
   await page.screenshot({ path: join(OUT, "timesheets-grid-en.png"), fullPage: true });
 
   await context.close();
+}
+
+/**
+ * The lock and the supplementary submission (ticket 29).
+ *
+ * Three questions only a browser can answer, and each is a line of the ticket:
+ *
+ *   1. **Does a locked week say so?** The week `seed_timesheet_demo.py` approves is
+ *      read here, and the notice has to be on screen in words — locked, and how many
+ *      weeks of correction are left.
+ *   2. **Can the correction be opened from the screen, and does the grid show what it
+ *      did?** The form is filled in the browser, and the result is read off the DOM:
+ *      an adjustment line marked as one, and a day that now reads
+ *      `registrado − ajustado = neto`. The API's own arithmetic is asserted in
+ *      `tests/test_timesheet_lock.py`; what is checked here is that a person can see it.
+ *   3. **Is the correction offered only inside the window?** A week fourteen weeks back
+ *      is outside it: the screen says the window has closed, offers no correction, and
+ *      the API refuses a write there with the catalogued, bilingual key — the global
+ *      week lock, exercised through the session the browser is signed in with.
+ *
+ * The fixture week is the one the seed fills, four weeks back. Running this twice is
+ * safe: the second run finds a correction already in flight and asserts *that* state
+ * instead, which is the other half of the feature.
+ */
+async function checkLockAndCorrection(browser, sessionCookie, session) {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await context.addCookies([sessionCookie]);
+  const page = await context.newPage();
+
+  const lockedWeek = weeksBack(4);
+  const closedWeek = weeksBack(14);
+  const grid = page.locator('[data-testid="timesheet-grid"]');
+  const notice = page.locator('[data-testid="timesheet-lock-notice"]');
+
+  await page.goto(`${BASE}/es/timesheets?week=${lockedWeek}`, { waitUntil: "networkidle" });
+
+  // Waited for rather than counted straight away: the grid is a client component, so
+  // the first sample after `networkidle` can be the empty shell, and every `count()`
+  // below would then describe a page that had not drawn the week yet.
+  await notice.first().waitFor({ state: "visible", timeout: 20000 });
+  expect((await notice.count()) === 1, "timesheets: the locked week says it is locked");
+  const lockText = (await notice.innerText()).replace(/\s+/g, " ");
+  expect(
+    /bloqueada/i.test(lockText),
+    `timesheets: the lock is stated in words ("${lockText.slice(0, 90)}")`,
+  );
+  expect(
+    /semanas más/i.test(lockText),
+    `timesheets: the notice names the weeks left to correct it ("${lockText.slice(0, 120)}")`,
+  );
+  // The locked original's rows are readable and not editable. Which is asserted by
+  // *state* rather than absolutely: once a correction is open it is a draft the
+  // employee may add to, and the cells then belong to the correction rather than to
+  // the week that was signed.
+  const correct = page.getByRole("button", { name: /^Corregir esta semana$/i });
+  const canCorrect = (await correct.count()) === 1;
+  if (canCorrect) {
+    const cells = await page.getByRole("button", { name: /^Añadir horas:/i }).count();
+    expect(
+      cells === 0,
+      `timesheets: a locked week with no correction in flight offers no editable cell (${cells})`,
+    );
+  } else {
+    const inFlightHint = (await page.locator("main").innerText()).replace(/\s+/g, " ");
+    expect(
+      /Corrección en curso/i.test(inFlightHint),
+      `timesheets: a correction already in flight is shown ("${inFlightHint.slice(0, 120)}")`,
+    );
+  }
+  await page.screenshot({ path: join(OUT, "timesheets-locked-es.png"), fullPage: true });
+
+  if (canCorrect) {
+    await correct.click();
+    const form = page.locator("form[aria-labelledby='timesheet-supplement-heading']");
+    await form.waitFor({ timeout: 10000 });
+    ok("timesheets: a locked week inside the window offers the correction");
+
+    const rows = form.locator('input[type="number"]');
+    const rowCount = await rows.count();
+    expect(rowCount >= 2, `timesheets: the correction lists the week's entries (${rowCount})`);
+
+    // An empty submission is refused locally, with the reason on screen.
+    await form.getByRole("button", { name: /^Enviar la corrección$/i }).click();
+    await page.waitForTimeout(150);
+    const problem = (await form.innerText()).replace(/\s+/g, " ");
+    expect(
+      /Cambia al menos una entrada/i.test(problem),
+      `timesheets: a correction that changes nothing is refused on screen ("${problem.slice(0, 90)}")`,
+    );
+
+    // One real correction: the first entry's minutes change, and the request goes out.
+    await rows.first().fill("300");
+    await form.getByRole("button", { name: /^Enviar la corrección$/i }).click();
+    await page.waitForFunction(() => /Corrección abierta/.test(document.body.innerText), undefined, {
+      timeout: 20000,
+    });
+    ok("timesheets: the correction was opened and the screen said so");
+  }
+
+  // What the correction left on screen: an adjustment line, the original untouched,
+  // and a day that reads what its net was reached from.
+  const adjustments = page.locator('[data-entry-type="reversal"]');
+  const adjustmentCount = await adjustments.count();
+  expect(
+    adjustmentCount >= 1,
+    `timesheets: the correction is drawn as an adjustment line (${adjustmentCount})`,
+  );
+  if (adjustmentCount > 0) {
+    const adjustment = (await adjustments.first().innerText()).replace(/\s+/g, " ");
+    expect(
+      /Línea de ajuste/i.test(adjustment),
+      `timesheets: the adjustment is a word as well as a colour ("${adjustment}")`,
+    );
+    expect(
+      /-8 h/.test(adjustment),
+      `timesheets: the adjustment carries the original minutes negated ("${adjustment}")`,
+    );
+    const monday = (
+      await grid.locator(`tr[data-day-total="${lockedWeek}"]`).first().innerText()
+    ).replace(/\s+/g, " ");
+    expect(
+      /Total del día: 5 h/.test(monday),
+      `timesheets: the day nets 8 h − 8 h + 5 h to 5 h ("${monday}")`,
+    );
+    expect(
+      /Registrado: 13 h − Ajustado: 8 h/.test(monday),
+      `timesheets: and says what the net was reached from ("${monday}")`,
+    );
+    const netTable = page.locator('[data-testid="timesheet-task-net"]');
+    expect(
+      (await netTable.count()) === 1,
+      "timesheets: the net per task is shown once something has been adjusted",
+    );
+    const sheets = (await page.locator("#timesheet-sheets-heading").locator("..").innerText())
+      .replace(/\s+/g, " ");
+    expect(
+      /Corrección/.test(sheets) && /Semana original/.test(sheets),
+      `timesheets: the week lists both sheets and what the correction adjusts ("${sheets.slice(0, 120)}")`,
+    );
+  }
+  await page.screenshot({ path: join(OUT, "timesheets-supplement-es.png"), fullPage: true });
+
+  // English, the same screen: the lock and the adjustment in the other language.
+  await page.goto(`${BASE}/en/timesheets?week=${lockedWeek}`, { waitUntil: "networkidle" });
+  const englishLock = (await notice.innerText()).replace(/\s+/g, " ");
+  expect(/Locked/i.test(englishLock), "timesheets en: the lock is stated in English");
+  expect(
+    /Adjustment line/.test(await grid.innerText()),
+    "timesheets en: the adjustment line is named in English",
+  );
+  await page.screenshot({ path: join(OUT, "timesheets-locked-en.png"), fullPage: true });
+
+  // --- outside the window: closed to every write ------------------------------
+  await page.goto(`${BASE}/es/timesheets?week=${closedWeek}`, { waitUntil: "networkidle" });
+  const closedText = (await notice.innerText()).replace(/\s+/g, " ");
+  expect(
+    /Fuera de plazo/i.test(closedText),
+    `timesheets: a week outside the window says so ("${closedText.slice(0, 100)}")`,
+  );
+  expect(
+    (await page.getByRole("button", { name: /^Corregir esta semana$/i }).count()) === 0,
+    "timesheets: no correction is offered for a week outside the window",
+  );
+  expect(
+    (await page.getByRole("button", { name: /^Añadir horas:/i }).count()) === 0,
+    "timesheets: nor is a cell whose write the API would refuse",
+  );
+  await page.screenshot({ path: join(OUT, "timesheets-window-closed-es.png"), fullPage: true });
+
+  // The same refusal from the API, through the session the browser is signed in with:
+  // the key is the catalogue's, so the sentence is the reader's language and not the
+  // server's, and the detail states the weeks that remain.
+  const refused = await session.post(`${API}/api/v1/timesheets/submit?week=${closedWeek}`);
+  expect(
+    refused.status() === 409,
+    `timesheets: the API refuses a write in a closed week (${refused.status()})`,
+  );
+  const envelope = await refused.json();
+  expect(
+    envelope.error?.message_key === "errors.timesheet_week_closed",
+    `timesheets: the refusal is the catalogued window key ("${envelope.error?.message_key}")`,
+  );
+  expect(
+    /0 of 8 weeks remain/.test(envelope.error?.detail ?? ""),
+    `timesheets: the refusal names the weeks left ("${envelope.error?.detail}")`,
+  );
+  ok("timesheets: the global week lock refuses a write, with the bilingual key");
+
+  await context.close();
+}
+
+/** The Monday of the week `value` falls in, as `YYYY-MM-DD`, without a timezone. */
+function mondayOf(value) {
+  const copy = new Date(value.getFullYear(), value.getMonth(), value.getDate());
+  copy.setDate(copy.getDate() - ((copy.getDay() + 6) % 7));
+  const month = `${copy.getMonth() + 1}`.padStart(2, "0");
+  const day = `${copy.getDate()}`.padStart(2, "0");
+  return `${copy.getFullYear()}-${month}-${day}`;
+}
+
+/** The Monday `weeks` weeks before this one: the fixture weeks the seed writes. */
+function weeksBack(weeks) {
+  const today = new Date();
+  return mondayOf(new Date(today.getFullYear(), today.getMonth(), today.getDate() - weeks * 7));
 }
 
 async function main() {
@@ -556,6 +779,7 @@ async function main() {
     await checkStyleGuide(browser, sessionCookie);
     await checkNotifications(browser, sessionCookie);
     await checkTimesheets(browser, sessionCookie);
+    await checkLockAndCorrection(browser, sessionCookie, request);
     await checkDocuments(browser, sessionCookie, request);
   } else {
     console.log("[note] signed-in checks skipped (no usable credentials)");

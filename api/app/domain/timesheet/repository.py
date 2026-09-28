@@ -18,6 +18,12 @@ Three things about this interface are load-bearing:
   computes a total per day and per week from them. A paginated read here would be a
   total computed over a page, which is the defect that makes a timesheet disagree
   with itself.
+
+* **`entries_in_week` is the week, `entries_in_sheet` is the document.** They differ
+  once a correction exists: a supplement's reversal rows belong to the supplement and
+  are part of the week's net, so the grid reads by week and the filing reads by sheet.
+  Both exist because "what does this week come to" and "what am I about to file" are
+  different questions with different right answers.
 """
 
 from datetime import date
@@ -38,18 +44,40 @@ class TimesheetRepository(Protocol):
     async def get(self, timesheet_id: UUID) -> Timesheet | None: ...
 
     async def get_week(self, employee_id: UUID, week_start: date) -> Timesheet | None:
-        """The row for one person's one week, or nothing when it has not been written.
+        """The week's *original* sheet, or nothing when the week has never been written.
 
-        Keyed by the Monday. The unique constraint behind this lookup is what makes
-        "one timesheet per person per week" a database fact rather than a service
+        Keyed by the Monday, and deliberately not "any sheet of this week": this is the
+        row a week is identified by, and a correction filed against it is read with
+        `sheets_in_week`. The partial unique index behind this lookup is what makes
+        "one original sheet per person per week" a database fact rather than a service
         check that a second concurrent request can pass twice.
         """
         ...
 
+    async def sheets_in_week(self, employee_id: UUID, week_start: date) -> list[Timesheet]:
+        """Every sheet of one person's week: the original first, then its supplements.
+
+        One query for the whole week, because the grid needs all of them at once — the
+        original's status and each supplement's — and a per-sheet read would be a round
+        trip per correction somebody filed.
+        """
+        ...
+
     async def create_week(self, employee_id: UUID, week_start: date) -> Timesheet:
-        """Write the week's row. The caller has already refused a duplicate politely;
-        a race that reaches this despite that is refused by the constraint, and the
-        service turns the constraint into the same catalogued answer."""
+        """Write the week's original sheet. The caller has already refused a duplicate
+        politely; a race that reaches this despite that is refused by the constraint, and
+        the service turns the constraint into the same catalogued answer."""
+        ...
+
+    async def create_supplement(
+        self, employee_id: UUID, week_start: date, supersedes_id: UUID
+    ) -> Timesheet:
+        """Write a correction's own sheet, linked to the week it corrects.
+
+        The link is written here and never on the original: the original is the record
+        the approver signed, and a correction must not be able to change it even by
+        adding a pointer to it.
+        """
         ...
 
     async def set_status(
@@ -72,18 +100,43 @@ class TimesheetRepository(Protocol):
 
         By employee and week rather than by timesheet id, so entries of a week whose
         row was somehow lost are still readable — and so the read does not depend on
-        a row that the read itself must not create.
+        a row that the read itself must not create. This is also what makes a reversal
+        part of the week it corrects: a supplement shares the original's Monday, so
+        the week's net is one sum over both sheets.
+        """
+        ...
+
+    async def entries_in_sheet(self, timesheet_id: UUID) -> list[TimesheetEntry]:
+        """Every entry *of one sheet*, ordered day then creation.
+
+        The filing path's read: an approval is about a document, so the rows that
+        travel to the approver are that sheet's, not the week's.
         """
         ...
 
     async def get_entry(self, entry_id: UUID) -> TimesheetEntry | None: ...
+
+    async def reversal_for(self, entry_id: UUID) -> TimesheetEntry | None:
+        """The reversal that cancels this entry, if one has been written.
+
+        One indexed lookup rather than the sheet's whole row set, because the question
+        is asked before every edit: an entry that has been reversed is frozen — it is
+        what the reversal negates — and a service check that loaded a dozen rows to
+        answer it would be the reason somebody moved the check.
+        """
+        ...
 
     async def add_entry(
         self, timesheet_id: UUID, employee_id: UUID, week_start: date, data: EntryInput
     ) -> TimesheetEntry:
         """Append one entry. The employee and week are passed as well as the sheet id
         because the table's composite foreign key checks all three against the same
-        row, which is what stops an entry from landing in somebody else's week."""
+        row, which is what stops an entry from landing in somebody else's week.
+
+        The entry's kind and the row it reverses travel inside `EntryInput`, because
+        they are the server's decision: a reversal is written by the supplementary
+        flow, never by a request.
+        """
         ...
 
     async def update_entry(
@@ -110,6 +163,41 @@ class TimesheetRepository(Protocol):
 
     async def week_exists(self, employee_id: UUID, week_start: date) -> bool: ...
 
+    async def week_is_locked(self, week_start: date) -> bool:
+        """Whether the week is globally closed — the record, not the clock.
+
+        The service decides the window; this is the fact that outlives the decision,
+        and it is the same row `time_entries_guard_week_lock` refuses a console over.
+        """
+        ...
+
+    async def lock_week(
+        self,
+        week_start: date,
+        *,
+        reason: str | None = None,
+        locked_by_employee_id: UUID | None = None,
+    ) -> bool:
+        """Close a week. Returns whether this call is the one that closed it.
+
+        Idempotent: a week that is already locked stays as it was, with the timestamp
+        and the reason of the call that closed it — a second sweep must not rewrite
+        when a week was closed.
+        """
+        ...
+
+    async def lock_expired_weeks(
+        self, employee_id: UUID, *, before: date, reason: str
+    ) -> list[date]:
+        """Close every week of one employee that starts before `before`.
+
+        One statement over the sheets the employee has rather than a row per calendar
+        week: a week nobody ever wrote is already unwritable by construction, and
+        closing a decade of them would be rows about nothing. Returns the weeks this
+        call closed, so the caller can say so in the audit record.
+        """
+        ...
+
     async def list_weeks(
         self, employee_id: UUID, *, limit: int = 50, offset: int = 0
     ) -> TimesheetPage:
@@ -118,7 +206,8 @@ class TimesheetRepository(Protocol):
         A page rather than a list because a career is hundreds of weeks, and the
         total is returned with it for the reason the project module gives: a caller
         that counted separately would repeat the filter and eventually count a
-        different one.
+        different one. Original sheets only: a supplement is a correction *of* a week
+        and appears beside it rather than as a week of its own.
         """
         ...
 

@@ -157,6 +157,15 @@ class AuditAction(StrEnum):
     TIMESHEET_ENTRY_REMOVED = "timesheet.entry_removed"  # 28
     TIMESHEET_SUBMITTED = "timesheet.submitted"  # 28
     TIMESHEET_COPIED = "timesheet.copied"  # 28
+    #: Ticket 29. Filing writes the engine's own `approval.submitted` and each decision
+    #: writes `approval.decided`, so what this module records itself is the three
+    #: moments that are *its*: the stored status catching up with a decision taken
+    #: elsewhere (written by the system, because the engine decided and this module
+    #: only wrote it down), a correction being opened — with the reversal pairs it
+    #: wrote — and a week being closed for good when a write reached it too late.
+    TIMESHEET_DECISION_APPLIED = "timesheet.decision_applied"  # 29
+    TIMESHEET_SUPPLEMENT_OPENED = "timesheet.supplement_opened"  # 29
+    TIMESHEET_WEEK_LOCKED = "timesheet.week_locked"  # 29
     #: A correction request (ticket 24): the document a person writes to restate a
     #: punch, and the append that carries it out. Two actions, not three, because
     #: the middle one is the engine's: filing writes `approval.submitted` and each

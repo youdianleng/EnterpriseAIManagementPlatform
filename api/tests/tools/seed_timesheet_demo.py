@@ -1,6 +1,6 @@
-"""Seed the development database with what the timesheet-flow check needs.
+"""Seed the development database with what the timesheet-flow checks need.
 
-Two rows, written through the modules that own them so nothing is invented here:
+Three things, written through the modules that own them so nothing is invented here:
 
 * a **company default schedule** expecting eight hours, Monday to Friday — the
   expectation the over-budget warning is measured against, which is what makes
@@ -8,7 +8,12 @@ Two rows, written through the modules that own them so nothing is invented here:
 * an **active project with an active task**, owned by the department the demo account
   signs in for and managed by that account — because `filter_for` reaches a project
   through the caller's departments or by their having been named its manager, and the
-  fixture's whole purpose is a project the demo account may actually book against.
+  fixture's whole purpose is a project the demo account may actually book against;
+* an **approved week, four weeks back** (ticket 29) — a locked week, filed through the
+  approval engine and approved at both levels, so the screen has something to show for
+  "locked, and correctable while the window is open" without anybody having to build an
+  approval inbox first. Any correction an earlier run left against it is removed, so
+  `web/scripts/visual-check.mjs` can open a fresh one.
 
 `FIJO_TARGET` names the account, defaulting to `devlead`, the one
 `web/scripts/visual-check.mjs` and `web/scripts/timesheet-data-check.mjs` sign in as.
@@ -21,15 +26,18 @@ Idempotent: it reports what it found and writes only what is missing. Run it wit
 import asyncio
 import os
 import sys
-from datetime import date, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
 # Probes and seeders are run as scripts; the app package lives one level up.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session_factory
+from app.domain.approval.models import ApprovalStatus, DecisionKind, SubmitContext
+from app.domain.approval.service import ApprovalService
 from app.domain.project.models import (
     ProjectInput,
     ProjectPatch,
@@ -41,6 +49,7 @@ from app.domain.schedule.service import ScheduleService
 from app.models.account import User
 from app.models.employee import EmployeeAssignment
 from app.models.timesheet import Timesheet, TimesheetEntry
+from app.repositories.approval import PostgresApprovalRepository
 from app.repositories.project import PostgresProjectRepository
 from app.repositories.schedule import PostgresScheduleRepository
 
@@ -48,6 +57,20 @@ EXPECTED_MINUTES = 480
 WORKDAYS = (0, 1, 2, 3, 4)
 PROJECT_CODE = "FIJO-2026"
 TASK_CODE = "01"
+
+#: The entity type the timesheet module files a week under. Written out rather than
+#: imported: this script must not depend on the module it is seeding *for*, or a rename
+#: would make the fixture fail in a way that looks like a product defect.
+TIMESHEET_ENTITY = "timesheet"
+
+#: The locked week the interface check opens: four weeks back, which is inside ticket
+#: 29's eight-week window with room to spare, and far enough from the week
+#: `timesheet-data-check.mjs` fills that the two cannot collide.
+LOCKED_WEEKS_BACK = 4
+
+#: What the locked week holds: a full Monday and a half Tuesday, so a correction has
+#: two rows to choose between rather than one.
+LOCKED_ENTRIES = (480, 240)
 
 #: The account whose department the project belongs to, and which manages it.
 FIJO_TARGET = os.environ.get("FIXTURE_USERNAME", "devlead")
@@ -58,8 +81,9 @@ async def main() -> None:
     async with factory() as session:
         await _schedule(session)
         employee_id, department_id = await _target(session)
-        await _project(session, employee_id, department_id)
+        project, task = await _project(session, employee_id, department_id)
         await _reset_week(session, employee_id)
+        await _locked_week(session, employee_id, project, task)
         await session.commit()
 
 
@@ -164,7 +188,7 @@ async def _schedule(session) -> None:
     print(f"schedule: created {created.code} (8 h x 5 days, the company default)")
 
 
-async def _project(session, employee_id, department_id) -> None:  # noqa: ANN001
+async def _project(session, employee_id, department_id):  # noqa: ANN001
     """An active project with one task, in the demo account's department.
 
     An existing project is *moved* to that department and manager rather than left where
@@ -186,11 +210,13 @@ async def _project(session, employee_id, department_id) -> None:  # noqa: ANN001
         )
         if existing.manager_employee_id != employee_id:
             await repository.reassign_manager(existing.id, employee_id)
+        tasks = await repository.list_tasks(existing.id)
+        assert tasks, f"{PROJECT_CODE} has no task for the entries to name"
         print(
             f"project: {existing.code} is active in the demo department, "
             f"managed by {FIJO_TARGET}"
         )
-        return
+        return existing, tasks[0]
 
     project = await repository.save(
         ProjectInput(
@@ -209,6 +235,116 @@ async def _project(session, employee_id, department_id) -> None:  # noqa: ANN001
         ProjectTaskInput(code=TASK_CODE, name_es="Trabajo", name_en="Work"),
     )
     print(f"project: created {project.code} ({project.status}) with task {task.code}")
+    return project, task
+
+
+async def _locked_week(session: AsyncSession, employee_id, project, task) -> None:  # noqa: ANN001
+    """An approved week for the demo account: the locked week the screen must show.
+
+    A locked week cannot be produced through the interface — approving a timesheet has
+    no screen yet, because the engine's inbox is not this ticket's — so the fixture
+    makes one the way the product does: entries, a filing through the engine, and two
+    levels of approval. The three columns this module's `apply_decision` would write on
+    the next read (`status`, `submitted_at`, `approval_request_id`) are written here for
+    the same reason: the point of the fixture is a demo that *starts* from a locked week
+    rather than one that needs somebody to open a page first.
+
+    Any correction an earlier run of `visual-check.mjs` left against it is removed
+    first, so the check can open a fresh one. The original week is never rewritten: a
+    week that is already approved is left exactly as it is, which is the property the
+    check exists to demonstrate.
+    """
+    week = _monday(date.today() - timedelta(weeks=LOCKED_WEEKS_BACK))
+    sheet = await session.scalar(
+        select(Timesheet).where(
+            Timesheet.employee_id == employee_id,
+            Timesheet.week_start == week,
+            Timesheet.supersedes_timesheet_id.is_(None),
+        )
+    )
+    if sheet is not None:
+        # The corrections go first, with their entries through the cascade: they are
+        # draft or pending sheets, so the week-lock trigger lets them go.
+        await session.execute(
+            delete(Timesheet).where(Timesheet.supersedes_timesheet_id == sheet.id)
+        )
+        if sheet.status == "approved":
+            print(f"locked week: {week} is already approved; corrections cleared")
+            return
+        # Not approved: an earlier run left it half-filed. It goes, with its entries
+        # through `fk_timesheet_entries_week`, and is rebuilt below. Its approval
+        # request and decisions stay — `approval_decisions` is append-only.
+        await session.execute(delete(Timesheet).where(Timesheet.id == sheet.id))
+        print(f"locked week: rebuilt {week} (it was {sheet.status})")
+
+    sheet = Timesheet(
+        employee_id=employee_id,
+        week_start=week,
+        status="draft",
+        is_supplementary=False,
+    )
+    session.add(sheet)
+    await session.flush()
+    for offset, minutes in enumerate(LOCKED_ENTRIES):
+        session.add(
+            TimesheetEntry(
+                timesheet_id=sheet.id,
+                employee_id=employee_id,
+                week_start=week,
+                entry_date=week + timedelta(days=offset),
+                project_id=project.id,
+                task_id=task.id,
+                minutes=minutes,
+                is_billable=True,
+                entry_type="normal",
+            )
+        )
+    await session.commit()
+
+    request_id = await _approve(session, sheet, employee_id)
+    sheet.status = "approved"
+    sheet.approval_request_id = request_id
+    sheet.submitted_at = datetime.now(UTC)
+    await session.commit()
+    print(
+        f"locked week: {week} ({sum(LOCKED_ENTRIES)} minutes) filed and approved at both "
+        "levels; the interface shows it locked and offers a correction"
+    )
+
+
+async def _approve(session: AsyncSession, sheet: Timesheet, employee_id) -> object:  # noqa: ANN001
+    """File the week and approve it at both levels, through the engine that owns them.
+
+    The route is the engine's own: whoever the engine resolved level one to decides the
+    first step (the demo account's own position resolves to themselves, which the engine
+    records as a skipped self-approval), and an `hr` holder decides the second. Nothing
+    here invents a decision.
+    """
+    engine = ApprovalService(PostgresApprovalRepository(session), session)
+    request_id = await engine.submit(TIMESHEET_ENTITY, sheet.id, employee_id, SubmitContext())
+    state = await engine.state_of(TIMESHEET_ENTITY, sheet.id)
+    assert state is not None
+
+    step = state.pending_step
+    if step is not None and step.approver_employee_id is not None:
+        await engine.decide(state.id, step.approver_employee_id, DecisionKind.APPROVE, "fixture")
+        state = await engine.state_of(TIMESHEET_ENTITY, sheet.id)
+        assert state is not None
+
+    hr_employee_id = await session.scalar(
+        select(User.employee_id)
+        .where(User.employee_id != employee_id, User.roles.contains(["hr"]))
+        .limit(1)
+    )
+    assert hr_employee_id is not None, "no hr account in this database to approve level two"
+    if state.status is ApprovalStatus.PENDING_SECOND:
+        await engine.decide(state.id, hr_employee_id, DecisionKind.APPROVE, "fixture")
+    return request_id
+
+
+def _monday(on_date: date) -> date:
+    """The Monday of the week `on_date` falls in: the key a week is stored under."""
+    return on_date - timedelta(days=on_date.weekday())
 
 
 if __name__ == "__main__":

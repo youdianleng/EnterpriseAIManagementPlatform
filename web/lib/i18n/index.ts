@@ -242,6 +242,14 @@ export type Dictionary = {
     timesheet_copy_source_invalid: string;
     timesheet_copy_target_not_empty: string;
     timesheet_submission_refused: string;
+    /** Ticket 29's refusals: the two locks and the supplement's own rules. Each has a
+     *  remedy, so each is a sentence the employee can act on rather than a rule. */
+    timesheet_week_locked: string;
+    timesheet_week_closed: string;
+    timesheet_supplement_not_locked: string;
+    timesheet_supplement_open: string;
+    timesheet_supplement_invalid: string;
+    timesheet_entry_is_reversal: string;
     project_task_not_recordable: string;
     /** Document refusals the uploader can act on: choose another file, or open the one
      *  they already have. The type refusal and the ceiling both belong to "pick a
@@ -400,6 +408,55 @@ export type Dictionary = {
         pending: string;
         skipped: string;
       };
+    };
+    /** The lock (ticket 29): which weeks are closed, and why. */
+    lock: {
+      locked: string;
+      lockedHint: string;
+      closed: string;
+      /** The window's length is interpolated: it is the same number the API refuses with. */
+      closedHint: string;
+      /** How long this week may still be corrected, with the count interpolated. */
+      supplementWindow: string;
+    };
+    /** The supplementary submission: one correction per locked entry. */
+    supplement: {
+      heading: string;
+      intro: string;
+      open: string;
+      openHint: string;
+      entryLabel: string;
+      newMinutes: string;
+      remove: string;
+      removeHint: string;
+      unchanged: string;
+      submit: string;
+      submitting: string;
+      cancel: string;
+      nothingChanged: string;
+      invalidMinutes: string;
+      opened: string;
+      inFlight: string;
+      inFlightHint: string;
+      linkOriginal: string;
+      sheetsHeading: string;
+      sheetOriginal: string;
+      sheetSupplement: string;
+    };
+    /** How a corrected day and task read: recorded, adjusted, net. */
+    adjustments: {
+      heading: string;
+      day: string;
+      task: string;
+      gross: string;
+      reversed: string;
+      net: string;
+      reversalRow: string;
+      reversalOf: string;
+      replacement: string;
+    };    tasks: {
+      heading: string;
+      empty: string;
     };
   };
   footer: {

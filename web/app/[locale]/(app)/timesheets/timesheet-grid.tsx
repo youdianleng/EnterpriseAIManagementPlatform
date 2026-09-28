@@ -7,15 +7,18 @@ import { ApiError } from "@/lib/api/client";
 import {
   addEntry,
   copyPreviousWeek,
+  openSupplement,
   parseDay,
   projectTasks,
   removeEntry,
   selectableProjects,
   submitWeek,
   updateEntry,
+  type Correction,
   type OverBudgetDay,
   type ProjectOption,
   type TaskOption,
+  type TaskNet,
   type TimesheetDay,
   type TimesheetEntry,
   type TimesheetStatusRead,
@@ -47,6 +50,13 @@ import type { Locale } from "@/lib/i18n/config";
  *    driven by padding and the table scrolls inside its own container at tablet sizes
  *    rather than dragging the page sideways.
  *
+ * **The lock and the correction are drawn, not implied** (ticket 29, design system
+ * §6.1): a locked week says so, the correction's adjustment lines are marked as
+ * adjustments rather than looking like hours somebody typed, and the offer to correct
+ * the week appears only while the server says the week is inside its window. Editing is
+ * decided per *row* — `entry.timesheet_id === editable_timesheet_id` — which is what
+ * lets a locked original and an open correction share one table.
+ *
  * At 375px this component is not rendered at all — `timesheet-screen.tsx` renders the
  * "please use a desktop" panel instead, because seven columns on a phone is an interface
  * that is bad at both sizes (§7).
@@ -75,10 +85,18 @@ export function TimesheetGrid({
   const t = dict.timesheets;
   const router = useRouter();
   const [editing, setEditing] = useState<Editing | null>(null);
+  const [correcting, setCorrecting] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const cellRefs = useRef(new Map<string, HTMLElement>());
 
+  // Which sheet may be written: the week's open one, which is the correction while a
+  // correction is being filled in. A row of the locked original draws as read-only in
+  // the same table, which is the whole reason the API answers per entry. The week is
+  // writable when the server says so, which includes a week nobody has written yet —
+  // there the first write is what creates the sheet, and `editableSheetId` is null.
+  const editableSheetId = grid.editable_timesheet_id;
   const editable = grid.is_editable;
   const overByDate = useMemo(() => {
     const map = new Map<string, OverBudgetDay>();
@@ -87,17 +105,19 @@ export function TimesheetGrid({
   }, [grid.over_budget_days]);
 
   /** One write, one error path: every action in this component goes through here. */
-  async function run(action: () => Promise<TimesheetWeek>) {
+  async function run(action: () => Promise<TimesheetWeek>, done?: string) {
     setPending(true);
     setError(null);
+    setNotice(null);
     try {
       onGrid(await action());
       setEditing(null);
+      if (done) setNotice(done);
       // The week list and the status panel are server-rendered, so a write that changes
       // them has to ask the server for them again.
       router.refresh();
     } catch (cause) {
-      setError(errorText(dict, cause));
+      setError(errorText(dict, cause, grid.supplement_window_weeks));
     } finally {
       setPending(false);
     }
@@ -133,6 +153,7 @@ export function TimesheetGrid({
         </p>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
           <StatusPill dict={dict} status={grid.status} />
+          {grid.is_locked && <LockPill dict={dict} />}
           {grid.submitted_at && (
             <span className="text-fg-subtle">
               {t.submittedOn.replace("{date}", formatDate(grid.submitted_at, locale))}
@@ -141,8 +162,16 @@ export function TimesheetGrid({
         </div>
       </div>
 
-      {!editable && <p className="text-sm text-fg-muted">{t.lockedHint}</p>}
+      <LockNotice dict={dict} grid={grid} />
       {grid.status === "rejected" && <p className="text-sm text-fg-muted">{t.rejectedHint}</p>}
+      {!editable && !grid.is_locked && !grid.week_closed && (
+        <p className="text-sm text-fg-muted">{t.lockedHint}</p>
+      )}
+      {notice && (
+        <p role="status" className="rounded bg-success-bg p-3 text-sm text-success">
+          {notice}
+        </p>
+      )}
       {error && (
         <p role="alert" className="rounded bg-danger-bg p-3 text-sm text-danger">
           {error}
@@ -198,6 +227,7 @@ export function TimesheetGrid({
                 day={day}
                 week={week}
                 editable={editable}
+                editableSheetId={editableSheetId}
                 pending={pending}
                 editing={editing}
                 over={overByDate.get(day.entry_date)}
@@ -215,6 +245,13 @@ export function TimesheetGrid({
               </th>
               <td colSpan={6} className="tabular px-2 py-3">
                 {formatDuration(grid.entries_total_minutes, locale)}
+                {grid.reversal_total_minutes > 0 && (
+                  <span className="ml-3 font-normal text-fg-subtle">
+                    {t.adjustments.gross}: {formatDuration(grid.gross_total_minutes, locale)} −{" "}
+                    {t.adjustments.reversed}:{" "}
+                    {formatDuration(grid.reversal_total_minutes, locale)}
+                  </span>
+                )}
                 {grid.expected_total_minutes !== null && (
                   <span className="ml-3 font-normal text-fg-subtle">
                     {t.weekExpected}: {formatDuration(grid.expected_total_minutes, locale)}
@@ -232,7 +269,29 @@ export function TimesheetGrid({
         week={week}
         grid={grid}
         status={status}
+        pending={pending}
+        correcting={correcting}
+        onCorrect={() => setCorrecting((open) => !open)}
         onRun={run}
+      />
+
+      {correcting && (
+        <SupplementForm
+          dict={dict}
+          locale={locale}
+          week={week}
+          grid={grid}
+          pending={pending}
+          onCancel={() => setCorrecting(false)}
+          onRun={run}
+        />
+      )}
+
+      <TaskNetTable
+        dict={dict}
+        locale={locale}
+        tasks={grid.tasks}
+        entries={grid.days.flatMap((day) => day.entries)}
       />
     </section>
   );
@@ -252,6 +311,7 @@ function DayGroup({
   day,
   week,
   editable,
+  editableSheetId,
   pending,
   editing,
   over,
@@ -265,13 +325,14 @@ function DayGroup({
   day: TimesheetDay;
   week: string;
   editable: boolean;
+  editableSheetId: string | null;
   pending: boolean;
   editing: Editing | null;
   over: OverBudgetDay | undefined;
   remember: (day: string, entryId: string | null, node: HTMLElement | null) => void;
   onOpen: (day: string, entry: TimesheetEntry | null) => void;
   onClose: (day: string, entry: TimesheetEntry | null) => void;
-  onRun: (action: () => Promise<TimesheetWeek>) => Promise<void>;
+  onRun: (action: () => Promise<TimesheetWeek>, done?: string) => Promise<void>;
 }) {
   const t = dict.timesheets;
   const adding = editing?.mode === "add" && editing.day === day.entry_date;
@@ -280,8 +341,21 @@ function DayGroup({
     <>
       {day.entries.map((entry) => {
         const isEditing = editing?.mode === "edit" && editing.entry.id === entry.id;
+        // A row is writable when it belongs to the week's open sheet. A locked
+        // original's rows are drawn read-only beside an open correction's, and an
+        // adjustment line is never editable — it is one half of a pair.
+        const rowEditable =
+          editable && entry.entry_type !== "reversal" && entry.timesheet_id === editableSheetId;
         return (
-          <tr key={entry.id} className="border-b border-border align-top">
+          <tr
+            key={entry.id}
+            data-entry-type={entry.entry_type}
+            className={
+              entry.entry_type === "reversal"
+                ? "border-b border-border bg-neutral-bg align-top"
+                : "border-b border-border align-top"
+            }
+          >
             <td headers={`day-${day.entry_date}`} className="px-2 py-2">
               {isEditing ? (
                 <EntryForm
@@ -300,12 +374,21 @@ function DayGroup({
                     type="button"
                     ref={(node) => remember(day.entry_date, entry.id, node)}
                     onClick={() => onOpen(day.entry_date, entry)}
-                    disabled={!editable || pending}
+                    disabled={!rowEditable || pending}
                     aria-label={`${taskLabel(entry, locale)}, ${formatDuration(entry.minutes, locale)}`}
                     className="tabular min-h-9 rounded px-2 text-left hover:bg-neutral-bg disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     <span className="font-medium">{formatDuration(entry.minutes, locale)}</span>
                     <span className="ml-2">{taskLabel(entry, locale)}</span>
+                    {/* An adjustment is a word as well as a colour and a minus sign: a
+                        reader has to be able to tell a correction from hours typed in,
+                        and colour alone could not say it (§5). */}
+                    {entry.entry_type === "reversal" && (
+                      <span className="ml-2 rounded bg-warning-bg px-1.5 text-xs text-warning">
+                        <span aria-hidden="true">↩ </span>
+                        {t.adjustments.reversalRow}
+                      </span>
+                    )}
                     {/* Billability is a fact about the row, so it is a word: colour alone
                         could not say it (§5). */}
                     {entry.is_billable && (
@@ -315,7 +398,7 @@ function DayGroup({
                     )}
                   </button>
                   {entry.note && <span className="py-2 text-fg-subtle">{entry.note}</span>}
-                  {editable && (
+                  {rowEditable && (
                     <button
                       type="button"
                       onClick={() => onRun(() => removeEntry(week, entry.id))}
@@ -361,6 +444,16 @@ function DayGroup({
               <span className="tabular font-medium">
                 {t.dayTotal}: {formatDuration(day.total_minutes, locale)}
               </span>
+              {/* A corrected day says what it was reached from: "8 h" and
+                  "registrado 13 h − ajustado 8 h" are different statements, and only
+                  one of them shows the correction that produced the figure. */}
+              {day.reversal_minutes > 0 && (
+                <span className="tabular text-fg-subtle">
+                  <span aria-hidden="true">↩ </span>
+                  {t.adjustments.gross}: {formatDuration(day.gross_minutes, locale)} −{" "}
+                  {t.adjustments.reversed}: {formatDuration(day.reversal_minutes, locale)}
+                </span>
+              )}
               {over && (
                 <span className="text-warning">
                   <span aria-hidden="true">⚠ </span>
@@ -416,7 +509,7 @@ function EntryForm({
   entry: TimesheetEntry | null;
   pending: boolean;
   onCancel: () => void;
-  onRun: (action: () => Promise<TimesheetWeek>) => Promise<void>;
+  onRun: (action: () => Promise<TimesheetWeek>, done?: string) => Promise<void>;
 }) {
   const t = dict.timesheets.entryForm;
   const [projects, setProjects] = useState<ProjectOption[]>([]);
@@ -614,13 +707,24 @@ function EntryForm({
   );
 }
 
-/** The week's two actions: file it, or fill it from the week before. */
+/**
+ * The week's actions: file it, fill it from the week before, or correct a locked one.
+ *
+ * A correction being filled in makes the *week* editable again, so the submit button
+ * files the correction rather than the original — which is the same two-level approval
+ * over a second document, and the reason no separate "submit the correction" route
+ * exists. The offer to correct is drawn only when the server says the week is inside
+ * its window (`can_supplement`), so the screen and the refusal cannot disagree.
+ */
 function WeekActions({
   dict,
   locale,
   week,
   grid,
   status,
+  pending,
+  correcting,
+  onCorrect,
   onRun,
 }: {
   dict: Dictionary;
@@ -628,10 +732,16 @@ function WeekActions({
   week: string;
   grid: TimesheetWeek;
   status: TimesheetStatusRead | null;
-  onRun: (action: () => Promise<TimesheetWeek>) => Promise<void>;
+  pending: boolean;
+  correcting: boolean;
+  onCorrect: () => void;
+  onRun: (action: () => Promise<TimesheetWeek>, done?: string) => Promise<void>;
 }) {
   const t = dict.timesheets;
   const empty = grid.entries_total_minutes === 0;
+  const inFlight = grid.supplements.filter(
+    (sheet) => sheet.status === "draft" || sheet.status === "pending",
+  );
 
   return (
     <div className="flex flex-col gap-4">
@@ -639,7 +749,7 @@ function WeekActions({
         <button
           type="button"
           onClick={() => onRun(() => submitWeek(week))}
-          disabled={!grid.is_editable || empty}
+          disabled={!grid.is_editable || empty || pending}
           className="min-h-11 rounded bg-primary px-4 font-medium text-primary-fg disabled:cursor-not-allowed disabled:opacity-50"
         >
           {t.submit}
@@ -647,15 +757,350 @@ function WeekActions({
         <button
           type="button"
           onClick={() => onRun(() => copyPreviousWeek(week))}
-          disabled={!grid.is_editable || !empty}
+          disabled={!grid.is_editable || !empty || pending}
           className="min-h-11 rounded border border-border bg-surface px-4 hover:bg-neutral-bg disabled:cursor-not-allowed disabled:opacity-50"
         >
           {t.copyPrevious}
         </button>
+        {grid.can_supplement && (
+          <button
+            type="button"
+            onClick={onCorrect}
+            aria-expanded={correcting}
+            className="min-h-11 rounded border border-border bg-surface px-4 hover:bg-neutral-bg"
+          >
+            {t.supplement.open}
+          </button>
+        )}
       </div>
 
+      {inFlight.map((sheet) => (
+        <p key={sheet.timesheet_id} className="text-sm text-fg-muted">
+          {t.supplement.inFlight.replace("{status}", t.status[sheet.status])}{" "}
+          {t.supplement.inFlightHint}
+        </p>
+      ))}
+
+      <SheetList dict={dict} locale={locale} grid={grid} />
       <SubmissionHistory dict={dict} locale={locale} status={status} />
     </div>
+  );
+}
+
+/**
+ * Which sheets this week has, and what each one corrects.
+ *
+ * The link the ticket asks to be readable both ways: the week lists the corrections
+ * filed against it, and each correction names the original it adjusts — which is the
+ * only way a reader can tell "the week" from "the document that changed it" once a
+ * locked original and an open correction share one grid.
+ */
+function SheetList({
+  dict,
+  locale,
+  grid,
+}: {
+  dict: Dictionary;
+  locale: Locale;
+  grid: TimesheetWeek;
+}) {
+  const t = dict.timesheets.supplement;
+  if (grid.supplements.length === 0) return null;
+
+  return (
+    <section aria-labelledby="timesheet-sheets-heading" className="flex flex-col gap-2">
+      <h3 id="timesheet-sheets-heading" className="text-base font-semibold">
+        {t.sheetsHeading}
+      </h3>
+      <ul className="flex flex-col gap-1 text-sm">
+        {grid.sheets.map((sheet) => (
+          <li key={sheet.timesheet_id} className="flex flex-wrap items-center gap-x-2">
+            <span className="font-medium">
+              {sheet.corrects_timesheet_id ? t.sheetSupplement : t.sheetOriginal}
+            </span>
+            <span className="rounded bg-neutral-bg px-1.5 text-xs text-neutral">
+              {dict.timesheets.status[sheet.status]}
+            </span>
+            {sheet.corrects_timesheet_id && (
+              <span className="text-fg-subtle">
+                {t.linkOriginal.replace("{date}", formatDate(sheet.week_start, locale))}
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/**
+ * The correction's form: one line per locked entry, with the corrected minutes.
+ *
+ * It posts *all* the changes in one request, because they are one document and one
+ * approval round — a per-row write would leave a correction half-applied if the second
+ * request failed. The check box is the "this should not exist" case: a reversal with no
+ * replacement, which is what cancelling an entry outright means.
+ */
+function SupplementForm({
+  dict,
+  locale,
+  week,
+  grid,
+  pending,
+  onCancel,
+  onRun,
+}: {
+  dict: Dictionary;
+  locale: Locale;
+  week: string;
+  grid: TimesheetWeek;
+  pending: boolean;
+  onCancel: () => void;
+  onRun: (action: () => Promise<TimesheetWeek>, done?: string) => Promise<void>;
+}) {
+  const t = dict.timesheets.supplement;
+  const originals = grid.days
+    .flatMap((day) => day.entries)
+    .filter((entry) => entry.entry_type === "normal" && !entry.reverses_entry_id);
+  const [draft, setDraft] = useState<Record<string, { minutes: string; remove: boolean }>>(
+    () =>
+      Object.fromEntries(
+        originals.map((entry) => [entry.id, { minutes: String(entry.minutes), remove: false }]),
+      ),
+  );
+  const [problem, setProblem] = useState<string | null>(null);
+
+  function change(entryId: string, next: { minutes?: string; remove?: boolean }) {
+    setDraft((current) => ({ ...current, [entryId]: { ...current[entryId], ...next } }));
+  }
+
+  function send() {
+    const corrections: Correction[] = [];
+    for (const entry of originals) {
+      const row = draft[entry.id];
+      if (!row) continue;
+      if (row.remove) {
+        // A reversal with no replacement: the entry should not have been recorded.
+        corrections.push({ entry_id: entry.id, minutes: null });
+        continue;
+      }
+      const minutes = Number(row.minutes);
+      if (!Number.isInteger(minutes) || minutes <= 0 || minutes > 1440) {
+        return setProblem(t.invalidMinutes);
+      }
+      // Only what actually changed: a correction restates one entry, and sending the
+      // untouched rows would write reversals and replacements that cancel out — noise
+      // in a document two people have to read.
+      if (minutes !== entry.minutes) {
+        corrections.push({ entry_id: entry.id, minutes });
+      }
+    }
+    if (corrections.length === 0) return setProblem(t.nothingChanged);
+    setProblem(null);
+    void onRun(() => openSupplement(week, corrections), t.opened);
+  }
+
+  return (
+    <form
+      aria-labelledby="timesheet-supplement-heading"
+      onSubmit={(event) => {
+        event.preventDefault();
+        send();
+      }}
+      className="flex flex-col gap-3 rounded border border-border bg-surface p-4"
+    >
+      <h3 id="timesheet-supplement-heading" className="text-base font-semibold">
+        {t.heading}
+      </h3>
+      <p className="text-sm text-fg-muted">{t.intro}</p>
+
+      <fieldset className="flex flex-col gap-3">
+        <legend className="text-sm font-medium">{t.heading}</legend>
+        {originals.map((entry) => (
+          <div key={entry.id} className="flex flex-wrap items-end gap-x-4 gap-y-2">
+            <span className="text-sm">
+              <span className="font-medium">
+                {t.entryLabel.replace("{date}", formatDate(entry.entry_date, locale))}
+              </span>
+              <span className="ml-2 text-fg-subtle">
+                {taskLabel(entry, locale)} · {formatDuration(entry.minutes, locale)}
+              </span>
+            </span>
+            <label className="flex items-center gap-1 text-sm">
+              <input
+                type="checkbox"
+                checked={draft[entry.id]?.remove ?? false}
+                onChange={(event) => change(entry.id, { remove: event.target.checked })}
+                className="size-4"
+              />
+              {t.remove}
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              {t.newMinutes}
+              <input
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={1440}
+                value={draft[entry.id]?.minutes ?? ""}
+                disabled={draft[entry.id]?.remove ?? false}
+                onChange={(event) => change(entry.id, { minutes: event.target.value })}
+                className="tabular min-h-9 w-24 rounded border border-border bg-surface px-2 text-sm disabled:bg-neutral-bg"
+              />
+            </label>
+          </div>
+        ))}
+      </fieldset>
+      <p className="text-xs text-fg-subtle">{t.removeHint}</p>
+
+      {problem && (
+        <p role="alert" className="text-sm text-danger">
+          {problem}
+        </p>
+      )}
+
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="submit"
+          disabled={pending}
+          className="min-h-9 rounded bg-primary px-3 text-sm font-medium text-primary-fg disabled:opacity-50"
+        >
+          {pending ? t.submitting : t.submit}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="min-h-9 rounded border border-border px-3 text-sm hover:bg-neutral-bg"
+        >
+          {t.cancel}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/**
+ * The net per task, which is the half of a corrected week a day total cannot show.
+ *
+ * A day can net to zero while two tasks moved in opposite directions; the table only
+ * appears once something has been adjusted, because a list of gross figures that all
+ * equal their net is a table of nothing. The names come from the week's own rows, so
+ * the table says what a reader is looking at rather than printing an id.
+ */
+function TaskNetTable({
+  dict,
+  locale,
+  tasks,
+  entries,
+}: {
+  dict: Dictionary;
+  locale: Locale;
+  tasks: TaskNet[];
+  entries: TimesheetEntry[];
+}) {
+  const t = dict.timesheets;
+  const adjusted = tasks.some((task) => task.reversal_minutes > 0);
+  if (!adjusted) return null;
+
+  const named = new Map(entries.map((entry) => [entry.task_id, entry]));
+  return (
+    <section aria-labelledby="timesheet-tasks-heading" className="flex flex-col gap-2">
+      <h3 id="timesheet-tasks-heading" className="text-base font-semibold">
+        {t.tasks.heading}
+      </h3>
+      <div className="overflow-x-auto">
+        <table data-testid="timesheet-task-net" className="w-full border-collapse text-sm">
+          <caption className="sr-only">{t.tasks.heading}</caption>
+          <thead>
+            <tr className="border-b border-border text-left text-fg-muted">
+              <th scope="col" className="px-2 py-2 font-medium">
+                {t.adjustments.task}
+              </th>
+              <th scope="col" className="px-2 py-2 font-medium">
+                {t.adjustments.gross}
+              </th>
+              <th scope="col" className="px-2 py-2 font-medium">
+                {t.adjustments.reversed}
+              </th>
+              <th scope="col" className="px-2 py-2 font-medium">
+                {t.adjustments.net}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {tasks.map((task) => {
+              const entry = named.get(task.task_id);
+              return (
+                <tr
+                  key={`${task.project_id}-${task.task_id}`}
+                  className="border-b border-border last:border-0"
+                >
+                  <td className="px-2 py-2">
+                    {entry ? taskLabel(entry, locale) : task.task_id.slice(0, 8)}
+                  </td>
+                  <td className="tabular px-2 py-2">
+                    {formatDuration(task.gross_minutes, locale)}
+                  </td>
+                  <td className="tabular px-2 py-2">
+                    {formatDuration(task.reversal_minutes, locale)}
+                  </td>
+                  <td className="tabular px-2 py-2">
+                    {formatDuration(task.net_minutes, locale)}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * The lock, said in words beside the status (ticket 29).
+ *
+ * Three statements and only one of them is true of a given week: it is locked and can
+ * still be corrected, it is locked and the window has closed, or it is locked with some
+ * weeks left — the count is the server's, interpolated, so the sentence a person reads
+ * and the number the refusal would name are the same number.
+ */
+function LockNotice({ dict, grid }: { dict: Dictionary; grid: TimesheetWeek }) {
+  const t = dict.timesheets.lock;
+  if (!grid.is_locked && !grid.week_closed) return null;
+
+  return (
+    <div
+      data-testid="timesheet-lock-notice"
+      className={
+        grid.week_closed
+          ? "flex flex-col gap-1 rounded bg-neutral-bg p-3 text-sm text-neutral"
+          : "flex flex-col gap-1 rounded bg-info-bg p-3 text-sm text-info"
+      }
+    >
+      <p>
+        <span aria-hidden="true">{grid.week_closed ? "🔒 " : "✓ "}</span>
+        <span className="font-medium">{grid.week_closed ? t.closed : t.locked}</span>{" "}
+        {grid.week_closed
+          ? t.closedHint.replace("{weeks}", String(grid.supplement_window_weeks))
+          : t.lockedHint}
+      </p>
+      {grid.is_locked && !grid.week_closed && grid.supplement_weeks_left > 0 && (
+        <p className="text-fg-muted">
+          {t.supplementWindow.replace("{weeks}", String(grid.supplement_weeks_left))}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** The lock, as an icon and a word: a colour alone never carries a state (§5). */
+function LockPill({ dict }: { dict: Dictionary }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded bg-info-bg px-2 py-1 text-sm text-info">
+      <span aria-hidden="true">🔒</span>
+      {dict.timesheets.lock.locked}
+    </span>
   );
 }
 
@@ -784,11 +1229,24 @@ function taskLabel(entry: TimesheetEntry, locale: Locale): string {
   return [entry.project_code, entry.task_code, name].filter(Boolean).join(" · ");
 }
 
-/** The refusal in the reader's language, from the catalogue key when it is known. */
-function errorText(dict: Dictionary, cause: unknown): string {
+/**
+ * The refusal in the reader's language, from the catalogue key when it is known.
+ *
+ * The one refusal that carries a number is the closed window, and the number is the
+ * *server's*: the detail states how many weeks remain, and the sentence interpolates
+ * it — the same shape the sign-in screen uses for a lockout's remaining time. A
+ * hard-coded count in the copy would be a second answer to "how long is the window",
+ * and the two would eventually disagree.
+ */
+function errorText(dict: Dictionary, cause: unknown, windowWeeks: number): string {
   if (cause instanceof ApiError && cause.messageKey) {
     const known = cause.messageKey.replace(/^errors\./, "") as keyof Dictionary["errors"];
-    if (known in dict.errors) return dict.errors[known];
+    if (known in dict.errors) {
+      const message = dict.errors[known];
+      return known === "timesheet_week_closed"
+        ? message.replace("{weeks}", String(windowWeeks))
+        : message;
+    }
   }
   return dict.timesheets.error;
 }

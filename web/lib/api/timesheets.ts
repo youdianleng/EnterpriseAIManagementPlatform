@@ -22,12 +22,23 @@ export type TimesheetStatus = "draft" | "pending" | "approved" | "rejected";
 
 export type StepDecision = "approved" | "rejected" | "returned" | "pending" | "skipped";
 
+/**
+ * What an entry *is*. `reversal` is one half of a supplementary correction: the exact
+ * negation of a locked entry, pointing at it through `reverses_entry_id`. The sign of
+ * `minutes` follows this, which is why a total is a plain sum over both kinds.
+ */
+export type EntryType = "normal" | "reversal";
+
 export type TimesheetEntry = {
   id: string;
+  /** Which sheet of the week the row belongs to; the locked original or a correction. */
+  timesheet_id: string;
   entry_date: string;
   project_id: string;
   task_id: string;
   minutes: number;
+  entry_type: EntryType;
+  reverses_entry_id: string | null;
   /** The server's answer, resolved from the task's configuration. Never sent up. */
   is_billable: boolean;
   note: string | null;
@@ -42,11 +53,24 @@ export type TimesheetDay = {
   /** 0 is Monday, matching the API and `Date.prototype.getDay() + 6) % 7`. */
   weekday: number;
   entries: TimesheetEntry[];
+  /** The net of the day: every row, adjustments included. */
   total_minutes: number;
+  /** What the net was reached from: `gross_minutes - reversal_minutes = total_minutes`. */
+  gross_minutes: number;
+  reversal_minutes: number;
   /** Null when no schedule reaches this person: not the same as expecting zero. */
   expected_minutes: number | null;
   expectation_source: string | null;
   is_holiday: boolean;
+};
+
+/** One task's week, after its adjustments: the per-task half of the net view. */
+export type TaskNet = {
+  project_id: string;
+  task_id: string;
+  gross_minutes: number;
+  reversal_minutes: number;
+  net_minutes: number;
 };
 
 export type OverBudgetDay = {
@@ -54,6 +78,21 @@ export type OverBudgetDay = {
   total_minutes: number;
   expected_minutes: number;
   over_minutes: number;
+};
+
+/**
+ * One sheet of a week: the original, or a correction filed against it.
+ *
+ * `corrects_timesheet_id` is the "which week does this supplement correct" direction;
+ * the week's own `supplements` list is the other one.
+ */
+export type TimesheetSheet = {
+  timesheet_id: string;
+  status: TimesheetStatus;
+  submitted_at: string | null;
+  approval_request_id: string | null;
+  corrects_timesheet_id: string | null;
+  week_start: string;
 };
 
 export type TimesheetWeek = {
@@ -70,6 +109,23 @@ export type TimesheetWeek = {
   over_budget: boolean;
   over_budget_days: OverBudgetDay[];
   days: TimesheetDay[];
+  /** Approved and therefore locked for ever: only a supplement changes it now. */
+  is_locked: boolean;
+  /** Closed by the global week lock: outside the eight-week window, no writes at all. */
+  week_closed: boolean;
+  /** How many weeks of supplementary filing this week still has; zero means closed. */
+  supplement_weeks_left: number;
+  supplement_window_weeks: number;
+  can_supplement: boolean;
+  is_supplementary: boolean;
+  corrects_timesheet_id: string | null;
+  /** Which sheet the next write would land in: a correction while one is open. */
+  editable_timesheet_id: string | null;
+  sheets: TimesheetSheet[];
+  supplements: TimesheetSheet[];
+  gross_total_minutes: number;
+  reversal_total_minutes: number;
+  tasks: TaskNet[];
 };
 
 export type ApprovalDecision = {
@@ -91,13 +147,26 @@ export type ApprovalState = {
   decisions: ApprovalDecision[];
 };
 
+/** One sheet's own approval history, for a week that has been corrected. */
+export type SheetStatus = {
+  timesheet_id: string;
+  status: TimesheetStatus;
+  is_supplementary: boolean;
+  corrects_timesheet_id: string | null;
+  submitted_at: string | null;
+  approval_request_id: string | null;
+  approval: ApprovalState | null;
+};
+
 export type TimesheetStatusRead = {
   week_start: string;
   status: TimesheetStatus;
   is_editable: boolean;
+  is_locked: boolean;
   submitted_at: string | null;
   approval_request_id: string | null;
   approval: ApprovalState | null;
+  sheets: SheetStatus[];
 };
 
 export type ProjectOption = {
@@ -161,6 +230,33 @@ export function readStatus(week: string): Promise<TimesheetStatusRead> {
 export function submitWeek(week: string): Promise<TimesheetWeek> {
   return request<TimesheetWeek>(`/api/v1/timesheets/submit?${weekQuery(week)}`, {
     method: "POST",
+  });
+}
+
+/**
+ * One correction of one locked entry: the new amount, or `null` for "this should not
+ * have been recorded" — the reversal on its own, with nothing replacing it.
+ */
+export type Correction = {
+  entry_id: string;
+  minutes?: number | null;
+  note?: string | null;
+  project_id?: string;
+  task_id?: string;
+};
+
+/**
+ * Correct a locked week: a *new* sheet beside the original, with a reversal and a
+ * replacement per corrected entry. The original is never edited, and the response is
+ * the week's grid with both sheets' rows in it and the day totals already net.
+ */
+export function openSupplement(
+  week: string,
+  corrections: Correction[],
+): Promise<TimesheetWeek> {
+  return request<TimesheetWeek>(`/api/v1/timesheets/supplements?${weekQuery(week)}`, {
+    method: "POST",
+    body: JSON.stringify({ corrections }),
   });
 }
 
