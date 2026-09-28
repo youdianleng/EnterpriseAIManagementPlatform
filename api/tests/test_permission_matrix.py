@@ -59,6 +59,7 @@ from app.domain.access.kernel import (
     Resource,
     ResourceKind,
     can,
+    filter_for,
 )
 from app.domain.access.permissions import (
     ATTENDANCE_COMPANY_ROLES,
@@ -69,6 +70,8 @@ from app.domain.access.permissions import (
     OVERTIME_CROSS_ACTIONS,
     PROJECT_ADMIN_ROLES,
     SELF_ONLY_ACTIONS,
+    TIMESHEET_COMPANY_ROLES,
+    TIMESHEET_CROSS_ACTIONS,
     Action,
 )
 from app.domain.access.principal import SYSTEM_ROLES, Principal
@@ -274,6 +277,16 @@ DESIGN_GRANTS: dict[Action, frozenset[str]] = {
     Action.TIMESHEET_READ_OWN: EVERYONE,
     Action.TIMESHEET_WRITE_OWN: EVERYONE,
     Action.TIMESHEET_SUBMIT_OWN: EVERYONE,
+    # Ticket 30. 工时全量 is HR's row in §4.1 and 直属下属 is a manager's, and the ticket
+    # adds a second reach to the manager's: a project manager sees the time booked
+    # against their own projects. That second reach is a fact about the *row* — the
+    # same role manages one project and is refused another — so the role list names
+    # `manager` and the kernel's report branch, not this table, is what narrows it.
+    # The generated resource names no manager and this dimension contains no reports,
+    # so `design_says` refuses it for a manager and `design_says` is right to; layer 4
+    # asserts the manager's own two cases by name.
+    Action.TIMESHEET_READ_REPORT: frozenset({"manager"}),
+    Action.TIMESHEET_READ_ALL: frozenset({"hr"}),
 }
 
 #: The resource each action acts on. A document is decided by §4.2 whatever the
@@ -337,6 +350,11 @@ KIND_FOR_ACTION: dict[Action, ResourceKind] = {
     Action.TIMESHEET_READ_OWN: ResourceKind.TIMESHEET,
     Action.TIMESHEET_WRITE_OWN: ResourceKind.TIMESHEET,
     Action.TIMESHEET_SUBMIT_OWN: ResourceKind.TIMESHEET,
+    # One line of a report (ticket 30): somebody's hours on somebody's project. Its own
+    # kind because its rule is a union of two reaches rather than the self-only rule the
+    # week kind carries, and the resource names the person *and* the project's manager.
+    Action.TIMESHEET_READ_REPORT: ResourceKind.TIMESHEET_REPORT,
+    Action.TIMESHEET_READ_ALL: ResourceKind.TIMESHEET_REPORT,
     # Leave (ticket 25). The catalogue is its own kind — it is the organisation's list
     # of what it offers rather than anybody's record, and the kernel's generic path
     # decides it by role alone. Everything else about a leave is a fact about a
@@ -518,6 +536,14 @@ def design_says(role: str, action: Action, shape: tuple[str | None, str | None] 
     if action in OVERTIME_CROSS_ACTIONS:
         return bool(frozenset({role, "employee"}) & OVERTIME_COMPANY_ROLES)
 
+    # The same two reaches over somebody else's *hours* (ticket 30), with the one
+    # difference that matters: the manager's is a union of two resource clauses rather
+    # than one. The generated resource names no owner and no project manager, so a
+    # manager reaches nothing here while HR's remit does not depend on the row — and
+    # the manager's own cases are asserted by name in layer 4, one for each clause.
+    if action in TIMESHEET_CROSS_ACTIONS:
+        return bool(frozenset({role, "employee"}) & TIMESHEET_COMPANY_ROLES)
+
     held = frozenset({role, "employee"})
     clearance, department = shape
 
@@ -578,8 +604,9 @@ def test_the_generated_matrix_covers_every_dimension() -> None:
     # report's leave, the company's, the attachment behind a sick note, and granting
     # an allowance), ticket 26 adds seven for overtime (asking in advance, your own
     # records, a report's, the company's, HR's confirmation, the settle sweep and the
-    # monthly file), and the sum is asserted literally so that a fifth arriving as a
-    # failing test rather than as extra coverage.
+    # monthly file), ticket 30 adds two for the hours report (a manager's two reaches
+    # as one action, and HR's), and the sum is asserted literally so that a fifth
+    # arriving as a failing test rather than as extra coverage.
     #
     # **Ticket 31 adds none, and that is the correct answer rather than an omission.**
     # Its five surfaces — read, list, upload, manage the knowledge base, classify a
@@ -589,7 +616,7 @@ def test_the_generated_matrix_covers_every_dimension() -> None:
     # citation, so a second action for the file would be a second rule to keep in step
     # with §4.2. The count is therefore unchanged, and `test_documents.py` asserts what
     # the endpoints do with the reach those actions produce.
-    assert len(cases) == 7 * 54 * 13
+    assert len(cases) == 7 * 56 * 13
     assert 0 < permitted < len(cases), "the expectation answers the same way everywhere"
 
     discriminating = [
@@ -1009,9 +1036,20 @@ async def test_the_database_applies_the_document_rule_to_every_combination(
 
 # --- layer 3: the HTTP matrix ------------------------------------------------
 
-#: Every endpoint that exists today, with the action it performs. `None` is an
-#: endpoint that names no action because it answers about the caller alone.
-HTTP_MATRIX: tuple[tuple[str, str, Action | None], ...] = (
+#: One route's permission: the action it performs, or the set of actions *any one* of
+#: which admits the request. `None` is an endpoint that names no action because it
+#: answers about the caller alone.
+#:
+#: **A route may name more than one action, and ticket 30 is why.** The hours report
+#: is reachable by a manager (`timesheet.read_report`) *or* by HR
+#: (`timesheet.read_all`): the two have different role lists, so a route guarded by
+#: one of them refuses the other's legitimate read, and a matrix that could only name
+#: one action would have to expect a 403 for HR or a 200 for an employee who holds
+#: neither. A single action is written as itself and wrapped below, so the loop has
+#: one shape.
+RouteAccess = Action | frozenset[Action] | None
+
+HTTP_MATRIX: tuple[tuple[str, str, RouteAccess], ...] = (
     ("GET", "/api/v1/departments", Action.DEPARTMENT_READ),
     ("POST", "/api/v1/departments", Action.DEPARTMENT_MANAGE),
     ("GET", "/api/v1/positions", Action.POSITION_READ),
@@ -1109,6 +1147,22 @@ HTTP_MATRIX: tuple[tuple[str, str, Action | None], ...] = (
     ("DELETE", "/api/v1/timesheets/entries/{task_id}", Action.TIMESHEET_WRITE_OWN),
     ("POST", "/api/v1/timesheets/copy-previous", Action.TIMESHEET_WRITE_OWN),
     ("POST", "/api/v1/timesheets/submit", Action.TIMESHEET_SUBMIT_OWN),
+    # The report (ticket 30). The one surface in this module that is about somebody
+    # else's hours, and the one route here that names two actions: a manager's and
+    # HR's. An ordinary employee holds neither, so this row also carries the refusal
+    # the ticket asks for — and which *rows* each admitted caller reaches is the
+    # kernel's `filter_for(..., TIMESHEET_REPORT)`, asserted by name in layer 4 and
+    # over HTTP in `test_timesheet_reporting.py`.
+    (
+        "GET",
+        "/api/v1/timesheets/report",
+        frozenset({Action.TIMESHEET_READ_REPORT, Action.TIMESHEET_READ_ALL}),
+    ),
+    (
+        "GET",
+        "/api/v1/timesheets/report/export",
+        frozenset({Action.TIMESHEET_READ_REPORT, Action.TIMESHEET_READ_ALL}),
+    ),
     # Leave (ticket 25). The catalogue is published and maintaining it is HR's and
     # administration's. Everything about a person's own leave is self-only at the role
     # level — every role holds `employee` — and which of the three reads applies is a
@@ -1220,6 +1274,12 @@ RESOURCE_FREE_ROUTES: frozenset[str] = frozenset(
         "/api/v1/attendance/corrections",
         "/api/v1/projects",
         "/api/v1/projects/selectable",
+        # Ticket 30. The report answers over any period with no rows in it — a table
+        # with a totals row of zeros — and the export answers with a header and nothing
+        # else, so both have an answer this layer can assert exactly rather than a 404
+        # it cannot tell apart from an unwired route.
+        "/api/v1/timesheets/report",
+        "/api/v1/timesheets/report/export",
     }
 )
 
@@ -1379,6 +1439,19 @@ def http_payload(path: str, *, department: str, employee: str) -> dict:
     }[path]
 
 
+def route_actions(access: RouteAccess) -> frozenset[Action]:
+    """One route's permission as a set, so a single action and a pair are one shape."""
+    if access is None:
+        return frozenset()
+    return frozenset({access}) if isinstance(access, Action) else access
+
+
+def access_label(access: RouteAccess) -> str:
+    if access is None:
+        return "none"
+    return "|".join(sorted(str(action) for action in route_actions(access)))
+
+
 @pytest.mark.parametrize("role", sorted(SYSTEM_ROLES))
 async def test_the_http_matrix_for(platform: Platform, role: str) -> None:
     """Each role against each endpoint, end to end.
@@ -1396,9 +1469,13 @@ async def test_the_http_matrix_for(platform: Platform, role: str) -> None:
     checked = 0
     failures: list[str] = []
 
-    for method, template, action in HTTP_MATRIX:
+    for method, template, access in HTTP_MATRIX:
         path = template.format(
-            subject=actor.employee_id if action in SELF_ONLY_ACTIONS else subject,
+            subject=(
+                actor.employee_id
+                if access is not None and route_actions(access) & SELF_ONLY_ACTIONS
+                else subject
+            ),
             project=subject,
             project_id=subject,
             task_id=subject,
@@ -1415,9 +1492,14 @@ async def test_the_http_matrix_for(platform: Platform, role: str) -> None:
         # The timesheet surface names its week in the query string, as ticket 21's
         # routes do for a surface that answers about the caller: the week is a date
         # rather than a row id, and this is the one layer that has to supply it. The
-        # leave calendar is the same shape — a range of dates.
+        # report names a *period* instead, and the leave calendar is the same shape.
         params: dict | None = None
-        if "/timesheets/" in path:
+        if "/timesheets/report" in path:
+            params = {
+                "from_date": MATRIX_WEEK_START.isoformat(),
+                "to_date": (MATRIX_WEEK_START + timedelta(days=6)).isoformat(),
+            }
+        elif "/timesheets/" in path:
             params = {"week": MATRIX_WEEK_START.isoformat()}
         elif "/leave/calendar" in path:
             params = {
@@ -1430,9 +1512,14 @@ async def test_the_http_matrix_for(platform: Platform, role: str) -> None:
             else await actor.call(method, path, params=params)
         )
         checked += 1
-        label = f"role={role} {method} {path} (action={action or 'none'})"
+        label = f"role={role} {method} {path} (action={access_label(access)})"
 
-        if action is not None and not may(role, action):
+        # Admitted when the role may perform *any one* of the actions the route names,
+        # which for every row but ticket 30's report is exactly one action.
+        permitted = any(
+            may(role, action) for action in route_actions(access)
+        )
+        if access is not None and not permitted:
             # The refusal, and its code: the client routes on the code, and an
             # uncatalogued 403 is a client that cannot tell "you may not" from "that
             # was malformed".
@@ -1452,7 +1539,7 @@ async def test_the_http_matrix_for(platform: Platform, role: str) -> None:
         # matrix cannot create (the project id is a fresh uuid per row) and answer 404
         # for a reason that has nothing to do with permission. `test_projects.py`
         # asserts what those routes do with a row that exists.
-        expected = 200 if action is None else (201 if method == "POST" else 200)
+        expected = 200 if access is None else (201 if method == "POST" else 200)
         if response.status_code == 403 or response.status_code >= 500:
             failures.append(
                 f"{label}: expected the action to be permitted ({expected}), got "
@@ -1464,6 +1551,10 @@ async def test_the_http_matrix_for(platform: Platform, role: str) -> None:
                 f"{response.text[:300]}"
             )
 
+    # Literal on purpose, so that adding an endpoint is a decision somebody makes here
+    # rather than something that happens. Ticket 30 adds the hours report and its
+    # export, and the count moves with them.
+    assert checked == 74
     assert checked == len(HTTP_MATRIX)
     assert failures == [], "\n".join(failures)
 
@@ -1776,6 +1867,65 @@ async def test_an_ordinary_employee_cannot_read_somebody_elses_salary(
         f"an employee's context read {sorted(own)} of employees {sorted({first, second})}"
     )
     assert as_hr == {first, second}, "the personnel context is the control for the line above"
+
+
+async def test_a_manager_reads_their_reports_hours_and_their_own_projects_hours() -> None:
+    """Prevents "manager" being read as "manager of everybody" in ticket 30's report.
+
+    The report's reach is the ticket's sentence as a rule about the *row*: a manager
+    reaches the hours of the people who report to them, a project manager reaches the
+    hours booked against the projects they run, and HR reaches everything. Three
+    resources, one action, and the department is deliberately not among the clauses —
+    a manager and a colleague share one, which is the escalation the generic path
+    would have allowed.
+    """
+    manager = principal("manager", reports=(REPORT_EMPLOYEE,))
+    their_report = Resource(
+        ResourceKind.TIMESHEET_REPORT,
+        department_id=OTHER_DEPARTMENT,
+        owner_employee_id=REPORT_EMPLOYEE,
+    )
+    their_project = Resource(
+        ResourceKind.TIMESHEET_REPORT,
+        owner_employee_id=OTHER_EMPLOYEE,
+        manager_employee_id=MY_EMPLOYEE,
+    )
+    neither = Resource(
+        ResourceKind.TIMESHEET_REPORT,
+        department_id=MY_DEPARTMENT,
+        owner_employee_id=OTHER_EMPLOYEE,
+        manager_employee_id=OTHER_EMPLOYEE,
+    )
+
+    assert can(manager, Action.TIMESHEET_READ_REPORT, their_report).allowed
+    assert can(manager, Action.TIMESHEET_READ_REPORT, their_project).allowed
+    refused = can(manager, Action.TIMESHEET_READ_REPORT, neither)
+    assert refused.denied, f"a manager read a colleague's hours: {refused.detail}"
+    assert refused.primary_reason is Reason.NOT_YOUR_TIMESHEET_SCOPE
+    # ... and the same department is the reason it would have been wrong: the resource
+    # above is in the caller's own department.
+    assert neither.department_id in manager.department_ids
+
+    # HR's reach does not depend on the row at all, and it is a different action —
+    # a manager is refused it, so the two cannot be widened together by accident.
+    assert can(principal("hr"), Action.TIMESHEET_READ_ALL, neither).allowed
+    assert can(manager, Action.TIMESHEET_READ_ALL, their_report).denied
+    assert can(principal("employee"), Action.TIMESHEET_READ_REPORT, their_report).denied
+    assert can(principal("admin"), Action.TIMESHEET_READ_ALL, neither).denied
+
+    # The filter says the same thing as data, which is what the report query reads:
+    # two reaches for a manager, everything for HR, and no department in either.
+    own = filter_for(manager, ResourceKind.TIMESHEET_REPORT)
+    assert not own.allow_all
+    assert own.manager_employee_id == MY_EMPLOYEE
+    assert own.reports_employee_ids == frozenset({REPORT_EMPLOYEE})
+    assert own.department_ids == frozenset()
+    company = filter_for(principal("hr"), ResourceKind.TIMESHEET_REPORT)
+    assert company.allow_all
+    assert TIMESHEET_COMPANY_ROLES == COMPANY_RECORD_ROLES
+    assert TIMESHEET_CROSS_ACTIONS == frozenset(
+        {Action.TIMESHEET_READ_REPORT, Action.TIMESHEET_READ_ALL}
+    )
 
 
 async def test_a_non_compliance_role_cannot_read_the_audit_trail(platform: Platform) -> None:

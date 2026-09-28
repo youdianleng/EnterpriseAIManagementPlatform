@@ -208,6 +208,8 @@ export const en: Dictionary = {
       "The supplementary submission states no valid correction: pick the entries of this week you want to correct.",
     timesheet_entry_is_reversal:
       "The adjustment lines of a supplementary submission cannot be edited or removed, and neither can what has already been adjusted.",
+    timesheet_report_range_invalid:
+      "The report's period is not valid: give a start date no later than the end date, and at most {days} days.",
     project_task_not_recordable:
       "That task does not accept time: it may be switched off, or belong to a project that is not active.",
     document_upload_type_unsupported:

@@ -281,6 +281,10 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
             "Las líneas de ajuste de un envío complementario no se pueden editar ni "
             "borrar, y tampoco lo que ya está ajustado."
         ),
+        "errors.timesheet_report_range_invalid": (
+            "El periodo del informe no es válido: indica una fecha de inicio anterior "
+            "a la de fin y como máximo {days} días."
+        ),
         "errors.leave_type_not_found": "Ese tipo de permiso no existe.",
         "errors.leave_request_not_found": "No se encontró esa solicitud de permiso.",
         "errors.leave_type_code_taken": "Ya existe un tipo de permiso con ese código.",
@@ -631,6 +635,10 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.timesheet_entry_is_reversal": (
             "The adjustment lines of a supplementary submission cannot be edited or "
             "removed, and neither can what has already been adjusted."
+        ),
+        "errors.timesheet_report_range_invalid": (
+            "The report's period is not valid: give a start date no later than the end "
+            "date, and at most {days} days."
         ),
         "errors.leave_type_not_found": "There is no such leave type.",
         "errors.leave_request_not_found": "That leave request does not exist.",

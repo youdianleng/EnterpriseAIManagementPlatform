@@ -75,6 +75,21 @@ Ticket 29 adds the lock, the correction and the window, and four decisions shape
   discovered it. Future weeks are deliberately unaffected: planning next week is not
   back-filling, and the window exists to close payroll history.
 
+Ticket 30 adds the report, and it is deliberately the *only* read in this module that
+is about somebody else's hours:
+
+* **The reach is fetched from the kernel, not reconstructed.** `report` asks
+  `filter_for(principal, TIMESHEET_REPORT)` for the spec and hands it to the
+  repository beside the facets. No branch here tests a role or compares an employee
+  id; an employee who holds neither read action never reaches this method at all,
+  because the route's dependency refused them first.
+* **The report is a read of the rows, never of a running total.** Every figure is a
+  `sum(minutes)` over approved sheets in one statement — the grid's `entries_total_minutes`
+  is a different question (one week, both sheets) and is not consulted.
+* **Exporting is `report` plus an audit record.** The file states the same rows as the
+  screen, so it needs no action of its own; what it does need is a trail entry, and it
+  writes one per export the way the overtime file does.
+
 The service is the only thing that fetches rows, and it commits once per operation —
 except when it refuses a closed week, where it commits the closing it just recorded
 before it raises, which is the same rule `_editable` follows for a repaired cache.
@@ -88,6 +103,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit import AuditAction, record
+from app.domain.access.kernel import ResourceKind, filter_for
 from app.domain.access.principal import Principal
 from app.domain.approval.models import ApprovalState, ApprovalStatus, SubmitContext
 from app.domain.attendance.business_day import madrid_today
@@ -99,6 +115,7 @@ from app.domain.project.service import ProjectService
 from app.domain.schedule.models import DayExpectation, ScheduleSource
 from app.domain.schedule.service import ScheduleService
 from app.domain.timesheet.errors import TimesheetErrorCode
+from app.domain.timesheet.export import EXPORT_ENTITY, ExportFile, filename, render
 from app.domain.timesheet.models import (
     DAYS_PER_WEEK,
     MAX_ENTRY_MINUTES,
@@ -120,6 +137,11 @@ from app.domain.timesheet.models import (
     assert_monday,
     monday_of,
     supplement_weeks_left,
+)
+from app.domain.timesheet.report import (
+    ReportFilter,
+    ReportSummary,
+    assert_report_period,
 )
 from app.domain.timesheet.repository import TimesheetRepository
 
@@ -818,6 +840,76 @@ class TimesheetService:
         await self._repository.commit()
         return await self.read_week(week_start)
 
+    # --- the report (ticket 30) ---------------------------------------------
+
+    async def report(self, report_filter: ReportFilter) -> ReportSummary:
+        """Approved hours, aggregated the way the caller asked, within their reach.
+
+        **The reach is the kernel's, and it is fetched rather than reconstructed.**
+        `filter_for(principal, TIMESHEET_REPORT)` is the one description of what this
+        caller may read — their reports, the projects they manage, or everything if
+        they are HR — and it travels to the repository beside the facets, which are a
+        different kind of question. Nothing here tests a role or compares an id: a
+        report that did would be the second place permission is decided, and the
+        first one to be forgotten.
+
+        **The period is refused here, not by the database.** An inverted or
+        over-wide range is the caller's mistake and costs nothing to catch before the
+        aggregate runs; `assert_report_period` names the bound in the detail.
+
+        **The total comes from the same predicate as the rows.** The repository runs
+        the totals as its own statement over the *same* `WHERE` object, rather than
+        this method adding the rows up or a second filter being written: the one thing
+        a reader does with a totals row is check it against the table above it, and
+        two of the six figures are `count(distinct)` — a week that booked time on two
+        projects is one week, and a sum of per-group counts would call it two.
+        """
+        assert_report_period(report_filter)
+        spec = filter_for(self._principal, ResourceKind.TIMESHEET_REPORT)
+        return ReportSummary(
+            filter=report_filter,
+            rows=tuple(await self._repository.report_rows(spec, report_filter)),
+            totals=await self._repository.report_totals(spec, report_filter),
+        )
+
+    async def export_report(self, report_filter: ReportFilter) -> ExportFile:
+        """The report as a file, and one audit record per export.
+
+        The file is a *read*: exporting settles nothing, marks nothing and changes no
+        row, so finance re-running a period produces the same bytes every time and
+        each run leaves its own trail entry. What the trail carries is the period, the
+        grouping, the number of lines and the minutes the file stated — never an
+        amount, because the file has none (`timesheet/export.py`).
+
+        The permission is `report`'s, deliberately: the file states exactly the rows
+        the screen does, so the two must not be separately grantable.
+        """
+        summary = await self.report(report_filter)
+        await self._audit(
+            AuditAction.DATA_EXPORTED,
+            None,
+            entity_type=EXPORT_ENTITY,
+            after={
+                "report": "timesheet",
+                "from_date": report_filter.from_date.isoformat(),
+                "to_date": report_filter.to_date.isoformat(),
+                "group_by": [str(dimension) for dimension in report_filter.group_by],
+                "project_ids": [str(value) for value in report_filter.project_ids],
+                "department_ids": [str(value) for value in report_filter.department_ids],
+                "employee_ids": [str(value) for value in report_filter.employee_ids],
+                "rows": len(summary.rows),
+                "weeks": summary.totals.weeks,
+                "billable_minutes": summary.totals.billable_minutes,
+                "non_billable_minutes": summary.totals.non_billable_minutes,
+            },
+            reason=(
+                f"the hours report for {report_filter.from_date}..{report_filter.to_date} "
+                "was exported"
+            ),
+        )
+        await self._repository.commit()
+        return ExportFile(filename=filename(summary), content=render(summary))
+
     # --- internals ----------------------------------------------------------
 
     async def _view(self, week_start: date, sheets: list[Timesheet]) -> WeekView:
@@ -1314,6 +1406,7 @@ class TimesheetService:
         after: dict | None = None,
         reason: str | None = None,
         initiated_by: str = "user",
+        entity_type: str = ENTITY_TYPE,
     ) -> None:
         """One record per state change, in the transaction that made it.
 
@@ -1321,11 +1414,15 @@ class TimesheetService:
         document — the week being closed for good — which is why the column is
         nullable rather than the record being skipped: "somebody tried to write in a
         closed week" is exactly the attempt an incident review looks for.
+
+        `entity_type` is the sheet's except for the report's export, which is about a
+        *period* rather than about a document: `timesheet_report` is the entity the
+        trail filters on when somebody asks who handed a period to finance.
         """
         await record(
             self._session,
             action=action,
-            entity_type=ENTITY_TYPE,
+            entity_type=entity_type,
             entity_id=sheet_id,
             before=before,
             after=after,

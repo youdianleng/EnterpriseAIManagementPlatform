@@ -184,6 +184,25 @@ class Action(StrEnum):
     #: the employee's to change: one permission for "type my hours" and "hand them
     #: to my manager for sign-off" would make the second impossible to withdraw.
     TIMESHEET_SUBMIT_OWN = "timesheet.submit_own"
+    # Ticket 30's two reaches over *somebody else's* hours, and they are the pair
+    # tickets 24, 25 and 26 drew for their own records: a manager reads the time of
+    # the people who report to them, HR reads the company's. Neither is a wider
+    # version of the three above — the kernel's report branch is the resource rule,
+    # and `TIMESHEET_CROSS_ACTIONS` below is what names it — which is what stops
+    # "HR may see every timesheet" from arriving as a quiet widening of "I may see
+    # my own".
+    #:
+    #: **The manager's is two reaches, not one.** §4.1 gives a manager 直属下属; the
+    #: ticket adds 项目经理, and a project manager named on a project reads the time
+    #: booked against it whoever recorded it. Both are the same *kind* of caller and
+    #: the same role list, so they are one action with a resource rule that is a
+    #: union — the shape the project branch already uses, and the reason the reach
+    #: lives in the kernel rather than in a query.
+    TIMESHEET_READ_REPORT = "timesheet.read_report"
+    #: HR's reach: the company's hours. §4.1 gives hr "考勤/请假/工时全量" and gives
+    #: nobody else the timesheet — finance's company-wide read is the overtime
+    #: export, which is a payroll calculation and not this.
+    TIMESHEET_READ_ALL = "timesheet.read_all"
 
     # Documents and the knowledge base. Fleshed out in tickets 12 and 31; present
     # here so the document module has an action to ask about from the start.
@@ -448,6 +467,30 @@ RULES: dict[Action, ActionRule] = {
             "away without touching the writing."
         ),
     ),
+    # Ticket 30. §4.1 read as the two reaches the ticket names: a manager reads
+    # their direct reports' hours, HR reads everybody's, and nobody else reads
+    # anybody's. What the role list cannot say is *whose* hours — the manager's own
+    # case and the project manager's are the same role and two different reasons, so
+    # the kernel's report branch decides the row and `filter_for` describes it.
+    Action.TIMESHEET_READ_REPORT: ActionRule(
+        roles=frozenset({"manager"}),
+        description=(
+            "Reading the hours of the people who report to you, and the hours booked "
+            "against the projects you manage. Two reaches and one role: a project "
+            "manager manages *their* project, so the resource rule — not this list — "
+            "is what narrows it, and a manager is refused a colleague in their own "
+            "department, which the department clause would have allowed."
+        ),
+    ),
+    Action.TIMESHEET_READ_ALL: ActionRule(
+        roles=frozenset({"hr"}),
+        description=(
+            "Reading anybody's hours, and producing the report file. HR keeps the "
+            "working-time record and §4.1 gives it the timesheet in full — the "
+            "report and its export state minutes, and no rate, so what is handed "
+            "over is the same record in another shape rather than a payroll figure."
+        ),
+    ),
     # Leave (ticket 25). Six actions, and the readings are recorded rather than left
     # to the reader, exactly as ticket 24 recorded its four.
     Action.LEAVE_TYPE_READ: ActionRule(
@@ -697,6 +740,24 @@ OVERTIME_CROSS_ACTIONS: frozenset[Action] = frozenset(
     }
 )
 
+#: The same two reaches over somebody else's *hours* (ticket 30), stated as its own
+#: set for the reason the three above are: adding a fourth timesheet action is a
+#: decision somebody makes in this list rather than something that happens to the
+#: attendance surface as well.
+#:
+#: **The export is deliberately not here.** Ticket 26 gave its file an action of its
+#: own because the payroll CSV carries the staff number — a withheld field — so
+#: reading a screen and handing over a payroll file are separable decisions. This
+#: report states minutes and names, never the staff number (`timesheet/export.py`
+#: says why), so the file is the same rows as the screen and the same two actions
+#: govern it; a third action would be a second thing to grant for no new authority.
+TIMESHEET_CROSS_ACTIONS: frozenset[Action] = frozenset(
+    {
+        Action.TIMESHEET_READ_REPORT,
+        Action.TIMESHEET_READ_ALL,
+    }
+)
+
 #: The roles whose reach over somebody else's personnel record — their hours, their
 #: leave — is the whole company rather than their own reports.
 #:
@@ -710,6 +771,16 @@ COMPANY_RECORD_ROLES: frozenset[str] = frozenset({"hr"})
 #: so does the permission matrix. One value today, and the alias is what says so —
 #: two literals would be two things to change.
 ATTENDANCE_COMPANY_ROLES: frozenset[str] = COMPANY_RECORD_ROLES
+
+#: The roles whose reach over somebody else's *hours* is the whole company (ticket 30).
+#:
+#: The same one member as the personnel-record set, and an alias rather than a second
+#: literal for the reason the attendance one is: §4.1 gives HR the timesheet in full
+#: and gives nobody else a company-wide reading of it, and a copy of `{"hr"}` would be
+#: a second place to change the day an installation wants finance to have it — which
+#: would then silently give finance the company's leave as well if the copy were made
+#: in the wrong place.
+TIMESHEET_COMPANY_ROLES: frozenset[str] = COMPANY_RECORD_ROLES
 
 #: The roles whose reach over somebody else's *overtime* is the whole company (ticket
 #: 26).

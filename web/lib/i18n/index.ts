@@ -250,6 +250,9 @@ export type Dictionary = {
     timesheet_supplement_open: string;
     timesheet_supplement_invalid: string;
     timesheet_entry_is_reversal: string;
+    /** Ticket 30: the report's period was unusable, so the remedy is another period
+     *  rather than another request. */
+    timesheet_report_range_invalid: string;
     project_task_not_recordable: string;
     /** Document refusals the uploader can act on: choose another file, or open the one
      *  they already have. The type refusal and the ceiling both belong to "pick a

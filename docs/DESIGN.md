@@ -671,6 +671,41 @@ recall@5 = 1.000 是**合成随机向量**下的结果：2 万条随机向量近
 
 **实测脚本**：`api/tests/tools/probe_rls_cost.py`，可随时重跑复核。
 
+### 10.7 工时报表的实测开销 → **实测：不需要新索引（票据 30）**
+
+§11 的 M4 要求周工时表在 seed 规模下可用，票据 30 进一步要求报表「响应时间可接受（实测并记录）」。
+探针 `api/tests/tools/probe_timesheet_report.py`（2026-09-28，本机 Docker Compose 的 postgres 18）造出
+**100 员工 × 26 周 × 每日 5 条 + 每 5 周一次补充更正 = 14 200 条条目 / 3 200 张工单**（全部已审批，
+其中一半任务配置为不可计费），对报表的两个语句各跑 30 次：
+
+| 查询 | p50 | p95 |
+|---|---|---|
+| 人力资源，按项目（全公司） | 22.2 ms | 24.7 ms |
+| 经理，按员工（10 名下属） | 19.6 ms | 23.9 ms |
+| 项目经理，按期间（自己管理的项目） | 4.5 ms | 7.7 ms |
+| 人力资源，按部门 + 项目 | 38.3 ms | 43.8 ms |
+| 人力资源，单人按期间 | 4.0 ms | 7.1 ms |
+
+**读法（两点）**：
+
+1. **全公司报表是全表扫描，而且这是对的。** 计划为
+   `Seq Scan on timesheet_entries → Hash Join(timesheets, projects) → Sort → GroupAggregate`：
+   13 800 / 14 200 行都落在期间内，执行 13.7 ms、729 个 buffer 全部命中 page cache。
+   一个季度的报表按定义就是表的大部分，`entry_date` 上的索引在这个形状下不会被规划器选中，
+   加它只会给每一次写入增加成本。**结论：不新增索引、不写迁移**（票据 30 的判据是"实测决定是否需要索引"，
+   这里的实测答案是不需要）。
+2. **选择性报表已经走既有索引。** 项目经理那条计划是
+   `Bitmap Index Scan on ix_timesheet_entries_project` + `Index Scan using timesheets_pkey`，
+   执行 1.06 ms；单人按期间走 `ix_timesheet_entries_employee_week`。
+   票据 28 为网格建的两条索引正好也是报表的两条选择性形状。
+
+两个数字都在 §9「普通 API p95 < 300ms」之内一个数量级，且**两个语句共用同一个 `WHERE` 对象**
+（`repositories/timesheet.py` 的 `_report_where`），所以合计行与上表不可能描述不同的行集——
+这是 `count(DISTINCT week_start)` 在跨项目的一周上不会被"各行相加"算错的原因。
+
+**实测脚本保留在仓库中**：`api/tests/tools/probe_timesheet_report.py`，`TEST_DATABASE_NAME` 指向
+非开发库即可重跑（探针拒绝在 `eam` 上运行，测完自行清理）。
+
 ---
 
 ## 11. 交付里程碑与验收标准

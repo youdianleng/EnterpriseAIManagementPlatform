@@ -33,6 +33,8 @@ class TimesheetErrorCode:
     TIMESHEET_SUPPLEMENT_OPEN = ErrorCode.TIMESHEET_SUPPLEMENT_OPEN
     TIMESHEET_SUPPLEMENT_INVALID = ErrorCode.TIMESHEET_SUPPLEMENT_INVALID
     TIMESHEET_ENTRY_IS_REVERSAL = ErrorCode.TIMESHEET_ENTRY_IS_REVERSAL
+    #: Ticket 30: the period a report was asked for. See `report.MAX_REPORT_DAYS`.
+    TIMESHEET_REPORT_RANGE_INVALID = ErrorCode.TIMESHEET_REPORT_RANGE_INVALID
     #: Grouped here because a caller of this module reasons about "why was this week
     #: refused", not about which enum a code happens to live in.
     INVALID_REQUEST = ErrorCode.INVALID_REQUEST

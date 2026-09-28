@@ -41,6 +41,11 @@ from app.domain.timesheet.models import (
     TimesheetStatus,
     WeekView,
 )
+from app.domain.timesheet.report import (
+    ReportDimension,
+    ReportSummary,
+    ReportTotals,
+)
 
 
 class EntryWrite(StrictModel):
@@ -321,6 +326,72 @@ class StatusRead(BaseModel):
     sheets: list[SheetStatusRead]
 
 
+# --- the report (ticket 30) -------------------------------------------------
+
+
+class DimensionRead(BaseModel):
+    """One dimension's value on one line of the report, as a labelled key.
+
+    `code` and both names travel rather than a rendered label, for the reason
+    `ProjectLabel` records: the interface ships in two languages, and a server that
+    picked one would be a server deciding what a Spanish reader sees. `week_start` is
+    set on a `period` value and `id` on the three that name a row.
+    """
+
+    kind: ReportDimension
+    id: UUID | None = None
+    code: str | None = None
+    name_es: str | None = None
+    name_en: str | None = None
+    week_start: date | None = None
+
+
+class TotalsRead(BaseModel):
+    """The figures a line states, and the arithmetic that relates them.
+
+    `billable_minutes` and `non_billable_minutes` are strictly separated and add up
+    to `total_minutes`, which is the net of reversals. There is no rate, no amount and
+    no currency anywhere in this shape: this system accumulates and exports minutes
+    (DESIGN §7.3), and a money field would be a payroll figure computed from nothing.
+    """
+
+    billable_minutes: int
+    non_billable_minutes: int
+    total_minutes: int
+    gross_minutes: int
+    reversal_minutes: int
+    #: The entry rows the figures were summed from, and the approved weeks they came
+    #: from. Exact in a line and in the total, because both are a `count(distinct)`.
+    entries: int
+    weeks: int
+
+
+class ReportRowRead(BaseModel):
+    """One line of the table: what the group is, and what it came to."""
+
+    dimensions: list[DimensionRead]
+    totals: TotalsRead
+
+
+class ReportRead(BaseModel):
+    """The report: a table of rows and the totals row underneath it.
+
+    `group_by` is echoed because the row keys are positional: the same report asked
+    for weeks instead of projects is a different table, and a client that rendered the
+    rows without knowing the grouping would have to infer it from the values.
+
+    `total` covers the whole filter and is not necessarily the sum of `rows` — `entries`
+    and `weeks` are counts over the period, and a week that booked time on two projects
+    is one week in the total and a line in each of two rows.
+    """
+
+    from_date: date
+    to_date: date
+    group_by: list[ReportDimension]
+    rows: list[ReportRowRead]
+    total: TotalsRead
+
+
 # --- projections ------------------------------------------------------------
 
 
@@ -430,6 +501,45 @@ def timesheet_read(sheet: Timesheet) -> TimesheetRead:
     )
 
 
+def totals_read(totals: ReportTotals) -> TotalsRead:
+    return TotalsRead(
+        billable_minutes=totals.billable_minutes,
+        non_billable_minutes=totals.non_billable_minutes,
+        total_minutes=totals.total_minutes,
+        gross_minutes=totals.gross_minutes,
+        reversal_minutes=totals.reversal_minutes,
+        entries=totals.entries,
+        weeks=totals.weeks,
+    )
+
+
+def report_read(summary: ReportSummary) -> ReportRead:
+    """The report, as the response states it: a table and its totals row."""
+    return ReportRead(
+        from_date=summary.filter.from_date,
+        to_date=summary.filter.to_date,
+        group_by=list(summary.filter.group_by),
+        rows=[
+            ReportRowRead(
+                dimensions=[
+                    DimensionRead(
+                        kind=value.kind,
+                        id=value.id,
+                        code=value.code,
+                        name_es=value.name_es,
+                        name_en=value.name_en,
+                        week_start=value.week_start,
+                    )
+                    for value in row.dimensions
+                ],
+                totals=totals_read(row.totals),
+            )
+            for row in summary.rows
+        ],
+        total=totals_read(summary.totals),
+    )
+
+
 def approval_read(state: ApprovalState) -> ApprovalRead:
     pending = state.pending_step
     return ApprovalRead(
@@ -460,10 +570,13 @@ __all__ = [
     "CorrectionWrite",
     "DayRead",
     "DecisionRead",
+    "DimensionRead",
     "EntryRead",
     "EntryUpdate",
     "EntryWrite",
     "OverBudgetRead",
+    "ReportRead",
+    "ReportRowRead",
     "SheetStatusRead",
     "StatusRead",
     "SupplementRead",
@@ -471,12 +584,15 @@ __all__ = [
     "TaskNetRead",
     "TimesheetPageRead",
     "TimesheetRead",
+    "TotalsRead",
     "WeekRead",
     "approval_read",
     "entry_read",
     "over_budget_read",
+    "report_read",
     "sheet_read",
     "task_net_read",
     "timesheet_read",
+    "totals_read",
     "week_read",
 ]

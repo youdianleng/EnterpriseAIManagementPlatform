@@ -36,6 +36,8 @@ from app.domain.access.permissions import (
     OVERTIME_CROSS_ACTIONS,
     PROJECT_ADMIN_ROLES,
     SELF_ONLY_ACTIONS,
+    TIMESHEET_COMPANY_ROLES,
+    TIMESHEET_CROSS_ACTIONS,
     Action,
     roles_may,
     rule_for,
@@ -86,6 +88,13 @@ class ResourceKind(StrEnum):
     #: not a person's record and not a schedule — it is the organisation's list of
     #: what it offers, decided by catalogue and by role alone.
     LEAVE_TYPE = "leave_type"
+    #: One line of a timesheet report (ticket 30): somebody's hours on somebody's
+    #: project. Its own kind rather than `TIMESHEET`, and the reason is the rule:
+    #: a *week* is reachable only by the person it belongs to, while a report line is
+    #: reachable by three different people for three different reasons, and a kind
+    #: that carried both rules would be one branch away from granting a manager the
+    #: right to edit what they may only read.
+    TIMESHEET_REPORT = "timesheet_report"
 
 
 @dataclass(slots=True, frozen=True)
@@ -153,6 +162,11 @@ class Reason(StrEnum):
     #: says and would describe the wrong rule: the file was never the caller's to
     #: read by ownership in the first place.
     NOT_MANAGER_OF_SUBJECT = "not_manager_of_subject"
+    #: A line of somebody's time, and the caller is neither their manager, nor the
+    #: manager of the project it was booked to (ticket 30). Its own reason because
+    #: the rule is a union of two reaches and a refusal has to say which one was
+    #: missing: `NOT_MANAGER_OF_SUBJECT` alone would describe half of it.
+    NOT_YOUR_TIMESHEET_SCOPE = "not_your_timesheet_scope"
 
 
 @dataclass(slots=True, frozen=True)
@@ -200,6 +214,7 @@ class FilterSpec:
         "company_kb_cross_department",
         "include_company_kb",
         "manager_employee_id",
+        "reports_employee_ids",
         "statuses",
     )
 
@@ -216,6 +231,7 @@ class FilterSpec:
         explicit_grant_employee_id: UUID | None = None,
         company_kb_cross_department: bool = False,
         manager_employee_id: UUID | None = None,
+        reports_employee_ids: frozenset[UUID] = frozenset(),
         statuses: frozenset[str] = frozenset(),
     ) -> None:
         if _token is not _FILTER_TOKEN:
@@ -241,6 +257,16 @@ class FilterSpec:
         #: query; `None` means projects are not reached this way at all — which is
         #: true of every kind but this one.
         self.manager_employee_id = manager_employee_id
+        #: The employees whose hours this caller reaches as their manager, carried as
+        #: the *set* for the reason `department_ids` is: it is the same relationship
+        #: the kernel's `MANAGER_OF_SUBJECT` clause tests, and a store that had to
+        #: re-derive "who reports to this person" would be a second implementation of
+        #: it. Empty means "nobody reports to this caller", never "no restriction".
+        #:
+        #: Not `own_employee_id`: owning your own week is a different reach with a
+        #: different action (`timesheet.read_own`), and folding the two together is
+        #: how a report quietly starts including rows the caller may not read.
+        self.reports_employee_ids = reports_employee_ids
         #: The *only* statuses that count as reachable, as a membership test rather
         #: than a lower bound. Empty means the kind is not filtered by status.
         #:
@@ -259,6 +285,7 @@ class FilterSpec:
             f"<FilterSpec {self.kind} departments={len(self.department_ids)} "
             f"clearance<={sorted(self.clearance_levels)} own={self.own_employee_id is not None} "
             f"manages={self.manager_employee_id is not None} "
+            f"reports={len(self.reports_employee_ids)} "
             f"cross_dept={self.company_kb_cross_department} statuses={sorted(self.statuses)}>"
         )
 
@@ -354,6 +381,15 @@ def _can_on_resource(principal: Principal, action: Action, resource: Resource) -
             f"{action} is about the principal's own material; "
             f"owner={resource.owner_employee_id or 'unset'}",
         )
+
+    # Somebody else's hours (ticket 30), decided before the generic path for the
+    # reason the three branches below are: a manager and a colleague share a
+    # department, so "in my department" would be read as "mine to sum". It is its
+    # own call rather than a fourth clause of `_can_on_record` because its rule is
+    # not the same one: a project manager reaches a line of time on *their project*
+    # without being anybody's manager.
+    if action in TIMESHEET_CROSS_ACTIONS:
+        return _can_on_timesheet_line(principal, action, resource)
 
     # Somebody else's personnel record (ticket 24, extended by ticket 25 to leave and
     # by ticket 26 to overtime), decided before the generic path can reach it. The path
@@ -457,6 +493,67 @@ def _can_on_project(principal: Principal, action: Action, resource: Resource) ->
         False,
         (Reason.NOT_PROJECT_MANAGER,),
         f"{action} is for the project's own manager; manager="
+        f"{resource.manager_employee_id or 'unset'}, caller={principal.employee_id}",
+    )
+
+
+def _can_on_timesheet_line(
+    principal: Principal, action: Action, resource: Resource
+) -> Decision:
+    """A line of somebody's time: two reaches for a manager, one remit for HR.
+
+    The ticket's sentence — 经理只能看自己下属的工时；项目经理能看自己项目的工时；人力资源可看全员
+    — is a rule about the *row*, so it is decided here rather than by a query. The
+    resource carries the two facts it needs: the employee whose hours they are
+    (`owner_employee_id`) and the project's own manager (`manager_employee_id`).
+
+    **A union, not a conjunction.** A manager reaches a line if the person reports to
+    them *or* the project is theirs; a project's manager reads time recorded against
+    it by somebody who does not report to them at all, which is what the ticket asks
+    for and what a conjunction would refuse. The project clause matches a fact about
+    the row rather than a role, which is the same reason `_can_on_project` is a
+    branch: the same role manages one project and is refused another.
+
+    **The department is deliberately absent.** A manager and a colleague share a
+    department, and §4.1's 直属下属 is what the ticket means by 下属; letting the
+    generic path answer would hand every manager their whole team's hours. The
+    department is not a *narrower* reading of the rule either — a project's time is
+    reachable through the project's manager whether or not the caller works there.
+
+    **A row that names nobody is refused.** "We cannot tell that it is yours to read"
+    is a refusal, not a permission, for the reason the self-only branch gives: a
+    decision whose default on missing information is "yes" is how a filter-free query
+    gets written.
+    """
+    if bool(principal.roles & TIMESHEET_COMPANY_ROLES):
+        return Decision(
+            True,
+            (Reason.IS_PRIVILEGED,),
+            f"{sorted(principal.roles & TIMESHEET_COMPANY_ROLES)} reaches the whole "
+            "company's hours",
+        )
+
+    if (
+        resource.owner_employee_id is not None
+        and resource.owner_employee_id in principal.reports_employee_ids
+    ):
+        return Decision(
+            True, (Reason.MANAGER_OF_SUBJECT,), "the hours belong to somebody who reports here"
+        )
+
+    if (
+        resource.manager_employee_id is not None
+        and resource.manager_employee_id == principal.employee_id
+    ):
+        return Decision(
+            True, (Reason.MANAGES_OWN_PROJECT,), "the time was booked against this project"
+        )
+
+    return Decision(
+        False,
+        (Reason.NOT_YOUR_TIMESHEET_SCOPE,),
+        f"{action} reaches your reports and your projects; employee="
+        f"{resource.owner_employee_id or 'unset'}, project manager="
         f"{resource.manager_employee_id or 'unset'}, caller={principal.employee_id}",
     )
 
@@ -681,13 +778,49 @@ def filter_for(principal: Principal, kind: ResourceKind) -> FilterSpec:
             statuses=frozenset({PROJECT_ACTIVE_STATUS}),
         )
 
+    if kind is ResourceKind.TIMESHEET_REPORT:
+        # The rows one report may state (ticket 30). A **union of two reaches**, which
+        # is why it is its own branch instead of the project spec reused: a manager's
+        # hours are reachable through the reporting relationship *or* through the
+        # project they run, and a store that applied one of the two would either drop
+        # a project manager's own projects or hand a manager the whole department.
+        #
+        # * `allow_all` is HR's, and it means exactly that: 工时全量 is a remit that
+        #   does not depend on the row.
+        # * `reports_employee_ids` is the relationship `MANAGER_OF_SUBJECT` tests, the
+        #   same one the approval route is resolved from.
+        # * `manager_employee_id` is "projects I manage", the same field the project
+        #   spec carries, read here as a fact about the time's *project*.
+        #
+        # Everything else is empty on purpose. `department_ids` is not part of the
+        # rule (see `_can_on_timesheet_line`), and leaving the field populated for a
+        # store that applied it "just in case" is how the escalation gets written.
+        return FilterSpec(
+            _token=_FILTER_TOKEN,
+            kind=kind,
+            allow_all=bool(principal.roles & TIMESHEET_COMPANY_ROLES),
+            department_ids=frozenset(),
+            clearance_levels=frozenset(CLEARANCE_RANK),
+            # The caller's *own* hours are deliberately not part of this reach: they are
+            # `timesheet.read_own`, a different action with its own rule, and a report
+            # that quietly included them would widen the day that rule changed. So this
+            # field is left unset, which for a store means "ownership is not a clause
+            # here" rather than "the caller has no id".
+            own_employee_id=None,
+            include_company_kb=False,
+            manager_employee_id=principal.employee_id,
+            reports_employee_ids=principal.reports_employee_ids,
+        )
+
     # Structure and administration are organisation-wide for anyone whose role
     # passed the action check; the filter records that rather than pretending
     # otherwise. A week of hours (ticket 28) lands here too, and `allow_all` is
     # harmless for it for a reason worth stating: the three timesheet actions are
     # self-only, so the *resource* clause refuses every week but the caller's own
     # before any filter is consulted — there is no list endpoint that could leak
-    # through a permissive spec.
+    # through a permissive spec. Ticket 30's report is the exception that proves the
+    # rule is about the *kind*: it asks for `TIMESHEET_REPORT`, which is decided
+    # above, because a report genuinely can list somebody else's hours.
     return FilterSpec(
         _token=_FILTER_TOKEN,
         kind=kind,

@@ -238,6 +238,8 @@ export const es: Dictionary = {
       "El envío complementario no indica ninguna corrección válida: elige las entradas de esta semana que quieres corregir.",
     timesheet_entry_is_reversal:
       "Las líneas de ajuste de un envío complementario no se pueden editar ni borrar, y tampoco lo que ya está ajustado.",
+    timesheet_report_range_invalid:
+      "El periodo del informe no es válido: indica una fecha de inicio anterior a la de fin y como máximo {days} días.",
     project_task_not_recordable:
       "Esa tarea no admite horas: puede estar desactivada o pertenecer a un proyecto no activo.",
     document_upload_type_unsupported:

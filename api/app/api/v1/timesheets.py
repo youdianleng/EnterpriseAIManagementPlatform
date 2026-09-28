@@ -36,29 +36,45 @@ is the same two-level approval over a second document.
 from datetime import date
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.deps import current_principal, db_session, require, require_own
+from app.api.v1.deps import (
+    audit_refusal,
+    current_principal,
+    db_session,
+    require,
+    require_own,
+)
 from app.api.v1.schemas.timesheet import (
     EntryUpdate,
     EntryWrite,
+    ReportRead,
     SheetStatusRead,
     StatusRead,
     SupplementWrite,
     TimesheetPageRead,
     WeekRead,
     approval_read,
+    report_read,
     timesheet_read,
     week_read,
 )
+from app.core.errors import AppError, ErrorCode
 from app.domain.access import Action, Principal, ResourceKind
+from app.domain.access.kernel import can
 from app.domain.approval.service import ApprovalService
 from app.domain.notification.approval import ApprovalNotifier
 from app.domain.notification.service import NotificationService
 from app.domain.project.service import ProjectService
 from app.domain.schedule.service import ScheduleService
 from app.domain.timesheet.models import UNSET, EntryPatch, ProjectLabel, WeekView
+from app.domain.timesheet.report import (
+    DEFAULT_GROUPING,
+    DIMENSIONS,
+    ReportDimension,
+    ReportFilter,
+)
 from app.domain.timesheet.service import TimesheetService
 from app.repositories.approval import PostgresApprovalRepository
 from app.repositories.notification import PostgresNotificationRepository
@@ -76,6 +92,47 @@ read_own = require(Action.TIMESHEET_READ_OWN, ResourceKind.TIMESHEET)
 write_own = require(Action.TIMESHEET_WRITE_OWN, ResourceKind.TIMESHEET)
 submit_own = require(Action.TIMESHEET_SUBMIT_OWN, ResourceKind.TIMESHEET)
 
+#: The two reaches the report admits, the company's first because a caller holding
+#: both reports under the wider one.
+REPORT_ACTIONS: tuple[Action, ...] = (
+    Action.TIMESHEET_READ_ALL,
+    Action.TIMESHEET_READ_REPORT,
+)
+
+
+async def report_access(
+    request: Request,
+    principal: Principal = Depends(current_principal),
+) -> Principal:
+    """Who may open the report, and under which of the two actions.
+
+    **The route cannot name one action**, and the reason is the ticket's own sentence:
+    HR's remit does not depend on the row (`timesheet.read_all`) while a manager's does
+    (`timesheet.read_report`), so the two are different permissions with different role
+    lists and either one admits the request. Which applies is therefore a fact about
+    the caller — and it is the kernel that answers it, not this function: a caller
+    holding neither is refused here, before any query runs, with the audit record every
+    other refusal in this API writes.
+
+    **The rows are a different question, asked separately.** Which *rows* the caller
+    reaches is `filter_for(principal, TIMESHEET_REPORT)`, resolved by the service; this
+    function only decides whether they may open the report at all.
+    """
+    for action in REPORT_ACTIONS:
+        if can(principal, action).allowed:
+            return principal
+
+    attempted = Action.TIMESHEET_READ_REPORT
+    decision = can(principal, attempted)
+    await audit_refusal(request, principal, attempted, decision, ResourceKind.TIMESHEET_REPORT)
+    raise AppError(
+        ErrorCode.FORBIDDEN,
+        detail=(
+            f"the hours report is for a manager's reports and their projects, or for HR: "
+            f"{decision.primary_reason} ({decision.detail})"
+        ),
+    )
+
 #: The week, always named. Every screen that shows a grid has to say which week it is,
 #: and a server-side default of "today" would be the server guessing at the client's
 #: calendar.
@@ -83,6 +140,20 @@ WEEK_QUERY = Query(description="The Monday of the week, as an ISO date (YYYY-MM-
 SUBJECT_QUERY = Query(
     default=None, description="Whose week; defaults to the caller, and anybody else is a 403"
 )
+
+#: The report's period, named rather than defaulted. A report with no period is the
+#: whole table, and "last month" is the client's notion of the calendar rather than
+#: the server's — the same reason the week above is a parameter.
+FROM_QUERY = Query(description="First day of the period, inclusive (YYYY-MM-DD)")
+TO_QUERY = Query(description="Last day of the period, inclusive (YYYY-MM-DD)")
+
+#: The facets, repeatable and conjunctive with the period and with each other. Empty
+#: means "no narrowing on this dimension", never "nothing matches".
+PROJECT_QUERY = Query(default=None, description="Only these projects; repeatable")
+DEPARTMENT_QUERY = Query(
+    default=None, description="Only work belonging to these departments; repeatable"
+)
+EMPLOYEE_QUERY = Query(default=None, description="Only these employees; repeatable")
 
 
 def _service(session: AsyncSession, principal: Principal) -> TimesheetService:
@@ -419,6 +490,128 @@ async def remove_entry(
     await _subject(request, principal, Action.TIMESHEET_WRITE_OWN, employee_id)
     service = _service(session, principal)
     return await _week(service, await service.remove_entry(week, entry_id))
+
+
+# --- the report (ticket 30) -------------------------------------------------
+
+
+@router.get(
+    "/report",
+    response_model=ReportRead,
+    summary="Hours by project, department, employee or period",
+    dependencies=[Depends(report_access)],
+)
+async def read_report(
+    principal: Principal = Depends(current_principal),
+    session: AsyncSession = Depends(db_session),
+    from_date: date = FROM_QUERY,
+    to_date: date = TO_QUERY,
+    group_by: list[ReportDimension] | None = Query(
+        default=None,
+        description=(
+            "What each row is about, in column order; repeat it to combine "
+            f"({', '.join(str(value) for value in DIMENSIONS)}). Defaults to project"
+        ),
+    ),
+    project_id: list[UUID] | None = PROJECT_QUERY,
+    department_id: list[UUID] | None = DEPARTMENT_QUERY,
+    employee_id: list[UUID] | None = EMPLOYEE_QUERY,
+) -> ReportRead:
+    """Only approved weeks, net of reversals, with billable and non-billable apart.
+
+    Every row states five figures and two counts. `billable_minutes` and
+    `non_billable_minutes` add up to `total_minutes`, which is the net: a reversal
+    carries its original's flag, so a correction moves both the gross and the reversed
+    figure on the same side. `gross_minutes` and `reversal_minutes` are what the net
+    was reached from, so a reader can see "eight hours minus two" rather than a silent
+    six.
+
+    **What is counted, and what is not.** A row counts when the *sheet* it belongs to
+    is approved. A draft or a week awaiting a decision contributes nothing at all —
+    absent rather than zero — and a correction contributes only once it has itself been
+    approved, which is what makes 报表数值与逐条明细可对账 true of a week that was
+    corrected by a supplement.
+
+    **Who sees what** is the kernel's answer and not this handler's: a manager reads
+    their reports' hours, a project manager reads the hours booked against their
+    projects, HR reads everybody, and a caller who is none of those is refused by the
+    dependency before this function runs. Rows outside the caller's reach are not in
+    the response at all — there is no field left blank for them.
+    """
+    service = _service(session, principal)
+    summary = await service.report(
+        _report_filter(from_date, to_date, group_by, project_id, department_id, employee_id)
+    )
+    return report_read(summary)
+
+
+@router.get(
+    "/report/export",
+    summary="The report as a CSV file, for finance or a client",
+    dependencies=[Depends(report_access)],
+)
+async def export_report(
+    principal: Principal = Depends(current_principal),
+    session: AsyncSession = Depends(db_session),
+    from_date: date = FROM_QUERY,
+    to_date: date = TO_QUERY,
+    group_by: list[ReportDimension] | None = Query(default=None),
+    project_id: list[UUID] | None = PROJECT_QUERY,
+    department_id: list[UUID] | None = DEPARTMENT_QUERY,
+    employee_id: list[UUID] | None = EMPLOYEE_QUERY,
+) -> Response:
+    """The same rows as the report, as a file, with a totals line at the end.
+
+    The permission is the report's and not one of its own: the file states exactly what
+    the screen states — minutes, codes and names, and deliberately no rate and no staff
+    number (`domain/timesheet/export.py` says why) — so a separate action would be a
+    second thing to grant for no new authority.
+
+    Exporting changes nothing, so re-running a period produces the same bytes; what it
+    does write is one `data.exported` record naming the period, the grouping and the
+    minutes the file stated, which is what makes "who handed this period to finance"
+    answerable afterwards.
+    """
+    service = _service(session, principal)
+    export = await service.export_report(
+        _report_filter(from_date, to_date, group_by, project_id, department_id, employee_id)
+    )
+    return Response(
+        content=export.content,
+        media_type=export.content_type,
+        headers={"Content-Disposition": f'attachment; filename="{export.filename}"'},
+    )
+
+
+def _report_filter(
+    from_date: date,
+    to_date: date,
+    group_by: list[ReportDimension] | None,
+    project_id: list[UUID] | None,
+    department_id: list[UUID] | None,
+    employee_id: list[UUID] | None,
+) -> ReportFilter:
+    """The query string as the module's filter.
+
+    Repeated parameters are the facets and the grouping at once, and empty means "no
+    narrowing": the same convention the project list uses. `group_by` defaults rather
+    than being required, because a report with no grouping is a table of one row, which
+    is a shape nobody asked for — the ticket's four dimensions are what it is for.
+
+    **`group_by` is de-duplicated, keeping the caller's order.** A repeated dimension
+    would select the same key column twice: a row would then carry two values for one
+    dimension and the grouping would still be one group, so the response would state the
+    same thing twice and mean it once.
+    """
+    grouping = tuple(dict.fromkeys(group_by)) if group_by else DEFAULT_GROUPING
+    return ReportFilter(
+        from_date=from_date,
+        to_date=to_date,
+        group_by=grouping,
+        project_ids=tuple(project_id or ()),
+        department_ids=tuple(department_id or ()),
+        employee_ids=tuple(employee_id or ()),
+    )
 
 
 def _patch(payload: EntryUpdate) -> EntryPatch:

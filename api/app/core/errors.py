@@ -304,6 +304,11 @@ class ErrorCode(StrEnum):
     #: A reversal, or an entry a reversal points at, was edited or removed. The pair
     #: means something only while both halves still negate each other.
     TIMESHEET_ENTRY_IS_REVERSAL = "ERR_TSH_019"
+    #: The period a report was asked for is unusable: inverted dates, or wider than
+    #: the four years the working-time record is kept for. Its own code rather than
+    #: `INVALID_REQUEST`, because the remedy is a different period rather than a
+    #: different request (ticket 30).
+    TIMESHEET_REPORT_RANGE_INVALID = "ERR_TSH_020"
 
     # Leave: the type catalogue, the year's allowance, and the request that spends
     # it (ticket 25). Four themes, and the boundary between them is what a client
@@ -700,6 +705,9 @@ ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
     ),
     ErrorCode.TIMESHEET_SUPPLEMENT_INVALID: ErrorDefinition(
         422, "errors.timesheet_supplement_invalid"
+    ),
+    ErrorCode.TIMESHEET_REPORT_RANGE_INVALID: ErrorDefinition(
+        422, "errors.timesheet_report_range_invalid"
     ),
     # 403 with its own code so the client can route to the change-password screen
     # instead of showing a permission error.

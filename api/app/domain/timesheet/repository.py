@@ -24,12 +24,25 @@ Three things about this interface are load-bearing:
   are part of the week's net, so the grid reads by week and the filing reads by sheet.
   Both exist because "what does this week come to" and "what am I about to file" are
   different questions with different right answers.
+
+* **`report_rows` takes a `FilterSpec`, and it is not optional (ticket 30).** Every
+  other read here is scoped by the caller's own `employee_id`; the report is the one
+  question that is legitimately *about* somebody else, and the spec is what makes it
+  safe. A signature that allowed the filter without the permission is how a
+  filter-free query gets written — the argument `ProjectRepository.list_selectable`
+  already records.
+
+* **The report's totals are a second statement, over the same predicate.** The two
+  calls share one `WHERE`, so the totals row cannot describe different rows from the
+  table above it, and the two `count(distinct)` figures stay exact rather than being
+  the sum of per-group counts.
 """
 
 from datetime import date
 from typing import Protocol
 from uuid import UUID
 
+from app.domain.access.kernel import FilterSpec
 from app.domain.timesheet.models import (
     EntryInput,
     EntryPatch,
@@ -38,6 +51,7 @@ from app.domain.timesheet.models import (
     TimesheetPage,
     TimesheetStatus,
 )
+from app.domain.timesheet.report import ReportFilter, ReportRow, ReportTotals
 
 
 class TimesheetRepository(Protocol):
@@ -123,6 +137,43 @@ class TimesheetRepository(Protocol):
         is asked before every edit: an entry that has been reversed is frozen — it is
         what the reversal negates — and a service check that loaded a dozen rows to
         answer it would be the reason somebody moved the check.
+        """
+        ...
+
+    async def report_rows(self, spec: FilterSpec, report_filter: ReportFilter) -> list[ReportRow]:
+        """The report's table: one row per group, with billable split from non-billable.
+
+        Three things the statement has to get right, and they are the ticket's three
+        numeric lines rather than an implementation detail:
+
+        * **It joins the entry's own sheet and requires it to be `approved`.** Per
+          *sheet*, not per week: a corrected week has an approved original and a
+          supplement of its own, and the correction's reversal and replacement both
+          count the moment the correction is decided and neither counts before. A
+          draft or a pending sheet reaches no row at all — it is absent rather than a
+          row of zeros.
+        * **`is_billable` groups**, so the two subtotals are sum of `minutes` over one
+          boolean. A reversal carries its original's flag (the migration's trigger
+          refuses one that does not), which is what makes the two columns add up to
+          the net.
+        * **`spec` is applied in full.** `allow_all` is HR; otherwise the rows are the
+          caller's reports *or* the projects they manage, and a spec that names
+          neither matches nothing rather than everything.
+
+        Every field of `report_filter` is applied as well, and the grouping is the one
+        the filter asked for — see `ReportFilter`. Nothing commits and nothing is
+        written: this is a read.
+        """
+        ...
+
+    async def report_totals(self, spec: FilterSpec, report_filter: ReportFilter) -> ReportTotals:
+        """The same figures over the whole period, in one row.
+
+        Its own statement rather than the rows added up, because `entries` and `weeks`
+        are `count(distinct)` and a sum of per-group counts is not the count over the
+        period — a week that booked time on two projects appears in two rows. The
+        predicate is the one `report_rows` used, which is what makes the totals line
+        agree with the table above it by construction rather than by coincidence.
         """
         ...
 
