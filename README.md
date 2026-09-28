@@ -16,19 +16,32 @@ permission-aware RAG knowledge assistant.
 
 ## Where the project stands
 
-Built and verified, newest first: the organisation tree, employee records with
-multiple assignments, the position catalogue, accounts with one-time passwords,
-sessions with the forced password change, the authorization kernel with its
-clearance and document rules, row-level security under a restricted database
-role, the audit trail with a compliance read surface, role administration, and —
-on the interface — sign-in, forced change and the signed-in shell. The
-permission matrix (1911 generated cases plus the database layer) is the safety
-net the rest of the work runs against.
+Built and verified, newest first: hybrid retrieval (both legs in one statement,
+reciprocal rank fusion, a reranker behind a seam, an explicit "no basis" answer
+and an authorised debug view), the hours report with billable and non-billable
+told apart, the weekly timesheet with its approval lock and supplementary
+submissions, documents from upload through parsing, chunking and embeddings,
+leave and annual allowance, overtime with its monthly export, attendance
+corrections, the daily digest, projects and tasks, work schedules with expected
+hours and holidays, clock events and anomaly detection, the approval engine,
+personnel change requests, termination, the notification centre, and — the
+foundation everything else asks — the authorization kernel with its clearance
+and document rules, row-level security under a restricted database role, the
+audit trail with a compliance read surface, role administration, accounts and
+sessions. On the interface: sign-in, forced change, the signed-in shell,
+notifications, timesheets and documents.
 
-Next, in order: personnel change requests, notifications, attendance and leave,
-timesheets, the document pipeline and retrieval, the agent, payroll. The ticket
-index is the authority; every ticket's file records what was verified and what
-was left open.
+The permission matrix (5187 generated cases over 76 routes, plus the database
+layer that asserts what PostgreSQL itself refuses) is the safety net the rest of
+the work runs against.
+
+Next, in order: the answer pipeline with its mandatory citations and its refusal
+to answer without retrieved evidence, the retrieval escalation suite, personal
+documents and their visibility, the question-and-answer interface, then the
+agent (intent routing, read-only tools, draft tools with human confirmation, and
+redacted observability with provider fallback), and finally payroll, payslips and
+the data export. The ticket index is the authority; every ticket's file records
+what was verified and what was left open.
 
 
 ## Requirements
