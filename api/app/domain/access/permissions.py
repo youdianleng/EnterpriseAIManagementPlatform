@@ -211,6 +211,15 @@ class Action(StrEnum):
     DOCUMENT_UPLOAD = "document.upload"
     DOCUMENT_MANAGE = "document.manage"
     DOCUMENT_SET_CLEARANCE = "document.set_clearance"
+    #: The retrieval debug view (ticket 33): both legs' top twenty for one query, the
+    #: fusion's arithmetic, the reranker's contribution and which candidates were
+    #: dropped. Administration and HR, and the reason is what the view *is* rather than
+    #: how sensitive it is: it shows the corpus's internal shape — which documents and
+    #: passages exist, how the ranker scored them, which one answered — and the two
+    #: roles that own the knowledge base are the ones who can act on 「为什么没检索到」.
+    #: Deliberately not every role: the view quotes passages wholesale, and the ticket
+    #: asks for a view that is *authorised* (仅授权角色可见).
+    RETRIEVAL_DEBUG = "retrieval.debug"
 
 
 @dataclass(frozen=True, slots=True)
@@ -644,6 +653,17 @@ RULES: dict[Action, ActionRule] = {
     Action.DOCUMENT_SET_CLEARANCE: ActionRule(
         roles=frozenset({"admin", "hr"}),
         description="Only these may classify a company document.",
+    ),
+    # Ticket 33's debug view. The same pair that manages the knowledge base, for the
+    # reason the action's own comment gives: they are the roles that can act on what
+    # the view shows. An ordinary employee's "why did my question find nothing" is
+    # answered by rephrasing, not by reading the fusion's arithmetic.
+    Action.RETRIEVAL_DEBUG: ActionRule(
+        roles=frozenset({"admin", "hr"}),
+        description=(
+            "Reading the retrieval debug view: both legs' top twenty, the RRF scores, "
+            "the reranker's contribution and the candidates that were dropped."
+        ),
     ),
 }
 

@@ -645,6 +645,39 @@ FORBIDDEN = {"content", "messages", "prompt", "completion", "query",
 
 recall@5 = 1.000 是**合成随机向量**下的结果：2 万条随机向量近似正交，最近邻极容易分辨，所以这个数字只说明"索引没有坏"，不能说明真实语料上的召回——真实语料的召回要在票据 33 的混合检索里用真模型测。
 
+**票据 33 的混合检索实测**（`api/tests/tools/eval_retrieval.py --sample`，样本
+`api/tests/support/retrieval_sample.py`：**6 份**西语制度、**12 个**问题；`EMBEDDING_PROVIDER=fake`，
+即哈希词袋向量，所以数字是**词汇**分数；本机 Docker Compose 的 postgres 18 / pgvector 0.8.6，2026-09-28）：
+
+| 模式 | hit@5 | MRR |
+|---|---|---|
+| 纯向量（向量 leg 前 5） | 0.917 | 1.000 |
+| 纯全文（`ts_rank_cd` 前 5） | 1.000 | 1.000 |
+| 混合（两路各前 20 → RRF k=60 → 重排 → 前 5） | **1.000** | **1.000** |
+
+**读法（三点）**：
+
+1. **票据 33 的验收线"混合不低于纯向量"成立（1.000 ≥ 0.917）**，而且赢在唯一一处真会出错的
+   地方：`¿Cuántas horas de permiso individual de formación puedo pedir?` 的答案在向量 leg 的
+   前 20 之内但不在前 5 之内，同时是文本 leg 的第一名，融合把它捞了回来——这正是 §5.2 让两路
+   各取 20 再融合的理由。
+2. **这不是"混合普遍更好"的证据。** 12 个问题、6 份文档、假嵌入器不足以说明 RRF 优于加权和；
+   真实结论要用组织自己的语料与问题重跑。样本里的另外三份文档（劳动健康/PRL、信息安全、
+   培训）是刻意加的**干扰项**：三份文档的语料里三种模式都是 1.000，那样的对照是空的。
+3. **量化评估暴露了两个真实缺陷**，都属于"看起来能用、实际召回为零"那一类，记在这里因为
+   它们是这个语料与这套配置的属性，不只是代码问题（修法见 `api/app/repositories/retrieval.py`）：
+   `websearch_to_tsquery` **不剥西语问号**而是并进词元（`¿Cuántos días?` → `'¿cuant' & 'dias'`，
+   `'¿cuant'` 谁都匹配不到，实测 `text hit@5 = 0.111`），且它**用 `AND` 连接所有词元**（对搜索框
+   正确、对问句错误：它要求文档里出现"corresponden"这类问句才有的词）。查询先归一化、长问句改用
+   同一批词元的 `OR` + `ts_rank_cd` 排序后，`text hit@5` 从 0.111 升到 1.000。
+
+**重排不是 cross-encoder**（`api/app/domain/retrieval/rerank.py`）：离线没有跨编码器，实现的是
+表层特征重排（查询词在**父块**中的覆盖率、相邻查询词的最小间隔、标题命中）加融合分先验。
+`Reranker` 是接缝（Protocol），`RETRIEVAL_RERANKER` 决定装配哪一个。它**没有语义**：
+"asueto" 与 "vacaciones" 之间它看不见任何关系——这一点由
+`test_the_reranker_cannot_do_what_a_cross_encoder_can` 断言，而不是由注释声明。§5.2 的 `rerank`
+要真正成立，缺的是一个可用的跨编码器适配器。
+
 ### 10.4 界面默认语言 → **已确认：跟随浏览器**
 默认读取 `Accept-Language` 决定西语/英语，用户可手动切换，选择持久化到用户偏好（写入 `users.locale`，登录后以用户偏好覆盖浏览器推断）。
 

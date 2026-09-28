@@ -385,6 +385,9 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
             "de búsqueda. La búsqueda semántica no lo encontrará hasta que se vuelva a "
             "procesar; avisa a soporte."
         ),
+        "errors.retrieval_query_invalid": (
+            "La consulta no es válida: escribe una pregunta y vuelve a intentarlo."
+        ),
         "errors.internal_error": "Se produjo un error interno. Inténtalo de nuevo más tarde.",
         "errors.service_unavailable": "El servicio no está disponible en este momento.",
     },
@@ -732,6 +735,9 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
             "The document was processed, but its search vectors could not be generated. "
             "Semantic search will not find it until it is reprocessed; please contact "
             "support."
+        ),
+        "errors.retrieval_query_invalid": (
+            "The search query is not valid: write a question and try again."
         ),
         "errors.internal_error": "An internal error occurred. Please try again later.",
         "errors.service_unavailable": "The service is unavailable right now.",

@@ -126,6 +126,29 @@ class Settings(BaseSettings):
             return self.embedding_provider
         return "fake" if self.is_development or self.app_env == "test" else "openai"
 
+    # --- retrieval (ticket 33) ----------------------------------------------
+    # The reciprocal-rank fusion constant. 60 is the literature's value (Cormack et
+    # al., 2009) and the default; it damps the top ranks so that a candidate both legs
+    # put in their top five beats one leg's single first place. Lowering it (10 is the
+    # usual alternative) trusts each leg's own top hits more, which is the right choice
+    # for a corpus where one leg is known to be much the stronger — a decision that has
+    # to be measured, which is what the evaluation script is for.
+    retrieval_fusion_k: int = 60
+    # How many candidates each leg contributes before the fusion. §5.2 says twenty for
+    # each half: it is a *recall* budget rather than a result size, because a document
+    # the fusion never saw cannot be reranked into the five that are returned.
+    retrieval_leg_limit: int = 20
+    # Which reranker adapter to build. `None` (and `lexical`) is the one this repository
+    # ships; a deployment with a cross-encoder endpoint names its adapter here, which is
+    # what makes `domain/retrieval/rerank.py` a seam rather than a class.
+    retrieval_reranker: str | None = None
+    # The threshold below which the answer is "the knowledge base holds no basis for
+    # this" (§5.2/D20) rather than a weak top five. It is on the *reranked* score's
+    # `[0, 1]` scale — see `domain/retrieval/service.py` for why that score and not the
+    # fusion's. A setting because the number a corpus needs is a measurement: run
+    # `tests/tools/eval_retrieval.py` and move it deliberately rather than inheriting it.
+    retrieval_min_score: float = 0.35
+
     # --- leave (ticket 25) --------------------------------------------------
     # The annual allowance, in natural days, and the whole of `docs/DESIGN.md`'s
     # D7: "30 自然日 ... 额度可配置 (`annual_leave_days=30`)". A setting rather than

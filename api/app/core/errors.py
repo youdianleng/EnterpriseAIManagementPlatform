@@ -445,6 +445,15 @@ class ErrorCode(StrEnum):
     #: is the state `WHERE embedding IS NULL` reports as work to do.
     DOCUMENT_EMBEDDING_UNAVAILABLE = "ERR_DOC_009"
 
+    # Retrieval (ticket 33). Exactly one code, and the restraint is the decision: a
+    # search that finds nothing above the threshold is the ordinary "no basis" answer
+    # and travels as a 200 carrying `insufficient_evidence`, and a search whose
+    # embedding provider is unreachable loses its vector leg and says so in
+    # `legs_used` rather than failing. What is left is a query the caller wrote wrong
+    # — empty, or longer than a question — which is a 422 the client fixes by sending
+    # something else.
+    RETRIEVAL_QUERY_INVALID = "ERR_RET_001"
+
     # Cross-cutting.
     INTERNAL_ERROR = "ERR_INTERNAL_001"
     SERVICE_UNAVAILABLE = "ERR_INTERNAL_002"
@@ -796,6 +805,10 @@ ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
     ErrorCode.DOCUMENT_EMBEDDING_UNAVAILABLE: ErrorDefinition(
         503, "errors.document_embedding_unavailable", expose_detail=False
     ),
+    # 422: the fix is to send a question. A query that is empty or longer than
+    # `MAX_QUERY_CHARS` is the caller's mistake and nothing about the deployment is
+    # wrong, so it is not the 503 the embedding failure gets.
+    ErrorCode.RETRIEVAL_QUERY_INVALID: ErrorDefinition(422, "errors.retrieval_query_invalid"),
     ErrorCode.INTERNAL_ERROR: ErrorDefinition(500, "errors.internal_error", expose_detail=False),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorDefinition(
         503, "errors.service_unavailable", expose_detail=False

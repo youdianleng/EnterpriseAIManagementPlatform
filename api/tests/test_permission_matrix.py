@@ -287,6 +287,13 @@ DESIGN_GRANTS: dict[Action, frozenset[str]] = {
     # asserts the manager's own two cases by name.
     Action.TIMESHEET_READ_REPORT: frozenset({"manager"}),
     Action.TIMESHEET_READ_ALL: frozenset({"hr"}),
+    # The retrieval debug view (ticket 33). Administration and HR: the two roles that own
+    # the knowledge base, and the ones who can act on what the view shows — both legs'
+    # rankings, the fusion arithmetic, the reranker's contribution, and why a candidate was
+    # dropped. Deliberately not every role: the view quotes passages wholesale, and the
+    # ticket asks for it to be 仅授权角色可见, so "everyone who may search" is exactly the
+    # reading it refuses.
+    Action.RETRIEVAL_DEBUG: frozenset({"admin", "hr"}),
 }
 
 #: The resource each action acts on. A document is decided by §4.2 whatever the
@@ -380,6 +387,12 @@ KIND_FOR_ACTION: dict[Action, ResourceKind] = {
     Action.OVERTIME_CONFIRM: ResourceKind.EMPLOYEE,
     Action.OVERTIME_SETTLE: ResourceKind.EMPLOYEE,
     Action.OVERTIME_EXPORT: ResourceKind.EMPLOYEE,
+    # The retrieval debug view (ticket 33). The resource it reads is the corpus's internals
+    # rather than a document: which documents are *in* it is ticket 35's filter, and the
+    # view is reached by role — administration and HR — the way the account and role
+    # catalogues are. Its "resource" is therefore the catalogue-shaped one, and the kernel's
+    # generic path decides it by role and nothing else.
+    Action.RETRIEVAL_DEBUG: ResourceKind.ACCOUNT,
 }
 
 #: Actions the catalogue decides by role alone, with no resource clause to apply.
@@ -605,8 +618,11 @@ def test_the_generated_matrix_covers_every_dimension() -> None:
     # an allowance), ticket 26 adds seven for overtime (asking in advance, your own
     # records, a report's, the company's, HR's confirmation, the settle sweep and the
     # monthly file), ticket 30 adds two for the hours report (a manager's two reaches
-    # as one action, and HR's), and the sum is asserted literally so that a fifth
-    # arriving as a failing test rather than as extra coverage.
+    # as one action, and HR's), ticket 33 adds one for the retrieval debug view
+    # (`retrieval.debug`, counted here by this same literal because the assertion is
+    # about the catalogue as a whole rather than about one ticket's contribution), and
+    # the sum is asserted literally so that a fifth arriving as a failing test rather
+    # than as extra coverage.
     #
     # **Ticket 31 adds none, and that is the correct answer rather than an omission.**
     # Its five surfaces — read, list, upload, manage the knowledge base, classify a
@@ -616,7 +632,7 @@ def test_the_generated_matrix_covers_every_dimension() -> None:
     # citation, so a second action for the file would be a second rule to keep in step
     # with §4.2. The count is therefore unchanged, and `test_documents.py` asserts what
     # the endpoints do with the reach those actions produce.
-    assert len(cases) == 7 * 56 * 13
+    assert len(cases) == 7 * 57 * 13
     assert 0 < permitted < len(cases), "the expectation answers the same way everywhere"
 
     discriminating = [
@@ -1221,6 +1237,14 @@ HTTP_MATRIX: tuple[tuple[str, str, RouteAccess], ...] = (
     ("POST", "/api/v1/overtime/settlements", Action.OVERTIME_SETTLE),
     ("GET", "/api/v1/overtime/summary", Action.OVERTIME_READ_OWN),
     ("GET", "/api/v1/overtime/export", Action.OVERTIME_EXPORT),
+    # Retrieval (ticket 33). The search itself is guarded by the *document read* a caller
+    # needs in order to open a citation at all — which documents those are is §4.2's
+    # question and ticket 35's filter, not a second action here. The debug view is its own
+    # action: administration and HR, the two roles that own the knowledge base and can act
+    # on 「为什么没检索到」, and deliberately not everybody, because the view quotes passages
+    # wholesale (仅授权角色可见).
+    ("GET", "/api/v1/retrieval/search", Action.DOCUMENT_READ),
+    ("GET", "/api/v1/retrieval/debug", Action.RETRIEVAL_DEBUG),
 )
 
 
@@ -1552,9 +1576,9 @@ async def test_the_http_matrix_for(platform: Platform, role: str) -> None:
             )
 
     # Literal on purpose, so that adding an endpoint is a decision somebody makes here
-    # rather than something that happens. Ticket 30 adds the hours report and its
-    # export, and the count moves with them.
-    assert checked == 74
+    # rather than something that happens. Ticket 33 adds the two retrieval routes — the
+    # search and the debug view — and the count moves with them.
+    assert checked == 76
     assert checked == len(HTTP_MATRIX)
     assert failures == [], "\n".join(failures)
 
