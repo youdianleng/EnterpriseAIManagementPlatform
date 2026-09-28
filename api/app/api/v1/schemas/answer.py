@@ -51,6 +51,13 @@ same object is repeated on `done` (so the record of what was stored is complete 
 frame) and returned by `GET /answers/conversations/{id}` on each message. `null` means
 the answer is grounded only in the company knowledge base; a client that renders a banner
 must treat `null` as "no banner" rather than as "unknown".
+
+**The list, the rename and the delete are the conversation's owner's too** (ticket 37).
+`ConversationSummaryRead` is deliberately not `ConversationRead`: a list of a person's
+conversations is a list of *labels* — a title, when it was last used, and when D18 will
+remove it — and shipping every message of every past conversation to draw a sidebar would
+be a transcript nobody asked for. The detail read stays the one route that returns
+messages, and it is reached by clicking a row.
 """
 
 import json
@@ -58,9 +65,17 @@ from collections.abc import Sequence
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
+from app.api.v1.schemas.base import StrictModel
 from app.domain.answer.models import AnswerEvent, Citation, EventKind
+
+#: How long a name a person may give their own conversation. Longer than
+#: `models.TITLE_CHARS`, because 80 is the width a *derived* title is clipped to so a
+#: sidebar row stays one line, and somebody deliberately renaming a conversation may want
+#: a sentence. The sidebar wraps rather than truncating either way (§3.1 forbids
+#: truncation), so this is a ceiling on the storage and not a layout decision.
+RENAME_MAX_CHARS = 120
 
 #: The media type the route answers a stream with.
 SSE_MEDIA_TYPE = "text/event-stream"
@@ -170,6 +185,52 @@ class ConversationRead(BaseModel):
     messages: list[MessageRead]
 
 
+class ConversationSummaryRead(BaseModel):
+    """One row of the conversation list: the label, and the two dates that matter.
+
+    `last_message_at` is the list's ordering key and what the sidebar shows as "last
+    used"; `expires_at` is D18's retention as it was written on the row, which is what
+    lets the interface state the deadline (§5.1's 「界面上明确告知该期限」) with the
+    server's date rather than one the client computed.
+    """
+
+    id: UUID
+    title: str
+    created_at: datetime
+    last_message_at: datetime
+    expires_at: datetime
+
+
+class ConversationPageRead(BaseModel):
+    """The caller's conversations, newest first, and how many there are in total.
+
+    `total` travels with the page for the reason `DocumentPageRead`'s does: a client that
+    shows "12 of 30" must not have to count by repeating a filter it cannot see.
+    """
+
+    items: list[ConversationSummaryRead]
+    total: int
+
+
+class ConversationRenameRequest(StrictModel):
+    """A new name for one of the caller's conversations.
+
+    Whitespace-only is refused here rather than by the database: `ck_rag_conversations_title`
+    would raise an `IntegrityError`, which is a 500 for what is plainly a bad request. The
+    strip-and-check below turns it into a 422 with the field named.
+    """
+
+    title: str = Field(min_length=1, max_length=RENAME_MAX_CHARS)
+
+    @field_validator("title")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        cleaned = " ".join(value.split())
+        if not cleaned:
+            raise ValueError("a conversation's title cannot be blank")
+        return cleaned
+
+
 def citation_read(citation: Citation) -> CitationRead:
     return CitationRead(
         document_id=citation.document_id,
@@ -224,10 +285,14 @@ def sse_frame(event: AnswerEvent) -> str:
 
 
 __all__ = [
+    "RENAME_MAX_CHARS",
     "SSE_MEDIA_TYPE",
     "AskRequest",
     "CitationRead",
+    "ConversationPageRead",
     "ConversationRead",
+    "ConversationRenameRequest",
+    "ConversationSummaryRead",
     "EventKind",
     "MessageRead",
     "SourceNoticeRead",

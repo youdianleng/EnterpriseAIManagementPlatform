@@ -88,6 +88,27 @@ export function documentContentUrl(id: string): string {
   return `${API_BASE_URL}/api/v1/documents/${id}/content`;
 }
 
+/**
+ * The original, opened at the page a citation came from.
+ *
+ * **No second endpoint.** §5.2's rule is 「前端可点击回链到原文（PDF 定位到页）」, and the
+ * fragment `#page=N` is the documented way a PDF viewer is told which page to start on —
+ * so the citation links to the route that already exists and adds the anchor. `null` for
+ * `page` (a text file, a spreadsheet, Markdown) means no anchor rather than `#page=1`: an
+ * invented page number is worse than none, which is the same rule the API follows when it
+ * answers `null`.
+ *
+ * The route currently answers `Content-Disposition: attachment` — ticket 31's deliberate
+ * choice, so a stored file the server has not inspected is never rendered by the
+ * browser's own viewer. Whether a browser honours the fragment therefore depends on how
+ * it handles the download, and the ticket file records that honestly rather than claiming
+ * a jump this client cannot guarantee.
+ */
+export function documentPageUrl(id: string, page: number | null): string {
+  const base = documentContentUrl(id);
+  return page === null ? base : `${base}#page=${page}`;
+}
+
 /** Upload one file with its metadata. A 409 means the caller already has these bytes. */
 export async function uploadDocument(file: File, fields: UploadFields): Promise<AppDocument> {
   const body = new FormData();

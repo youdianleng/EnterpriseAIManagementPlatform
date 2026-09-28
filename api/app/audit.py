@@ -114,6 +114,12 @@ class AuditAction(StrEnum):
     #: 90-day material, readable by its owner and by compliance, and this is the four-year
     #: trail that outlives it.
     CONVERSATION_ASKED = "conversation.asked"  # 34
+    #: The owner removed a conversation from their own view (ticket 37, §3.6/D18's
+    #: `deleted_by_user`). Recorded although the flag is on the row, because the row says
+    #: *that* it was removed and this says **when, and by whom** — which is what a later
+    #: reader of the conversation needs in order to tell "the owner deleted this" from
+    #: "this was always here". No title and no text: the act, not the content.
+    CONVERSATION_DELETED = "conversation.deleted"  # 37
     SALARY_RECORD_READ = "salary.record_read"  # 43
     PAYSLIP_UPLOADED = "payslip.uploaded"  # 44
     PAYSLIP_DOWNLOADED = "payslip.downloaded"  # 45

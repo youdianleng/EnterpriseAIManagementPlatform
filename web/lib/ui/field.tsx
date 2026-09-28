@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { useId, type RefObject } from "react";
 
 import { cn } from "@/lib/ui/cn";
 
@@ -30,6 +30,13 @@ export type TextFieldProps = CommonProps & {
   /** Bounds the browser enforces for `type="date"` / `type="time"`, in the value's format. */
   min?: string;
   max?: string;
+  /**
+   * The input itself, for the one case a caller cannot express declaratively: taking the
+   * focus. An inline editor that appears after a click must put the caret in the field, or
+   * a keyboard user has to Tab back to where the click was — and the focus would be left on
+   * a button that no longer exists.
+   */
+  inputRef?: RefObject<HTMLInputElement | null>;
 };
 
 /**
@@ -53,6 +60,7 @@ export function TextField({
   name,
   min,
   max,
+  inputRef,
 }: TextFieldProps) {
   const id = useId();
   const errorId = `${id}-error`;
@@ -73,6 +81,7 @@ export function TextField({
         id={id}
         name={name}
         type={type}
+        ref={inputRef}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}

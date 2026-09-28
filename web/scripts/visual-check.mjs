@@ -37,6 +37,7 @@ const PATHS = [
   "/leave",
   "/timesheets",
   "/documents",
+  "/qa",
   "/login",
 ];
 const VIEWPORTS = [
@@ -696,8 +697,12 @@ async function checkClock(browser, sessionCookie) {
     `clock: the day reports one of the derived statuses (${status})`,
   );
   const stateText = (await state.innerText()).replace(/\s+/g, " ");
+  // The words are the product's own (`dict.dayStatus.label`): `absent` is the API's
+  // status for a day with no punches, and the screen states it as `notStarted`. This
+  // expectation asserted "Todavía no has fichado", a sentence that exists nowhere in the
+  // product, so on a Madrid day with no punches it failed against correct copy.
   const stateWords = {
-    absent: /Todavía no has fichado/,
+    absent: /Sin fichajes/,
     working: /Jornada abierta/,
     ok: /Jornada cerrada/,
   };
@@ -1489,6 +1494,7 @@ async function main() {
     await checkTimesheets(browser, sessionCookie);
     await checkLockAndCorrection(browser, sessionCookie, request);
     await checkDocuments(browser, sessionCookie, request);
+    await checkQa(browser, sessionCookie, request);
   } else {
     console.log("[note] signed-in checks skipped (no usable credentials)");
   }
@@ -1936,6 +1942,551 @@ function scannedPdf(stamp) {
   }
   body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R /Info 5 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   return body;
+}
+
+/**
+ * The Q&A screen (ticket 37).
+ *
+ * `PATHS` already covers its headings, overflow, accessible names and both languages at
+ * every width. What is asserted here is what the ticket's checklist lines are about, and
+ * each one needs a browser rather than a unit test:
+ *
+ *   - **the answer streams in**, observed as *several committed states* of the answer text
+ *     rather than as a final string. A renderer that buffered the whole answer and drew it
+ *     once would satisfy "the text is on screen" and fail this;
+ *   - **the model's text is text, not markup** — the fixture document contains
+ *     `<img src=x onerror=alert(1)>`, the fake model quotes it verbatim into the answer, and
+ *     what is asserted is that it arrives as characters, that no `img` element exists inside
+ *     the answer, and that no dialog fired;
+ *   - **a citation badge opens its passage**, and "open the original" points at the
+ *     document's content route with the page anchor the citation carries;
+ *   - **a refusal is rendered distinctly and is not an error** (design system §4.4): its own
+ *     block, the catalogue's sentence, and no `role="alert"` inside it;
+ *   - **the scope banner** (§5.2/Q29) appears on an answer that quotes a personal upload and
+ *     is absent from a refusal;
+ *   - **the conversation list** can be renamed and deleted, and a deleted conversation
+ *     leaves the list at once;
+ *   - **a language switch mid-stream does not disturb the answer**: the question is sent,
+ *     the response is deliberately held for a moment, the interface is switched to English
+ *     while the request is still in flight, and the answer has to arrive anyway — with no
+ *     second request. That is the check the whole module-scope store exists for.
+ *
+ * The fixture is uploaded through the API, like the documents check's: a real PDF whose
+ * page text the pipeline extracts, so the citation's page is a fact the parse recorded
+ * rather than a number this script invented. Async-safe to re-run — the title carries a
+ * timestamp.
+ */
+async function checkQa(browser, sessionCookie, request) {
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 900 },
+    locale: "es-ES",
+  });
+  await context.addCookies([sessionCookie]);
+  const page = await context.newPage();
+
+  // Every question that reaches the API, in order. "The language switch did not re-ask"
+  // is a claim about *requests*, and only the network can answer it.
+  const asks = [];
+  page.on("request", (sent) => {
+    if (sent.method() === "POST" && sent.url().endsWith("/api/v1/answers")) asks.push(sent.url());
+  });
+  // A payload that escapes into HTML runs script or opens a dialog; both are observable,
+  // and neither can be caught by looking at the text afterwards.
+  let dialogs = 0;
+  page.on("dialog", async (dialog) => {
+    dialogs += 1;
+    await dialog.dismiss().catch(() => {});
+  });
+  const scriptErrors = [];
+  page.on("pageerror", (error) => scriptErrors.push(String(error)));
+
+  // --- the stream instrument, installed before the first navigation --------------
+  //
+  // **The answer's bytes are delivered in small pieces, and that is the instrument rather
+  // than a convenience.** On loopback the whole stream arrives in one TCP read, React
+  // commits it once, and no sampling of the DOM can tell a streaming client from a
+  // buffering one: the first version of this check observed "2 committed steps" on one run
+  // and "1" on the next, which is a measurement of the socket rather than of the screen.
+  // Chromium's `Network.emulateNetworkConditions` was tried next and has the same flaw — it
+  // delivers in token-bucket bursts, so the deltas still arrived in one read, and it
+  // throttles the RSC payload of the following `router.refresh()` too.
+  //
+  // So the *response body* is wrapped instead: every 8 bytes, 3 ms apart, which is what a
+  // slow connection looks like to the code under test and is entirely under this script's
+  // control. The application is untouched — it reads a `ReadableStream` either way — and
+  // what is recorded is every distinct state a *frame* put on screen. Measured: nine
+  // states, each a strict prefix of the last.
+  //
+  // **`addInitScript` runs on the *next* navigation**, so this is installed here, before
+  // the first `page.goto`, and not beside the sampling below — an earlier version installed
+  // it after the page had loaded, which meant it was never applied at all and the assertion
+  // was measuring the socket again.
+  //
+  // It wraps **one request**, the streamed question, and nothing else: `POST` is what makes
+  // the stream the stream, so the conversation reads, the rename and the delete — which
+  // share the path prefix — are left at full speed, exactly as the rest of this check
+  // expects them.
+  await page.addInitScript(() => {
+    const original = window.fetch;
+    window.fetch = async (input, init) => {
+      const response = await original(input, init);
+      const url = typeof input === "string" ? input : (input?.url ?? "");
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method !== "POST" || !url.endsWith("/api/v1/answers") || !response.body) {
+        return response;
+      }
+      const reader = response.body.getReader();
+      let pending = null;
+      const stream = new ReadableStream({
+        async pull(controller) {
+          if (pending === null) {
+            const { done, value } = await reader.read();
+            if (done) {
+              controller.close();
+              return;
+            }
+            pending = value;
+          }
+          controller.enqueue(pending.slice(0, 8));
+          pending = pending.slice(8);
+          if (pending.length === 0) pending = null;
+          await new Promise((resolve) => setTimeout(resolve, 3));
+        },
+      });
+      return new Response(stream, { status: response.status, headers: response.headers });
+    };
+  });
+
+  // --- the fixture: a PDF with the payload in its first sentence ------------------
+  //
+  // The fake chat model answers by quoting the *first sentence* of the best passage, so the
+  // payload has to be inside that sentence or it never reaches the answer — and the document
+  // has to share terms with the question, or retrieval refuses instead of answering.
+  const stamp = Date.now();
+  const question = "¿Cuántos días dura el permiso por matrimonio?";
+  const payload = "<img src=x onerror=alert(1)>";
+  const uploaded = await apiUpload(request, {
+    filename: "politica-matrimonio.pdf",
+    contentType: "application/pdf",
+    body: textPdf(
+      stamp,
+      `El permiso por matrimonio dura quince dias laborables ${payload} y la politica de ` +
+        "personal lo regula en el convenio colectivo de la empresa.",
+      "Anexo: el resto de permisos se solicitan por escrito con quince dias de antelacion.",
+    ),
+    title: `Politica de matrimonio ${stamp}`,
+  });
+  expect(uploaded.ok(), `qa: the fixture document uploaded (${uploaded.status()})`);
+  const parsed = await waitForParsed(request, uploaded, 60);
+  expect(
+    parsed !== null && parsed.status === "ready",
+    `qa: the fixture parsed (${parsed ? parsed.status : "timed out"})`,
+  );
+
+  await page.goto(`${BASE}/es/qa`, { waitUntil: "networkidle" });
+  const composer = page.locator("#qa-question");
+  await composer.waitFor({ state: "visible", timeout: 30000 });
+
+  // A known starting point. Conversations accumulate across runs — the delete assertion
+  // below counts rows, and "N − 1" is only a meaningful claim when N is the number this run
+  // created. Clearing them through the API also means the first list assertion describes a
+  // sidebar with exactly one conversation in it rather than whatever earlier runs left.
+  const existing = await request.get(`${API}/api/v1/answers/conversations?limit=200`);
+  const leftovers = existing.ok() ? ((await existing.json()).items ?? []) : [];
+  for (const stale of leftovers) {
+    await request.delete(`${API}/api/v1/answers/conversations/${stale.id}`);
+  }
+  if (leftovers.length > 0) {
+    ok(`qa: cleared ${leftovers.length} conversation(s) left by earlier runs`);
+  }
+  await page.reload({ waitUntil: "networkidle" });
+  await composer.waitFor({ state: "visible", timeout: 30000 });
+
+  // §5.1's 界面上明确告知该期限: the retention is on the screen, not only in the design.
+  const retention = (await page.locator('[data-testid="qa-retention"]').innerText()).replace(
+    /\s+/g,
+    " ",
+  );
+  expect(
+    /90 días/.test(retention),
+    `qa: the 90-day retention is stated on screen ("${retention}")`,
+  );
+
+  // The empty thread is a designed state (§4.3), not a blank column.
+  const emptyThread = page.locator('[data-testid="qa-thread-empty"]');
+  if ((await emptyThread.count()) > 0) {
+    ok("qa: a new conversation says what to do first");
+  }
+
+  // --- one answer, watched as it arrives ----------------------------------------
+  //
+  // The sampler records every distinct state of the answer text that a *frame* put on
+  // screen. The instrument that makes those states exist is the response-body wrapper
+  // installed before the first navigation — see the note there for why neither loopback nor
+  // Chromium's throttling can show them.
+  await page.evaluate(() => {
+    window.__qaGrowth = [];
+    window.__qaSampling = true;
+    const sample = () => {
+      if (!window.__qaSampling) return;
+      const element = document.querySelector('[data-testid="qa-answer-text"]');
+      if (element) {
+        const text = element.innerText;
+        if (text && text !== window.__qaGrowth[window.__qaGrowth.length - 1]) {
+          window.__qaGrowth.push(text);
+        }
+      }
+      requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  });
+
+  const askButton = page.getByRole("button", { name: /^Preguntar$/ });
+  await composer.fill(question);
+  await askButton.click();
+
+  const answer = page.locator('[data-testid="qa-answer"][data-answer-phase="complete"]').first();
+  await answer.waitFor({ state: "visible", timeout: 60000 });
+  const growth = await page.evaluate(() => {
+    window.__qaSampling = false;
+    return window.__qaGrowth ?? [];
+  });
+
+  const answerText = (await page.locator('[data-testid="qa-answer-text"]').first().innerText()).replace(
+    /\s+/g,
+    " ",
+  );
+  expect(
+    /matrimonio/i.test(answerText),
+    `qa: the answer quotes the fixture passage ("${answerText.slice(0, 120)}")`,
+  );
+
+  const finished = growth[growth.length - 1] ?? "";
+  const incremental = growth.filter((value) => value.length < finished.length);
+  const prefixes = growth.every(
+    (value, index) => index === 0 || value.startsWith(growth[index - 1]),
+  );
+  console.log(`[note] qa: ${growth.length} rendered state(s) of the answer were observed`);
+  expect(
+    prefixes,
+    "qa: the answer's rendered states are successive prefixes of one another",
+  );
+  expect(
+    incremental.length >= 1,
+    `qa: the answer was rendered incrementally (${incremental.length} partial state(s) of ` +
+      `${growth.length} seen, over a throttled connection)`,
+  );
+  expect(
+    finished.replace(/\s+/g, " ").includes(payload),
+    "qa: the observed states do not end at the finished answer",
+  );
+
+  // --- the payload arrived as text ---------------------------------------------
+  expect(
+    answerText.includes(payload),
+    `qa: the passage's markup is not on screen as text ("${answerText.slice(0, 200)}")`,
+  );
+  expect(
+    (await page.locator('[data-testid="qa-answer-text"] img').count()) === 0,
+    "qa: an <img> from the corpus was rendered as an element",
+  );
+  expect(
+    (await page.locator('[data-testid="qa-answer-text"] script').count()) === 0,
+    "qa: a <script> from the corpus was rendered as an element",
+  );
+  expect(dialogs === 0, `qa: the answer opened ${dialogs} dialog(s)`);
+  expect(scriptErrors.length === 0, `qa: script errors: ${scriptErrors.join(" | ")}`);
+
+  // --- the scope banner --------------------------------------------------------
+  const banner = page.locator('[data-testid="qa-scope-banner"]');
+  expect(
+    (await banner.count()) === 1,
+    "qa: an answer quoting a personal document carries the scope banner",
+  );
+  if ((await banner.count()) === 1) {
+    const text = (await banner.innerText()).replace(/\s+/g, " ");
+    expect(
+      /documento personal/i.test(text) && /base de conocimiento de la empresa/i.test(text),
+      `qa: the banner is the server's own sentence in the reader's language ("${text}")`,
+    );
+  }
+  await page.screenshot({ path: join(OUT, "qa-answer-es.png"), fullPage: true });
+
+  // --- the citation badge and its panel ----------------------------------------
+  const badge = page.locator('[data-testid="qa-citation-badge"]').first();
+  expect((await badge.count()) > 0, "qa: the answer carries a clickable citation badge");
+  if ((await badge.count()) > 0) {
+    const label = (await badge.getAttribute("aria-label")) ?? "";
+    expect(/cita/i.test(label), `qa: the badge has an accessible name ("${label}")`);
+
+    await badge.click();
+    const panel = page.locator('[data-testid="qa-citation-panel"]');
+    await panel.waitFor({ state: "visible", timeout: 10000 });
+    const panelText = (await panel.innerText()).replace(/\s+/g, " ");
+    expect(
+      /matrimonio/i.test(panelText),
+      `qa: the panel shows the quoted passage ("${panelText.slice(0, 140)}")`,
+    );
+    expect(
+      (await panel.getAttribute("aria-labelledby")) !== null,
+      "qa: the panel is a labelled region",
+    );
+
+    const original = (await page.locator('[data-testid="qa-open-original"]').getAttribute("href")) ?? "";
+    expect(
+      /\/api\/v1\/documents\/[0-9a-f-]{36}\/content#page=\d+$/.test(original),
+      `qa: "open the original" points at the cited page ("${original}")`,
+    );
+    await page.screenshot({ path: join(OUT, "qa-citation-panel-es.png"), fullPage: true });
+
+    // The link is the same route the citation was retrieved through, and the session can
+    // still open it — a citation that cannot be opened is not a citation.
+    const download = await request.get(original.split("#")[0]);
+    expect(download.ok(), `qa: the cited original is still downloadable (${download.status()})`);
+  }
+
+  // --- rename ------------------------------------------------------------------
+  const rows = page.locator('[data-testid="qa-conversation"]');
+  // **Waited for, not counted straight away.** The sidebar is the server's copy and the
+  // question's conversation reaches it one `router.refresh()` later — a round trip. A count
+  // taken before it lands describes a sidebar the reader has already stopped seeing, and the
+  // count is the baseline the delete assertion below is measured against.
+  await rows.first().waitFor({ state: "visible", timeout: 30000 });
+  const before = await rows.count();
+  expect(before >= 1, `qa: the question created a conversation in the list (${before})`);
+
+  const renamed = `Vacaciones y permisos ${stamp}`;
+  await rows.first().getByRole("button", { name: /^Renombrar/ }).click();
+  await page.getByLabel("Nombre de la conversación").fill(renamed);
+  await page.getByRole("button", { name: /^Guardar$/ }).click();
+  await page.waitForFunction(
+    (title) => document.body.innerText.includes(title),
+    renamed,
+    { timeout: 20000 },
+  );
+  // The rename must not move the conversation, and the row it renamed must be the one the
+  // next step deletes: "the list is ordered by use" is a rule of the list endpoint, and a
+  // rename that reordered it would be a list that reorders itself.
+  const top = (await rows.first().innerText()).split("\n")[0].trim();
+  expect(
+    top === renamed,
+    `qa: the renamed conversation stayed at the top of the list ("${top}")`,
+  );
+  ok("qa: a conversation can be renamed from the list");
+
+  // --- delete ------------------------------------------------------------------
+  //
+  // Addressed by the row's own conversation id rather than by "the list is one shorter":
+  // a count is a claim about everything else the list happens to hold, and a row that
+  // leaves and a row that never arrives look identical through it.
+  const doomed = rows.first();
+  const doomedId = await doomed.getAttribute("data-conversation-id");
+  const doomedTitle = (await doomed.innerText()).split("\n")[0].trim();
+  await doomed.getByRole("button", { name: /^Eliminar/ }).click();
+  const dialog = page.locator("dialog[open]");
+  await dialog.waitFor({ state: "visible", timeout: 5000 });
+  const dialogText = (await dialog.innerText()).replace(/\s+/g, " ");
+  expect(
+    /90 días/.test(dialogText),
+    `qa: the confirmation says what "deleted" means today ("${dialogText.slice(0, 160)}")`,
+  );
+  expect(
+    dialogText.includes(doomedTitle),
+    `qa: the confirmation names the conversation it will delete ("${doomedTitle}" vs "${dialogText.slice(0, 120)}")`,
+  );
+  await page.screenshot({ path: join(OUT, "qa-delete-confirm-es.png") });
+  await page.getByRole("button", { name: /^Sí, eliminar$/ }).click();
+  await page.waitForFunction(
+    (id) =>
+      document.querySelector(
+        `[data-testid="qa-conversation"][data-conversation-id="${id}"]`,
+      ) === null,
+    doomedId,
+    { timeout: 20000 },
+  );
+  expect(
+    (await rows.count()) === before - 1,
+    `qa: a deleted conversation leaves the caller's list immediately (${before} → ${await rows.count()})`,
+  );
+
+  // --- the refusal, as a normal state (design system §4.4) ----------------------
+  //
+  // A question the corpus shares no term with. Written in Chinese for the reason
+  // `tests/test_answer.py` records: the deterministic embedder scores a Spanish question
+  // about an uncovered topic by lexical coincidence, and one draft of that test passed the
+  // threshold by accident. The Chinese question is reliably "no basis" — and it is one of
+  // §5.2's three input languages, so it is a real question rather than a contrivance.
+  await composer.fill("公司年会抽奖的奖品清单是什么？");
+  await askButton.click();
+  const refusal = page.locator('[data-testid="qa-refusal"]').first();
+  const refused = await refusal
+    .waitFor({ state: "visible", timeout: 30000 })
+    .then(() => true)
+    .catch(() => false);
+  expect(refused, "qa: a question with no basis renders the refusal block");
+  if (refused) {
+    const text = (await refusal.innerText()).replace(/\s+/g, " ");
+    expect(
+      /Sin base en la base de conocimiento/.test(text),
+      `qa: the refusal has its own heading ("${text.slice(0, 100)}")`,
+    );
+    expect(
+      /No he encontrado base en la base de conocimiento de la empresa/.test(text),
+      "qa: the refusal renders the catalogue's sentence, in the reader's language",
+    );
+    expect(
+      (await refusal.locator('[role="alert"]').count()) === 0,
+      "qa: the refusal is announced as an answer, not as an error",
+    );
+    expect(
+      (await page.locator('[data-testid="qa-refusal"] [data-testid="qa-scope-banner"]').count()) === 0,
+      "qa: a refusal carries no scope banner, because it quotes nothing",
+    );
+    expect(
+      (await page
+        .locator('[data-testid="qa-answer"][data-answer-phase="refused"]')
+        .count()) >= 1,
+      "qa: the refusal is its own phase, not a styled ordinary answer",
+    );
+    // The bilingual constant is not printed: one language, one sentence.
+    expect(
+      !/I found no basis in the company knowledge base/.test(text),
+      "qa: the bilingual refusal text was printed to a reader of one language",
+    );
+    await page.screenshot({ path: join(OUT, "qa-refusal-es.png"), fullPage: true });
+  }
+
+  // --- switching the language while the answer is still coming -------------------
+  //
+  // The request is held before it goes out, so the switch genuinely happens *before* the
+  // answer exists. If the language switch were still a document navigation, the `fetch`
+  // would be aborted with the page and no answer would ever arrive; if the answer lived in
+  // component state, the new page would have thrown it away. Either failure is visible here.
+  await page.route("**/api/v1/answers", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await route.continue();
+  });
+
+  await page.locator('[data-testid="qa-new-conversation"]').click();
+  await composer.fill(question);
+  const inFlight = page.waitForRequest(
+    (sent) => sent.method() === "POST" && sent.url().endsWith("/api/v1/answers"),
+    { timeout: 10000 },
+  );
+  await askButton.click();
+  await inFlight;
+  const asksBefore = asks.length;
+
+  await page.locator('a[hreflang="en"]').click();
+  await page.waitForURL(/\/en\/qa/, { timeout: 20000 });
+  ok("qa: the language switch happened while the question was in flight");
+
+  // Waited for until *complete*, not until visible: the answer is delivered in pieces (see
+  // the instrument above), so "there is text on screen" is true while it is still arriving.
+  // What this section asserts is that the answer finishes after the switch — which a fetch
+  // aborted by a document navigation never does.
+  const switched = page
+    .locator('[data-testid="qa-answer"][data-answer-phase="complete"]')
+    .first();
+  const arrived = await switched
+    .waitFor({ state: "visible", timeout: 30000 })
+    .then(() => true)
+    .catch(() => false);
+  expect(arrived, "qa: the answer arrived after the language switch");
+  if (arrived) {
+    const text = (
+      await switched.locator('[data-testid="qa-answer-text"]').first().innerText()
+    ).replace(/\s+/g, " ");
+    expect(
+      /matrimonio/i.test(text),
+      `qa: the answer survived the switch intact ("${text.slice(0, 120)}")`,
+    );
+  }
+  expect(
+    asks.length === asksBefore,
+    `qa: switching the language re-asked the question (${asksBefore} → ${asks.length} requests)`,
+  );
+  const englishShell = (await page.locator('[data-testid="qa-conversation-list"]').innerText()).replace(
+    /\s+/g,
+    " ",
+  );
+  expect(
+    /Vacaciones y permisos|Politica de matrimonio/.test(englishShell) === false ||
+      /matrimonio/i.test(englishShell),
+    "qa en: the conversation list is the other language's screen",
+  );
+  expect(
+    /Your conversations/.test(await page.locator("main").innerText()),
+    "qa en: the sidebar heading is in English after the switch",
+  );
+  await page.screenshot({ path: join(OUT, "qa-answer-en.png"), fullPage: true });
+  await page.unroute("**/api/v1/answers");
+
+  // --- the narrow widths, with a real answer on screen --------------------------
+  for (const width of [320, 768]) {
+    await page.setViewportSize({ width, height: width === 320 ? 720 : 900 });
+    await page.goto(`${BASE}/es/qa`, { waitUntil: "networkidle" });
+    await page.screenshot({ path: join(OUT, `qa-${width}-es.png`), fullPage: true });
+  }
+
+  await context.close();
+}
+
+/**
+ * A PDF whose pages carry `Tj` text, built the long way round.
+ *
+ * The same structure `tests/support/documents.py::pdf_bytes` uses, and for the same reason:
+ * the fixture has to be a file the pipeline parses into *paged* chunks, so the citation's
+ * page — and therefore the `#page=N` the "open the original" link carries — is a fact the
+ * parse recorded rather than a number this script invented. `scannedPdf` below is its
+ * text-free twin.
+ *
+ * ASCII only on purpose: the font dictionary declares Helvetica with no encoding, so a byte
+ * outside ASCII reads back as mojibake. Spanish bodies belong in the `.txt` and `.md`
+ * fixtures, which carry UTF-8 properly; what this builder is for is the *page number*.
+ *
+ * **`stamp` goes into the PDF's `/Info` dictionary and nowhere else.** The product
+ * recognises identical bytes by content hash and answers 409 — correct behaviour, and the
+ * reason a second run of this script must upload *different* bytes rather than the same
+ * file twice. Putting the stamp in the metadata keeps every page's text identical, so the
+ * parsed chunks, the answer and the citation the assertions describe are the same on every
+ * run. The first version stamped only the document's *title*, which the hash ignores: the
+ * second run of this check got a 409 and asserted against the previous run's fixture.
+ */
+function textPdf(stamp, ...pages) {
+  const objects = [];
+  const kids = pages.map((_, index) => `${4 + index * 2} 0 R`).join(" ");
+  objects.push("<< /Type /Catalog /Pages 2 0 R >>");
+  objects.push(`<< /Type /Pages /Kids [${kids}] /Count ${pages.length} >>`);
+  objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+  pages.forEach((page, index) => {
+    const content = `BT /F1 12 Tf 72 720 Td (${page}) Tj ET`;
+    objects.push(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] ` +
+        `/Resources << /Font << /F1 3 0 R >> >> /Contents ${5 + index * 2} 0 R >>`,
+    );
+    objects.push(
+      `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}\nendstream`,
+    );
+  });
+  const info = objects.length + 1;
+  objects.push(`<< /Producer (visual-check ${stamp}) >>`);
+
+  let out = "%PDF-1.4\n";
+  const offsets = [];
+  objects.forEach((body, index) => {
+    offsets.push(out.length);
+    out += `${index + 1} 0 obj\n${body}\nendobj\n`;
+  });
+  const startXref = out.length;
+  out += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets) {
+    out += `${`${offset}`.padStart(10, "0")} 00000 n \n`;
+  }
+  out +=
+    `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R /Info ${info} 0 R >>\n` +
+    `startxref\n${startXref}\n%%EOF\n`;
+  return out;
 }
 
 /**

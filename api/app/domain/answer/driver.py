@@ -94,7 +94,7 @@ from app.domain.answer.prompts import (
     prompt_messages,
     refusal_text,
 )
-from app.domain.answer.repository import PostgresAnswerRepository
+from app.domain.answer.repository import ConversationNotFound, PostgresAnswerRepository
 from app.domain.document.tokenizer import count_tokens
 from app.domain.retrieval.filtering import answer_filter_for, retrieval_filter_explanation
 from app.domain.retrieval.models import DEFAULT_LIMIT, SearchOutcome
@@ -191,10 +191,13 @@ class AnswerService:
     ) -> AsyncIterator[AnswerEvent]:
         """§5.2, as events. See the module docstring for the order and why.
 
-        The first event is always `start` and the last is always `done`; between them are
-        either `citations` + one or more `delta`s, or a single `refusal`, or a single
-        `error`. That is the whole contract, and it holds for every branch below —
-        including the failing one, which is why this method yields rather than raises.
+        The first event is `start` and the last is `done`; between them are either
+        `citations` + one or more `delta`s, or a single `refusal`, or a single `error`.
+        There is one exception, and it is the one case where no conversation exists to have
+        started: a `conversation_id` that is not (or is no longer) the caller's yields a
+        lone terminal `error` and nothing else. That is a narrower guarantee than ticket
+        34's contract, recorded here rather than left to be discovered — and it is the
+        stream's answer to a question `ask_route` normally answers with a 404 first.
         """
         cleaned = question.strip()
         # The conversation and the message row are written **in this transaction and not
@@ -215,9 +218,33 @@ class AnswerService:
         # produced, which is what makes a crash mid-answer leave an attempt behind; what it
         # is not is durable to *other* connections before the stream ends, and that is the
         # price of an RLS context that survives the retrieval.
-        conversation = await self._repository.ensure_conversation(
-            user_id=principal.user_id, question=cleaned, conversation_id=conversation_id
-        )
+        try:
+            conversation = await self._repository.ensure_conversation(
+                user_id=principal.user_id, question=cleaned, conversation_id=conversation_id
+            )
+        except ConversationNotFound:
+            # **The race, and the only place it can be answered.** `ask_route` checks the
+            # same ownership before it builds this generator, so the ordinary "not yours,
+            # or deleted" answer is a 404 with a status code. This is the window in
+            # between: the conversation is deleted while the request is already in flight —
+            # and by then the 200 has been sent, so the honest answer is the stream's own
+            # terminal frame rather than an exception raised inside a body iterator, which
+            # surfaces as a failed response with no explanation at all. Ticket 37 made this
+            # reachable for the first time: the owner can delete a conversation from a
+            # second tab while the first one is asking a follow-up.
+            yield AnswerEvent(
+                kind=EventKind.ERROR,
+                data={
+                    # There is no message row: the conversation was refused before one was
+                    # opened, and inventing an id would name a row nobody can look up.
+                    "message_id": None,
+                    "conversation_id": str(conversation_id),
+                    "code": ErrorCode.NOT_FOUND.value,
+                    "message_key": definition_of(ErrorCode.NOT_FOUND).message_key,
+                    "retryable": False,
+                },
+            )
+            return
         message_id = await self._repository.open_message(
             conversation_id=conversation, question=cleaned
         )

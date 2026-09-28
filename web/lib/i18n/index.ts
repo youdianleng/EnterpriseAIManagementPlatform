@@ -25,6 +25,8 @@ export type Dictionary = {
     timesheets: string;
     /** The document list: what this caller may read, and where uploads are filed. */
     documents: string;
+    /** The Q&A screen: asking the knowledge base, and the conversations it leaves. */
+    qa: string;
     /** Today's clock: punch in and out. Self-service, so every role has it. */
     clock: string;
     /** The caller's own attendance history and correction requests. */
@@ -901,6 +903,123 @@ export type Dictionary = {
     };    tasks: {
       heading: string;
       empty: string;
+    };
+  };
+  /**
+   * The Q&A screen (ticket 37).
+   *
+   * Its own section rather than a few keys under `documents`: it is the interface to §5.2's
+   * pipeline — the streamed answer, D20's refusal, the citation panel and the 90-day
+   * retention — and a reader looking for the sentence that a refusal shows should find it
+   * beside the refusal's own copy rather than in a document list's vocabulary.
+   *
+   * **The refusal is here only partly.** Its *sentence* is `errors.knowledge_base_no_basis`
+   * — the catalogue key the API's `refusal` frame names, so one key serves the stream and
+   * every other surface that ever reports it — and what is here is the block around it:
+   * the heading and the next steps §4.4 asks for.
+   */
+  qa: {
+    title: string;
+    intro: string;
+    loading: string;
+    conversations: {
+      heading: string;
+      newConversation: string;
+      /** §5.1's retention notice: the number of days is interpolated. */
+      retention: string;
+      empty: string;
+      emptyHint: string;
+      error: string;
+      retry: string;
+      /** How many of the caller's conversations are on screen; both numbers interpolated. */
+      count: string;
+      /** A row's second line, with the date interpolated. */
+      lastMessage: string;
+      rename: string;
+      renameLabel: string;
+      /** Accessible name of one row's rename button, with the title interpolated. */
+      renameLabelFor: string;
+      titleRequired: string;
+      renameFailed: string;
+      save: string;
+      cancel: string;
+      delete: string;
+      /** Accessible name of one row's delete button, with the title interpolated. */
+      deleteLabelFor: string;
+    };
+    deleteDialog: {
+      title: string;
+      /** With the conversation's title interpolated. */
+      body: string;
+      /** What "deleted" means until the retention sweep removes the row. */
+      hint: string;
+      confirm: string;
+      cancel: string;
+      deleting: string;
+      failed: string;
+    };
+    thread: {
+      newConversation: string;
+      /** An open conversation's retention deadline, with the date interpolated. */
+      expiresAt: string;
+      empty: string;
+      loading: string;
+      error: string;
+      retry: string;
+    };
+    answer: {
+      /** Before the first token: retrieval is still running. */
+      searching: string;
+      /** While text is arriving. */
+      streaming: string;
+    };
+    refusal: {
+      title: string;
+      /** The next steps §4.4 requires, in order. */
+      steps: readonly string[];
+    };
+    failure: {
+      title: string;
+      retry: string;
+    };
+    /** The scope banner's fallback, when the payload carries no sentence in this language. */
+    scope: {
+      fallback: string;
+    };
+    citation: {
+      /** Accessible name of a citation badge, with its number interpolated. */
+      open: string;
+      listLabel: string;
+      /** With the page number interpolated, for a format that has pages. */
+      page: string;
+      personal: string;
+    };
+    panel: {
+      /** Heading, with the citation's number interpolated. */
+      title: string;
+      close: string;
+      file: string;
+      pageLabel: string;
+      /** One page, or a range: both interpolate page numbers. */
+      page: string;
+      pageRange: string;
+      section: string;
+      provenance: string;
+      companyKb: string;
+      personalDocument: string;
+      scope: string;
+      scopeParent: string;
+      scopeChild: string;
+      quote: string;
+      openOriginal: string;
+    };
+    composer: {
+      label: string;
+      hint: string;
+      submit: string;
+      asking: string;
+      /** Beside the button while a turn is still arriving. */
+      streaming: string;
     };
   };
   footer: {

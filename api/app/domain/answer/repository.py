@@ -19,6 +19,13 @@ never in `INSERT` statements. Four things it is responsible for, and each is a d
 * **A refused conversation is still a conversation.** `touch` moves `last_message_at` for
   every terminal state, so a question that was refused keeps its place in the list — D20's
   refusal is an answer, and hiding it would make the list disagree with the transcript.
+* **The list, the rename and the delete are the same ownership rule as the read** (ticket
+  37). `list_for`, `count_for`, `rename_for` and `delete_for` all take the user id and put
+  it in the `WHERE`, so the sidebar, the pencil and the bin reach exactly the conversations
+  the owner may open and nothing else. The delete is a flag rather than a `DELETE`: the row
+  is what D18's retention and §5.3's compliance read are about, and the physical removal is
+  ticket 51's sweep. `NOT deleted_by_user` is in every one of them — including
+  `ensure_conversation`'s lookup, so a deleted conversation cannot be appended to either.
 """
 
 import json
@@ -88,6 +95,29 @@ class PostgresAnswerRepository:
             },
         )
         return conversation_id
+
+    async def owns(self, user_id: UUID, conversation_id: UUID) -> bool:
+        """Whether this conversation is this caller's to append to.
+
+        The same predicate `ensure_conversation` applies, named separately because the
+        *route* has to ask it before the response starts: a stream that begins and then
+        discovers the conversation is not the caller's has already sent its 200, so the
+        refusal could no longer be a status code. Ticket 37 added the caller — a
+        conversation the owner has just deleted is the ordinary case of "no longer yours",
+        and a stale tab asking a follow-up must be told so in the same shape as any other
+        missing conversation.
+        """
+        return (
+            await self._session.scalar(
+                text(
+                    """
+                    SELECT 1 FROM rag_conversations
+                     WHERE id = :id AND user_id = :user_id AND NOT deleted_by_user
+                    """
+                ),
+                {"id": conversation_id, "user_id": user_id},
+            )
+        ) is not None
 
     async def open_message(self, *, conversation_id: UUID, question: str) -> UUID:
         """The message row, in `pending`, before anything is generated."""
@@ -174,13 +204,18 @@ class PostgresAnswerRepository:
         )
 
     async def commit(self) -> None:
-        """End the transaction. **The only transaction boundary on the answer path.**
+        """End the transaction. **The only transaction boundary of the answer module's writes.**
 
         Public rather than the driver reaching for the session, because *when* the writes
-        become durable is the repository's decision — and the answer is "once, at the end".
-        Committing earlier would produce a `pending` row that other connections could read,
-        and it would also end the transaction-scoped permission context the retrieval needs:
-        `driver.stream` records what that cost when it was done.
+        become durable is the repository's decision — and on the answer path the answer is
+        "once, at the end". Committing earlier would produce a `pending` row that other
+        connections could read, and it would also end the transaction-scoped permission
+        context the retrieval needs: `driver.stream` records what that cost when it was done.
+
+        Ticket 37's two conversation writes (rename and delete) are the module's other
+        callers: each is one statement that must be durable before the response is sent, and
+        each commits *after* everything it needs from the same transaction — reading a row
+        back after this commit would find no permission context and therefore no rows.
         """
         await self._session.commit()
 
@@ -256,22 +291,126 @@ class PostgresAnswerRepository:
             for row in rows
         )
 
-    async def own_conversation_ids(self, user_id: UUID, *, limit: int) -> tuple[UUID, ...]:
-        """The user's conversations, newest first. Used by the list endpoint and tests."""
+    async def list_for(
+        self, user_id: UUID, *, limit: int = 50
+    ) -> tuple["ConversationSummary", ...]:
+        """The user's conversations, newest first, without the ones they removed.
+
+        `NOT deleted_by_user` is in the same `WHERE` as the ownership, not a filter the
+        caller applies afterwards: a conversation the owner deleted is one they may no
+        longer see (ticket 37's 「删除后本人不可再看到」), and a list that fetched it and
+        then dropped it would be one refactor away from showing it.
+
+        The order is `last_message_at DESC, created_at DESC, id DESC`. The first key is
+        the one the sidebar means by "recent"; the two after it are what makes the order
+        *total*. Two conversations whose last message lands in the same millisecond — a
+        client asking two questions in one tick, or a test — would otherwise come back in
+        whatever order the plan chose, and a list that reshuffles between two reads of
+        unchanged data is a list a reader cannot trust.
+        """
         rows = (
             await self._session.execute(
                 text(
                     """
-                    SELECT id FROM rag_conversations
+                    SELECT id, title, created_at, last_message_at, expires_at
+                      FROM rag_conversations
                      WHERE user_id = :user_id AND NOT deleted_by_user
-                     ORDER BY last_message_at DESC
+                     ORDER BY last_message_at DESC, created_at DESC, id DESC
                      LIMIT :limit
                     """
                 ),
                 {"user_id": user_id, "limit": limit},
             )
-        ).scalars()
-        return tuple(rows)
+        ).all()
+        return tuple(
+            ConversationSummary(
+                id=row[0],
+                title=row[1],
+                created_at=row[2],
+                last_message_at=row[3],
+                expires_at=row[4],
+            )
+            for row in rows
+        )
+
+    async def count_for(self, user_id: UUID) -> int:
+        """How many conversations the user still has. The list's `total`, not a second rule."""
+        return await self._session.scalar(
+            text(
+                """
+                SELECT count(*) FROM rag_conversations
+                 WHERE user_id = :user_id AND NOT deleted_by_user
+                """
+            ),
+            {"user_id": user_id},
+        )
+
+    async def rename_for(
+        self, user_id: UUID, conversation_id: UUID, title: str
+    ) -> "ConversationSummary | None":
+        """Give one of this user's conversations a new name, or `None` if it is not theirs.
+
+        `user_id` is in the `WHERE` for the reason `load_for`'s is: ownership has to be a
+        clause of the statement, so no spelling of this update reaches somebody else's row.
+        The `RETURNING` row is the answer rather than a follow-up `SELECT`, so "not yours"
+        and "there is no such conversation" cannot be told apart — which is what keeps this
+        endpoint from being an existence oracle — and the response describes what the
+        database stored rather than what the request asked for.
+
+        `NOT deleted_by_user` is part of it too: a conversation the owner removed is gone
+        from their side of the product, and renaming it back into view is not a way to
+        undelete it.
+        """
+        row = (
+            await self._session.execute(
+                text(
+                    """
+                    UPDATE rag_conversations
+                       SET title = :title
+                     WHERE id = :id AND user_id = :user_id AND NOT deleted_by_user
+                    RETURNING id, title, created_at, last_message_at, expires_at
+                    """
+                ),
+                {"id": conversation_id, "user_id": user_id, "title": title},
+            )
+        ).first()
+        if row is None:
+            return None
+        return ConversationSummary(
+            id=row[0],
+            title=row[1],
+            created_at=row[2],
+            last_message_at=row[3],
+            expires_at=row[4],
+        )
+
+    async def delete_for(self, user_id: UUID, conversation_id: UUID) -> bool:
+        """Remove one of this user's conversations from their own view. `False` if absent.
+
+        **A flag, not a `DELETE`** (§3.6's `deleted_by_user`): the row is the evidence
+        D18's 90-day retention and §5.3's compliance read are about, and a person removing
+        a conversation from their own list is not a reason to destroy the record that it
+        existed. The physical removal is ticket 51's sweep; what this buys immediately is
+        that the conversation stops being listed, stops being readable and stops being
+        possible to append to — `ensure_conversation` carries the same `NOT deleted_by_user`
+        clause, so a follow-up question naming it is refused exactly as somebody else's is.
+
+        The conditional `NOT deleted_by_user` is what makes the second call a `False`: a
+        conversation that is already gone is not found, which is the same answer the read
+        route gives, and the caller cannot use this route to learn whether the row still
+        exists underneath.
+        """
+        removed = await self._session.execute(
+            text(
+                """
+                UPDATE rag_conversations
+                   SET deleted_by_user = true
+                 WHERE id = :id AND user_id = :user_id AND NOT deleted_by_user
+                """
+            ),
+            {"id": conversation_id, "user_id": user_id},
+        )
+        return removed.rowcount == 1
 
 
 class ConversationNotFound(Exception):
@@ -370,6 +509,32 @@ class ConversationRead:
         self.messages = messages
 
 
+class ConversationSummary:
+    """One conversation as the list shows it: a label and the dates that place it.
+
+    Separate from `ConversationRead` rather than a nullable-messages version of it: the
+    list has no messages and a value that *could* hold them would make "the list forgot to
+    load the transcript" and "there is no transcript" the same object.
+    """
+
+    __slots__ = ("id", "title", "created_at", "last_message_at", "expires_at")
+
+    def __init__(  # noqa: PLR0913 - one row's columns, named
+        self,
+        *,
+        id: UUID,
+        title: str,
+        created_at: datetime,
+        last_message_at: datetime,
+        expires_at: datetime,
+    ) -> None:
+        self.id = id
+        self.title = title
+        self.created_at = created_at
+        self.last_message_at = last_message_at
+        self.expires_at = expires_at
+
+
 def _json(value: object) -> str:
     """A Python value as the JSON text a `CAST(:param AS jsonb)` binding needs.
 
@@ -383,6 +548,7 @@ def _json(value: object) -> str:
 __all__ = [
     "ConversationNotFound",
     "ConversationRead",
+    "ConversationSummary",
     "MessageRead",
     "PostgresAnswerRepository",
 ]

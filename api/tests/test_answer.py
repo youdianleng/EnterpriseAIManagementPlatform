@@ -1040,6 +1040,358 @@ async def test_a_conversation_that_is_not_yours_is_not_found(
     assert MARRIAGE_LEAVE not in response.text, "the refusal leaked the question"
 
 
+# --- the conversation list, the rename and the delete (ticket 37) -------------
+
+
+async def ask(actor, question: str) -> str:  # noqa: ANN001 - tests.support.platform.Actor
+    """Ask one question and return the conversation it landed in.
+
+    Through the streaming endpoint rather than by writing rows, because the conversation
+    these tests list is the one the *product* creates: a fixture that inserted a
+    `rag_conversations` row by hand would agree with the list endpoint about a shape the
+    answer path never produces.
+    """
+    response = await actor.post("/api/v1/answers", json={"question": question})
+    assert response.status_code == 200, response.text
+    return _frames(response.text)[0][1]["conversation_id"]
+
+
+async def test_the_conversation_list_is_the_callers_own_and_newest_first(
+    platform: Platform, cast
+) -> None:
+    """**The ticket's first line, one endpoint of it**: 会话列表展示历史会话.
+
+    Four things are asserted, and each is a way a list can be wrong while looking right:
+
+    * it contains the caller's conversations and **not** a colleague's — asked through the
+      real endpoint by a second account, so this is ownership and not an empty fixture;
+    * it is ordered by `last_message_at` descending, and continuing an older conversation
+      moves it back to the top, which is what makes a sidebar's order agree with "recent";
+    * the order is *total*: two rows with the same last-message instant cannot swap between
+      two reads, which is why the statement names `created_at` and `id` after the first key;
+    * a row is a **label**, not a transcript — the list ships no messages, so opening the
+      sidebar does not carry every past answer with it.
+    """
+    corpus = await index(platform, cast, *DOCUMENTS)
+    first = await ask(corpus.admin, MARRIAGE_LEAVE)
+    second = await ask(corpus.admin, VACATION_POLICY)
+    colleague = await ask(cast.colleague, MARRIAGE_LEAVE)
+
+    listed = await corpus.admin.get("/api/v1/answers/conversations")
+    assert listed.status_code == 200, listed.text
+    body = listed.json()
+    ids = [item["id"] for item in body["items"]]
+
+    assert colleague not in ids, "the list returned a colleague's conversation"
+    assert first in ids and second in ids, f"the caller's own conversations are missing: {ids}"
+    assert body["total"] == len(ids) == 2, f"the total disagrees with the rows: {body}"
+
+    stamps = [item["last_message_at"] for item in body["items"]]
+    assert stamps == sorted(stamps, reverse=True), f"the list is not newest first: {stamps}"
+    assert ids[0] == second, "the most recently used conversation is not first"
+
+    row = body["items"][0]
+    assert "messages" not in row, "a list row carried a transcript"
+    assert row["expires_at"] > row["created_at"], "the row carries no retention deadline"
+    assert row["title"], "a row with no title is a row nobody can identify"
+
+    # Continuing the older conversation moves it back to the top: the list is ordered by
+    # use, not by creation.
+    await corpus.admin.post(
+        "/api/v1/answers", json={"question": MARRIAGE_LEAVE, "conversation_id": first}
+    )
+    reordered = (await corpus.admin.get("/api/v1/answers/conversations")).json()
+    assert [item["id"] for item in reordered["items"]] == [first, second], (
+        "continuing a conversation did not move it to the top of the list"
+    )
+
+
+async def test_a_conversation_can_be_renamed_by_its_owner_and_keeps_its_transcript(
+    platform: Platform, cast
+) -> None:
+    """The rename: a new label, the same conversation underneath it.
+
+    The stored title is normalised (`"  Nuevo   nombre "` becomes `"Nuevo nombre"`), which
+    is what the response has to describe — a client that showed what it typed rather than
+    what was stored would disagree with the next read. `last_message_at` must not move: a
+    rename is a label, and a list that reordered when somebody renamed a conversation would
+    be ordering by the wrong thing.
+
+    A title the database would refuse is refused *here* with a 422 rather than by
+    `ck_rag_conversations_title` as a 500 — and the blank one is checked because the schema's
+    `min_length=1` does not see `"   "`.
+    """
+    corpus = await index(platform, cast, *DOCUMENTS)
+    conversation_id = await ask(corpus.admin, MARRIAGE_LEAVE)
+    before = (
+        await corpus.admin.get(f"/api/v1/answers/conversations/{conversation_id}")
+    ).json()
+
+    renamed = await corpus.admin.patch(
+        f"/api/v1/answers/conversations/{conversation_id}",
+        json={"title": "  Vacaciones   y permisos "},
+    )
+    assert renamed.status_code == 200, renamed.text
+    row = renamed.json()
+    assert row["title"] == "Vacaciones y permisos", (
+        f"the response is not what was stored: {row['title']!r}"
+    )
+    assert row["id"] == conversation_id
+    assert row["last_message_at"] == before["last_message_at"], (
+        "renaming moved the conversation in the list"
+    )
+
+    read = await corpus.admin.get(f"/api/v1/answers/conversations/{conversation_id}")
+    assert read.json()["title"] == "Vacaciones y permisos"
+    assert read.json()["messages"] == before["messages"], "renaming changed the transcript"
+    assert (
+        await platform.scalar(
+            "SELECT title FROM rag_conversations WHERE id = :id", {"id": conversation_id}
+        )
+    ) == "Vacaciones y permisos", "the title was not written to the row"
+
+    for bad in ("   ", ""):
+        refused = await corpus.admin.patch(
+            f"/api/v1/answers/conversations/{conversation_id}", json={"title": bad}
+        )
+        assert refused.status_code == 422, (
+            f"a blank title ({bad!r}) reached the database: {refused.status_code} {refused.text}"
+        )
+    too_long = await corpus.admin.patch(
+        f"/api/v1/answers/conversations/{conversation_id}", json={"title": "x" * 121}
+    )
+    assert too_long.status_code == 422, "an unbounded title was accepted"
+
+    # The list shows the new name, which is the whole point of renaming it.
+    listed = (await corpus.admin.get("/api/v1/answers/conversations")).json()
+    assert [item["title"] for item in listed["items"]] == ["Vacaciones y permisos"]
+
+
+async def test_a_conversation_that_is_not_yours_cannot_be_renamed_or_deleted(
+    platform: Platform, cast
+) -> None:
+    """Ownership is the `WHERE` clause of the write, not a comparison in the handler.
+
+    Both writes answer 404 — the same answer the read gives — because a 403 would tell a
+    caller which of two things happened, which is the existence oracle ticket 34 refused
+    for the read. The owner's conversation is then read back to prove the refusals were
+    refusals: a "404" that had actually written would look identical from the response.
+
+    The colleague is in the same department as the owner, so this is ownership rather than
+    a department rule — §4.2's second clause.
+    """
+    corpus = await index(platform, cast, *DOCUMENTS)
+    conversation_id = await ask(corpus.admin, MARRIAGE_LEAVE)
+    path = f"/api/v1/answers/conversations/{conversation_id}"
+
+    renamed = await cast.colleague.patch(path, json={"title": "Mía ahora"})
+    assert renamed.status_code == 404, renamed.text
+    assert renamed.json()["error"]["code"] == ErrorCode.NOT_FOUND.value
+    assert "Mía ahora" not in renamed.text
+
+    deleted = await cast.colleague.delete(path)
+    assert deleted.status_code == 404, deleted.text
+    assert deleted.json()["error"]["code"] == ErrorCode.NOT_FOUND.value
+
+    survived = await corpus.admin.get(path)
+    assert survived.status_code == 200, (
+        f"a colleague's refused write took effect: {survived.status_code}"
+    )
+    assert survived.json()["title"] == MARRIAGE_LEAVE
+    still_mine = (await corpus.admin.get("/api/v1/answers/conversations")).json()
+    assert conversation_id in [item["id"] for item in still_mine["items"]], (
+        "the conversation left its owner's list after a refused delete"
+    )
+
+
+async def test_deleting_a_conversation_hides_it_from_its_owner_at_once(
+    platform: Platform, cast
+) -> None:
+    """**The ticket's 「删除后本人不可再看到」, and what "deleted" means until ticket 51.**
+
+    Three consequences are asserted, because "invisible" is three separate reads:
+
+    * the list no longer contains it, and the total drops with it;
+    * the conversation read is a 404, and asking a follow-up question *into* it is a 404
+      too — `ensure_conversation` carries the same `NOT deleted_by_user`, so a deleted
+      conversation cannot be appended to either;
+    * a second delete is a 404, so the endpoint cannot be asked whether the row is still
+      underneath.
+
+    And then the half that is a **promise about what "deleted" means**: the row survives
+    with `deleted_by_user = true` and its messages are still there. §3.6/D18 make the flag
+    the owner's removal, and the physical removal is the 90-day sweep of ticket 51, which
+    does not exist yet. A test that asserted the row was gone would be asserting a feature
+    nobody has written.
+    """
+    corpus = await index(platform, cast, *DOCUMENTS)
+    conversation_id = await ask(corpus.admin, MARRIAGE_LEAVE)
+    path = f"/api/v1/answers/conversations/{conversation_id}"
+
+    removed = await corpus.admin.delete(path)
+    assert removed.status_code == 204, removed.text
+    assert removed.content == b"", "a 204 carried a body"
+
+    listed = (await corpus.admin.get("/api/v1/answers/conversations")).json()
+    assert conversation_id not in [item["id"] for item in listed["items"]], (
+        "a deleted conversation is still listed"
+    )
+    assert listed["total"] == 0, f"the total still counts the deleted row: {listed['total']}"
+
+    assert (await corpus.admin.get(path)).status_code == 404
+    follow_up = await corpus.admin.post(
+        "/api/v1/answers",
+        json={"question": MARRIAGE_LEAVE, "conversation_id": conversation_id},
+    )
+    assert follow_up.status_code == 404, (
+        f"a deleted conversation accepted a new question: {follow_up.status_code}"
+    )
+    assert follow_up.json()["error"]["code"] == ErrorCode.NOT_FOUND.value
+    assert (await corpus.admin.delete(path)).status_code == 404, "a second delete was accepted"
+
+    assert await platform.scalar(
+        "SELECT deleted_by_user FROM rag_conversations WHERE id = :id", {"id": conversation_id}
+    ), "the row was not flagged as deleted"
+    assert (
+        await platform.scalar(
+            "SELECT count(*) FROM rag_messages WHERE conversation_id = :id",
+            {"id": conversation_id},
+        )
+        == 1
+    ), (
+        "the messages were physically removed. They are not this route's to remove: the "
+        "physical sweep is ticket 51, and a ticket that deletes evidence it was not asked "
+        "to delete is the failure §3.6's flag exists to avoid"
+    )
+
+
+async def test_deleting_a_conversation_is_recorded_in_the_audit_trail(
+    platform: Platform, cast
+) -> None:
+    """The act is in §3.7's trail, and the entry holds no content.
+
+    `deleted_by_user` says *that* the conversation was removed from its owner's view and
+    says nothing about when or by whom — which is the question a later reader of the row
+    has. The record is an act, like `conversation.asked`: no title, no question, no answer.
+    """
+    corpus = await index(platform, cast, *DOCUMENTS)
+    conversation_id = await ask(corpus.admin, MARRIAGE_LEAVE)
+    removed = await corpus.admin.delete(f"/api/v1/answers/conversations/{conversation_id}")
+    assert removed.status_code == 204, removed.text
+
+    row = (
+        await platform.sql(
+            """
+            SELECT action, entity_type, entity_id, actor_user_id, before, after, reason
+              FROM audit_log
+             WHERE action = 'conversation.deleted' AND entity_id = :id
+            """,
+            {"id": conversation_id},
+        )
+    )[0]
+    assert row[1] == "rag_conversation"
+    assert str(row[2]) == conversation_id
+    assert str(row[3]) == corpus.admin.user_id, "the trail does not name who deleted it"
+    assert row[4] is None, "the entry carries a snapshot of what was there before"
+    assert row[5] == {"deleted_by_user": True}
+    assert MARRIAGE_LEAVE not in (row[6] or ""), "the entry leaked the question"
+    assert (
+        await platform.scalar(
+            "SELECT count(*) FROM audit_log WHERE action = 'conversation.deleted'"
+        )
+        == 1
+    ), "one deletion wrote more than one record"
+
+
+async def test_the_conversation_list_has_no_entry_for_another_role(
+    platform: Platform, cast
+) -> None:
+    """**The checklist's 「没有对普通人力资源角色开放的入口」, and why the database is not enough.**
+
+    D18/§5.3 give `compliance` the *read-only conversation record*, and
+    `rag_conversations_read` admits it to other people's rows — that is the policy, and
+    ticket 48 builds the screen that uses it. This endpoint must not be that screen: an HR
+    or compliance account opening the Q&A screen sees its **own** conversations and nothing
+    else, exactly as an employee does, and it reaches somebody else's transcript no more
+    than a colleague's.
+
+    **The compliance reader is the discriminating one.** RLS filters an HR reader anyway, so
+    a row of HR's proves little; compliance is admitted by the policy, which means the
+    application's own `user_id` clause is the only thing standing between this endpoint and
+    somebody else's conversations. Removing that clause from `list_for` leaves this test
+    failing while every other list assertion still passes — which is what a mutation run
+    found, and the reason this test exists.
+    """
+    corpus = await index(platform, cast, *DOCUMENTS)
+    conversation_id = await ask(corpus.admin, MARRIAGE_LEAVE)
+
+    for role in ("hr", "compliance"):
+        reader = await platform.account(roles=(role,))
+        listed = await reader.get("/api/v1/answers/conversations")
+        assert listed.status_code == 200, listed.text
+        assert listed.json()["items"] == [], (
+            f"{role} was shown somebody else's conversations: {listed.text[:300]}"
+        )
+        assert listed.json()["total"] == 0
+        assert conversation_id not in listed.text, "the list leaked a conversation id"
+        assert MARRIAGE_LEAVE not in listed.text, "the list leaked another user's question"
+
+        read = await reader.get(f"/api/v1/answers/conversations/{conversation_id}")
+        assert read.status_code == 404, (
+            f"{role} read another user's transcript through this endpoint: {read.status_code}"
+        )
+        assert MARRIAGE_LEAVE not in read.text
+
+
+async def test_the_conversation_writes_carry_the_caller_in_the_where_clause(
+    platform: Platform, cast
+) -> None:
+    """**The first line of defence, tested where the second one cannot hide it.**
+
+    The endpoint tests above assert the *behaviour* — a colleague's rename or delete is a 404
+    — and that behaviour survives deleting the `user_id` clause from the statement, because
+    `rag_conversations_update` refuses the same rows one layer down. A mutation run found
+    exactly that: with the clause removed, every HTTP assertion about ownership still passed.
+
+    So the clause is pinned here instead, on the platform's **owner** connection, which is
+    exempt from row-level security. On this connection the only thing that can refuse the
+    write is the `WHERE`, which is what makes this a test of the application's rule rather
+    than of the database's — the two are deliberately independent, and this is the one that
+    says a route cannot reach somebody else's row even if the policy were dropped.
+
+    The owner's own calls are asserted too, so this is not a repository that refuses
+    everything: the same methods succeed for the conversation's user.
+    """
+    corpus = await index(platform, cast, *DOCUMENTS)
+    conversation_id = UUID(await ask(corpus.admin, MARRIAGE_LEAVE))
+    stranger = await platform.account(roles=("employee",))
+
+    session = platform.factory()
+    repository = PostgresAnswerRepository(session)
+    try:
+        assert await repository.list_for(UUID(stranger.user_id)) == (), (
+            "a stranger's list returned somebody else's conversation"
+        )
+        assert await repository.count_for(UUID(stranger.user_id)) == 0
+        assert (
+            await repository.rename_for(UUID(stranger.user_id), conversation_id, "Mía")
+            is None
+        ), "a stranger renamed somebody else's conversation"
+        assert (
+            await repository.delete_for(UUID(stranger.user_id), conversation_id) is False
+        ), "a stranger deleted somebody else's conversation"
+
+        owner = UUID(corpus.admin.user_id)
+        assert (await repository.rename_for(owner, conversation_id, "Mía")) is not None
+        assert await repository.delete_for(owner, conversation_id) is True
+        assert await repository.list_for(owner) == ()
+        await repository.commit()
+    finally:
+        # Closed explicitly: a session left open sits `idle in transaction` and the next
+        # test's `TRUNCATE ... CASCADE` waits for it — the hang `test_retrieval.py` records.
+        await session.close()
+
+
 async def test_a_question_from_an_outsider_cites_nothing_it_may_not_read(
     platform: Platform, cast
 ) -> None:

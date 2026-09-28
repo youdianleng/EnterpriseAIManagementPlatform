@@ -69,6 +69,10 @@ export function SiteHeader({
    *   spare;
    * * the document list is offered to every role, and *which* documents it shows is the
    *   API's answer rather than something advertised here;
+   * * the Q&A screen is offered under the same rule and for the same reason (ticket 37):
+   *   every role may ask, and `GET /answers/conversations` answers with the caller's *own*
+   *   conversations and nothing else. **There is deliberately no entry for anybody else's
+   *   conversations** — §5.3 gives that read to compliance, and its screen is ticket 48's;
    * * `badge` marks the notification centre, which is the only entry that carries a count.
    */
   const links: Array<{ href: string; label: string; badge?: boolean }> = [
@@ -78,6 +82,7 @@ export function SiteHeader({
     { href: `/${locale}/leave`, label: dict.nav.leave },
     { href: `/${locale}/timesheets`, label: dict.nav.timesheets },
     { href: `/${locale}/documents`, label: dict.nav.documents },
+    { href: `/${locale}/qa`, label: dict.nav.qa },
     { href: `/${locale}/notifications`, label: dict.nav.notifications, badge: true },
     { href: `/${locale}/style-guide`, label: dict.nav.styleGuide },
   ];
@@ -119,7 +124,7 @@ export function SiteHeader({
 
       {identity && (
         <nav aria-label={dict.nav.main}>
-          {/* `flex-wrap` and `min-w-0`, because the navigation has eight entries at 320px
+          {/* `flex-wrap` and `min-w-0`, because the navigation has nine entries at 320px
               a single-line `ul` is wider than the viewport, and a flex item's automatic
               minimum size makes the *page* scroll rather than the list wrap. Design system
               §7 requires every screen to work at 320px, so the list wraps instead. */}

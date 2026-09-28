@@ -112,6 +112,98 @@
   }
 }
 
+/*
+ * Rendered answer prose.
+ *
+ * A model's answer is Markdown (§5.2 asks for citations, code and tables), and Tailwind's
+ * preflight strips every element's default margin and list styling — so without this an
+ * answer would arrive as one wall of unspaced text with tables drawn as bare cells. The
+ * rules are deliberately a *small* set: headings two levels below the page's `h1`, body
+ * text at §2.2's 14px/1.5, tables that scroll inside their own box rather than pushing the
+ * page sideways (§3.1/§7), and code that wraps its own overflow for the same reason.
+ *
+ * No colour is introduced: everything here consumes the §2 tokens, and a link is the one
+ * primary-coloured thing in the prose because it is the one thing that is interactive.
+ */
+@layer components {
+  .answer-prose {
+    font-size: var(--eam-text-base);
+    line-height: 1.5;
+  }
+  .answer-prose > * + * {
+    margin-top: var(--eam-space-3);
+  }
+  .answer-prose h2,
+  .answer-prose h3,
+  .answer-prose h4 {
+    font-size: var(--eam-text-lg);
+    line-height: 1.4;
+    font-weight: 600;
+    margin-top: var(--eam-space-4);
+  }
+  .answer-prose h3,
+  .answer-prose h4 {
+    font-size: var(--eam-text-base);
+  }
+  .answer-prose ul,
+  .answer-prose ol {
+    padding-left: var(--eam-space-6);
+    list-style: disc;
+  }
+  .answer-prose ol {
+    list-style: decimal;
+  }
+  .answer-prose li + li {
+    margin-top: var(--eam-space-1);
+  }
+  .answer-prose a {
+    color: var(--eam-primary);
+    text-decoration: underline;
+  }
+  .answer-prose strong {
+    font-weight: 600;
+  }
+  .answer-prose code {
+    background: var(--eam-neutral-bg);
+    border-radius: var(--eam-radius-sm);
+    padding: 0 var(--eam-space-1);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.8125rem;
+  }
+  .answer-prose pre {
+    background: var(--eam-neutral-bg);
+    border-radius: var(--eam-radius);
+    padding: var(--eam-space-3);
+    /* Its own scrollbar, so a long line cannot push the page sideways at 320px. */
+    overflow-x: auto;
+  }
+  .answer-prose pre code {
+    background: none;
+    padding: 0;
+  }
+  .answer-prose blockquote {
+    border-left: 3px solid var(--eam-border);
+    padding-left: var(--eam-space-3);
+    color: var(--eam-fg-muted);
+  }
+  .answer-prose table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: var(--eam-text-sm);
+  }
+  .answer-prose th,
+  .answer-prose td {
+    border: 1px solid var(--eam-border);
+    padding: var(--eam-space-2);
+    text-align: left;
+    vertical-align: top;
+  }
+  .answer-prose th {
+    background: var(--eam-neutral-bg);
+    font-weight: 600;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

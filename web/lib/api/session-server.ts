@@ -16,6 +16,7 @@ import type {
   DayDetail,
 } from "@/lib/api/attendance";
 import type { AuthSession, OwnProfile, PasswordPolicy } from "@/lib/api/auth";
+import type { ConversationPage } from "@/lib/api/answers";
 import type { DocumentPage } from "@/lib/api/documents";
 import type {
   BalancePage,
@@ -295,6 +296,24 @@ export async function readServerBalances(year: number): Promise<BalancePage | nu
 export async function readServerLeaveRequests(limit = 20): Promise<LeaveRequestPage | null> {
   try {
     return await serverRequest<LeaveRequestPage>(`/api/v1/leave/requests?limit=${limit}`);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The caller's own conversations, for the Q&A sidebar's first paint.
+ *
+ * Null when they cannot be read, which the screen renders as its error state with a
+ * retry — the same shape every other reader here uses. Only the *list* is read on the
+ * server: which conversation is open, and the answer being streamed into it, are the
+ * client store's (`lib/stores/qa-store.ts`), because switching the interface language is a
+ * navigation in this product and state a remount throws away cannot satisfy
+ * 「流式过程中切换语言不影响正在生成的回答」.
+ */
+export async function readServerConversations(limit = 50): Promise<ConversationPage | null> {
+  try {
+    return await serverRequest<ConversationPage>(`/api/v1/answers/conversations?limit=${limit}`);
   } catch {
     return null;
   }

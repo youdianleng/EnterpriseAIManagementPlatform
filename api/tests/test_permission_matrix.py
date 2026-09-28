@@ -1254,6 +1254,18 @@ HTTP_MATRIX: tuple[tuple[str, str, RouteAccess], ...] = (
     # ownership refusal is asserted by name in `test_answer.py`.
     ("POST", "/api/v1/answers", Action.DOCUMENT_READ),
     ("GET", "/api/v1/answers/conversations/{conversation_id}", Action.SESSION_READ_OWN),
+    # Ticket 37's three rows. The list, the rename and the delete are the *same* surface
+    # the read is — a conversation is `session.read_own`'s, every role holds its own, and
+    # the ownership refusal is the repository's `WHERE` clause, asserted by name in
+    # `test_answer.py`. Deliberately no fourth action: a `session.manage_own` would carry a
+    # role list identical to this one's, which is a rule spelled twice.
+    #
+    # The list is in `RESOURCE_FREE_ROUTES` because it has an answer this layer can assert
+    # exactly — an empty list for a caller who has asked nothing — while the two routes that
+    # name a conversation cannot be told apart from an unwired one by a 404.
+    ("GET", "/api/v1/answers/conversations", Action.SESSION_READ_OWN),
+    ("PATCH", "/api/v1/answers/conversations/{conversation_id}", Action.SESSION_READ_OWN),
+    ("DELETE", "/api/v1/answers/conversations/{conversation_id}", Action.SESSION_READ_OWN),
 )
 
 
@@ -1318,6 +1330,11 @@ RESOURCE_FREE_ROUTES: frozenset[str] = frozenset(
         # exactly instead of settling for "not a 403". What the stream *carries* is
         # `test_answer.py`'s subject, not this table's.
         "/api/v1/answers",
+        # Ticket 37. The list answers with an empty page for a caller who has asked
+        # nothing, which is an answer this layer can assert exactly; the rename and the
+        # delete name a conversation the matrix never created, so a 404 there proves the
+        # guard let the caller through and says nothing about the handler.
+        "/api/v1/answers/conversations",
     }
 )
 
@@ -1485,6 +1502,10 @@ def http_payload(path: str, *, department: str, employee: str) -> dict:
         # supplying passages would make this layer a test about the model, and the only
         # thing it is about is whether the guard is wired to the catalogue.
         "/api/v1/answers": {"question": "¿Cuántos días de vacaciones?"},
+        # Ticket 37. A rename body the handler would accept: the conversation id in the
+        # path is one the matrix never created, so the permitted caller reaches the
+        # handler's 404 rather than a 422 about the body.
+        "/api/v1/answers/conversations/{conversation_id}": {"title": "Matriz"},
     }[path]
 
 
@@ -1611,8 +1632,9 @@ async def test_the_http_matrix_for(platform: Platform, role: str) -> None:
     # Literal on purpose, so that adding an endpoint is a decision somebody makes here
     # rather than something that happens. Ticket 33 added the two retrieval routes — the
     # search and the debug view — and the count moved with them; ticket 34 adds the two
-    # answer routes (the streamed question and the conversation read).
-    assert checked == 78
+    # answer routes (the streamed question and the conversation read); ticket 37 adds the
+    # three the sidebar needs (the list, the rename and the delete).
+    assert checked == 81
     assert checked == len(HTTP_MATRIX)
     assert failures == [], "\n".join(failures)
 
