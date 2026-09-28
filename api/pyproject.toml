@@ -31,6 +31,23 @@ dependencies = [
     # vendored at `app/domain/document/data/`, which is why this needs no network at
     # first use and why `tests/test_chunking.py` asserts that file's digest.
     "tiktoken>=0.8",
+    # The agent skeleton (ticket 38). `langgraph` is the graph itself; the
+    # `-checkpoint-postgres` adapter is the part DESIGN §10.2 actually decides —
+    # an interrupted confirmation has to survive a restart, so the state goes in
+    # Postgres beside the business tables and **not** in Redis, which §10.2 keeps
+    # for things that may be lost. Pinned exactly rather than floored: the
+    # checkpointer writes its own tables through its own migration list, and a
+    # minor bump is a schema change we would want to review rather than absorb.
+    "langgraph==1.2.12",
+    "langgraph-checkpoint-postgres==3.1.2",
+    # The provider adapter for LangChain-shaped models. Nothing imports it yet:
+    # ticket 42 owns DESIGN §5.3's degradation chain, and until it lands the
+    # graph's one model call goes through ticket 34's `ChatModel` seam
+    # (`app/domain/answer/chat.py`) rather than a second provider abstraction.
+    # Present because the agent's dependencies are installed as one set — the
+    # image runs `uv sync` from this file, so a dependency added later means
+    # another rebuild of the running container.
+    "langchain-openai==1.6.6",
 ]
 
 [dependency-groups]

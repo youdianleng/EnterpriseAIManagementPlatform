@@ -41,6 +41,18 @@ CLEANUP_TABLES = (
     # way — being on the list is what makes that a decision rather than a hope.
     "rag_messages",
     "rag_conversations",
+    # The agent's checkpoints (ticket 38) are **deliberately absent** from this list, and the
+    # reason is a property of who creates them: the `langgraph` schema is a migration's
+    # (0026) but the four tables inside it are `langgraph-checkpoint-postgres`'s, created by
+    # `setup()` the first time a checkpointer opens. A `TRUNCATE` naming them would therefore
+    # fail the very first wipe of a fresh scratch database — the tables do not exist yet —
+    # which is how this line was found.
+    #
+    # Isolation does not need them either, which is why the fix is an omission rather than a
+    # `setup()` call bolted onto this fixture: a checkpoint is keyed by its thread id, and
+    # every test in `test_agent_graph.py` mints its own (and names one explicitly only where
+    # two runs are *meant* to share it). They live in their own schema, so nothing here can
+    # read them by accident.
     # The uploaded documents (ticket 31) and the chunks the pipeline derives from
     # them. Named rather than left to the cascade from `employees`, for the reason the
     # overtime ledger is: a reader looking for "does anything survive a wipe" should

@@ -402,6 +402,34 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
             "No se ha podido generar la respuesta: el modelo de lenguaje no está "
             "disponible en este momento. Vuelve a intentarlo en unos minutos."
         ),
+        # Hard prohibitions (ticket 38). D23 and DESIGN §6.2 refuse four asks **in code**,
+        # without forwarding them to a model to be softened, so these four sentences are the
+        # whole of what a person is told. Like `errors.knowledge_base_no_basis` above they
+        # are deliberately not error codes: a refusal is a correct outcome, not a failure.
+        # Each names the legitimate route as well as the prohibition — a refusal that only
+        # says "no" leaves the person with nowhere to go.
+        "errors.forbidden_salary_of_another": (
+            "No puedo consultar el salario ni la nómina de otra persona. Puedo mostrarte "
+            "tus propias nóminas, y para los datos de otra persona la vía es Recursos "
+            "Humanos."
+        ),
+        "errors.forbidden_attendance_of_another": (
+            "No puedo consultar el registro de jornada de otra persona. Puedo mostrarte el "
+            "tuyo; si gestionas un equipo, el resumen de tu equipo es una función de la "
+            "aplicación con sus propios permisos, no algo que yo pueda abrir aquí."
+        ),
+        "errors.forbidden_performance_or_promotion_advice": (
+            "No puedo evaluar el desempeño de nadie ni recomendar ascensos, promociones o "
+            "despidos: son decisiones de personas, con consecuencias legales, y este "
+            "sistema no las toma ni las aconseja. Puedo explicarte el procedimiento que "
+            "esté documentado."
+        ),
+        "errors.forbidden_database_write": (
+            "No puedo modificar la base de datos, ni directamente ni mediante una "
+            "consulta: no tengo ninguna herramienta de escritura. Dime qué necesitas "
+            "cambiar y te indicaré la pantalla o la solicitud que lo hace, con sus "
+            "permisos y su registro de auditoría."
+        ),
         "errors.internal_error": "Se produjo un error interno. Inténtalo de nuevo más tarde.",
         "errors.service_unavailable": "El servicio no está disponible en este momento.",
     },
@@ -760,6 +788,30 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.answer_model_unavailable": (
             "The answer could not be generated: the language model is unavailable right "
             "now. Please try the same question again in a few minutes."
+        ),
+        # Hard prohibitions (ticket 38). See the Spanish block for why these are not error
+        # codes; the wording is read by `app/ai/agents/replies.py`, which is the only
+        # caller today, so a refusal is written once and rendered in whichever language the
+        # reader is using (DESIGN §10.4).
+        "errors.forbidden_salary_of_another": (
+            "I cannot look up another person's salary or payslip. I can show you your own, "
+            "and another person's data has to go through Human Resources."
+        ),
+        "errors.forbidden_attendance_of_another": (
+            "I cannot look up another person's attendance or clock records. I can show you "
+            "your own; if you manage a team, the team summary is a feature of the "
+            "application with its own permissions, not something I can open here."
+        ),
+        "errors.forbidden_performance_or_promotion_advice": (
+            "I cannot assess anyone's performance or recommend promotions or dismissals: "
+            "those are human decisions with legal consequences, and this system neither "
+            "makes them nor advises on them. I can explain the procedure if it is "
+            "documented."
+        ),
+        "errors.forbidden_database_write": (
+            "I cannot change the database, directly or through a query: I have no write "
+            "tool at all. Tell me what needs to change and I will point you at the screen "
+            "or the request that does it, with its permissions and its audit trail."
         ),
         "errors.internal_error": "An internal error occurred. Please try again later.",
         "errors.service_unavailable": "The service is unavailable right now.",
