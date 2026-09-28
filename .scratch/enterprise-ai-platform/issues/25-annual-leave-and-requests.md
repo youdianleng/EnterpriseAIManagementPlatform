@@ -111,3 +111,55 @@
 新增追加式 `leave_balance_entries`（`REVOKE UPDATE, DELETE`，按 `seq` 排序——`created_at`
 是事务开始时间，一个请求写的几行会共享它）。`docs/DESIGN.md` 表格下方已补一段
 "实现注记（票据 25）"说明这三处。
+
+---
+
+## 前端实现
+
+**新增**：`web/app/[locale]/(app)/leave/`（`page.tsx` 服务端组件 + `leave-screen.tsx` 交互 +
+`leave-calendar.tsx` 日历 + `loading.tsx`）；客户端 `web/lib/api/leave.ts`。导航条目在
+`site-header.tsx`。
+
+**新增能力（ticket 25 的 request/balance flow 此前没有任何界面）**：按类型的年度额度（额度、
+已结转、已用、占用中、剩余，五档数字等宽右对齐）、余额流水（`leave_balance_entries` 的每一步，
+`<details>` 折叠，键盘可开合、无需额外请求）、申请表单、申请列表（状态 + 引擎逐级决定与意见）、
+以及已批准休假的日历叠加层（`GET /leave/calendar`）。
+
+**工时天数是 API 算的**：表单分两步——先「计算天数」写一份**草稿**（不占用任何额度），把
+`business_days_count` 与跨年 `allocations` 显示出来，确认后才 `submit` 占用并送审。周末与节假日
+的排除在浏览器里一次都没有重算：那是 schedule 模块的答案，重算就是第二份实现。
+提交前若额度不足，API 在两人被惊动之前就拒绝，页面显示双语说明并指向上面的余额面板。
+
+**状态覆盖**
+- 空：无年度额度行 → 中性说明；无申请 → 中性说明 + 下一步；日历该月无休假 → 「本月没有已批准的缺勤」。
+- 加载：骨架屏；日历切月时显示「加载日历中…」。
+- 错误：读失败 → 标题 + 重试；**写被拒 → 自己的标题**（「No se pudo enviar la solicitud」），
+  因为余额与列表都加载成功了，被拒的是这次申请。
+- 权限拒绝：`leave.read_own` / `leave.request_own` 是自助动作，能登录的账号都持有；为他人请假
+  界面上不存在（API 只会以 403 拒绝）。
+- 设计态：**草稿**（「Borrador sin enviar」+ 列表内的「Enviar a aprobación」按钮，因为 API
+  没有撤回草稿的入口）；**已开始不能撤回**——只有 `start_date > 今天` 才画「Retirar」，
+  否则那个按钮的写入必被拒绝。
+
+**API 调用**：`GET /leave/types`、`GET /leave/balances?year=`、`GET /leave/requests`、
+`GET /leave/calendar?from_date&to_date`（首屏服务端并发）；`GET /leave/requests/{id}`（首屏后按文档
+并发取引擎决定，API 无批量入口，故上限 20 条）；`POST /leave/requests`（草稿）→
+`POST /{id}/submit` → `POST /{id}/withdraw`。
+
+**与任务描述的差异（有意为之）**：申请表单**没有「备注」字段**。`RequestCreate` 是 `StrictModel`，
+传 `reason` 是 422（票据 25 第 9 条、`test_a_request_payload_refuses_a_reason_field`）；界面若画一个
+文本框，它的写入必然被拒。表单因此只有类型、起止日期，以及**类型要求时的附件引用**，
+并把「为什么没有备注」写在表单里，而不是留给用户去发现。附件引用只对持 `leave.attachment_read`
+（仅 HR）的调用者可见，`has_attachment` 对所有人可见——本屏照此渲染，不假设能读回那个键。
+
+**§8.2 自查**：全部通过，看图后改了两处：日历导航标签显示的是日期（`01/10/2026`）而不是月份名，
+改为 `Mes: octubre de 2026`；列表里草稿行的「Enviar a aprobación」原为主色按钮，与「每页只有一个主角
+（表单）」冲突，已降为次级按钮。两处西语复数（「1 días」）改成计数单列。
+
+**验证**：`npx tsc --noEmit` 干净；`npx next build` 成功（`/[locale]/leave` 5.78 kB）；
+`npm run visual` 全绿，其中本屏 21 条断言，截图 `leave-calendar-es.png`、`leave-requests-es.png`、
+`leave-draft-es.png`、`320/768/1280-{es,en}-leave.png`。
+
+**已知边界**：余额面板只显示 API 真正维护的类型（本数据集只有 `annual`）；不占年额度的类型
+（病假、事假、产假）没有余额行，面板用一句话说明这一点而不是编造 0。
+

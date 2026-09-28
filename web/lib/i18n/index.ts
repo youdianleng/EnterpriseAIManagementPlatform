@@ -25,6 +25,12 @@ export type Dictionary = {
     timesheets: string;
     /** The document list: what this caller may read, and where uploads are filed. */
     documents: string;
+    /** Today's clock: punch in and out. Self-service, so every role has it. */
+    clock: string;
+    /** The caller's own attendance history and correction requests. */
+    attendance: string;
+    /** The caller's own leave balances and requests. */
+    leave: string;
     /** Accessible name of the signed-in navigation landmark. */
     main: string;
   };
@@ -253,6 +259,13 @@ export type Dictionary = {
     /** Ticket 30: the report's period was unusable, so the remedy is another period
      *  rather than another request. */
     timesheet_report_range_invalid: string;
+    /** Ticket 34's two states. `knowledge_base_no_basis` is D20's refusal — a normal
+     *  answer, not a failure — and `answer_model_unavailable` is the retryable 503 that
+     *  replaces a silent fallback to an ungrounded answer. Both are rendered from the
+     *  API's `message_key`, so the client never shows the server's Spanish sentence to
+     *  an English reader. */
+    knowledge_base_no_basis: string;
+    answer_model_unavailable: string;
     project_task_not_recordable: string;
     /** Document refusals the uploader can act on: choose another file, or open the one
      *  they already have. The type refusal and the ceiling both belong to "pick a
@@ -264,6 +277,29 @@ export type Dictionary = {
     document_not_ready: string;
     document_reprocess_unsupported: string;
     document_file_missing: string;
+    /** Ticket 21's refusals. "Already clocked in" and "there is no open shift" are
+     *  states of the clock rather than mistakes, so each has its own sentence saying
+     *  what the screen is about to show instead. */
+    attendance_already_clocked_in: string;
+    attendance_no_open_shift: string;
+    attendance_event_in_future: string;
+    attendance_employee_terminated: string;
+    attendance_correction_not_a_punch: string;
+    attendance_range_invalid: string;
+    /** Ticket 24's correction document: not there, unusable, or not in a state the
+     *  caller may act on. */
+    attendance_correction_not_found: string;
+    attendance_correction_invalid: string;
+    attendance_correction_not_draft: string;
+    attendance_correction_target_unresolved: string;
+    attendance_correction_submission_refused: string;
+    attendance_correction_apply_failed: string;
+    /** The kernel's own refusals: this caller may not read or write that record. The
+     *  screens show these rather than a role check of their own. */
+    forbidden: string;
+    not_found: string;
+    unauthenticated: string;
+    invalid_request: string;
   };
   documents: {
     title: string;
@@ -323,6 +359,411 @@ export type Dictionary = {
       /** Shown after a successful upload, before the job has parsed it. */
       queued: string;
     };
+  };
+  /**
+   * The closed set of day states, in words.
+   *
+   * Top-level rather than inside a screen, because two screens show a day's state — the
+   * clock and the attendance record — and the API names its states (`ok`, `absent`) while
+   * the interface calls them "shift closed" and "not clocked in yet". One set of words for
+   * one closed set of states; a second translation of the same enum would drift.
+   */
+  dayStatus: {
+    label: {
+      working: string;
+      finished: string;
+      notStarted: string;
+      missingOut: string;
+      incomplete: string;
+      holiday: string;
+      nonWorking: string;
+    };
+    /** One sentence saying what the state means for the person reading it. */
+    hint: {
+      working: string;
+      finished: string;
+      notStarted: string;
+      missingOut: string;
+      incomplete: string;
+      holiday: string;
+      nonWorking: string;
+    };
+  };
+  /**
+   * What the nightly pass found wrong with a day, in words.
+   *
+   * Split out of the clock for the same reason `dayStatus` is: two screens list the same
+   * closed set of anomaly types, and a second translation of one enum is a second answer
+   * to "what was flagged". `unknown` is the degradation for a type the server has learned
+   * and this build has not — a sentence rather than a blank line.
+   */
+  anomalyType: {
+    missing_clock_out: string;
+    missing_clock_in: string;
+    late: string;
+    early_leave: string;
+    no_punches: string;
+    unknown: string;
+  };
+  clock: {
+    title: string;
+    intro: string;
+    /** The business day the screen is about, with the date interpolated. */
+    businessDate: string;
+    /** The single primary action, which changes with the state (§4.2, §6.2). */
+    action: {
+      clockIn: string;
+      clockOut: string;
+      clockingIn: string;
+      clockingOut: string;
+    };
+    /** Closing a day is the one thing here that cannot be undone in place. */
+    confirm: {
+      title: string;
+      body: string;
+      cancel: string;
+      confirm: string;
+      close: string;
+    };
+    /** The feedback §6.2 asks for: the state changed, and a short notice says so. */
+    confirmedIn: string;
+    confirmedOut: string;
+    /** The running timer, and the finished figure beside it. */
+    elapsed: string;
+    worked: string;
+    expected: string;
+    /** A holiday or a non-working day: nothing was expected, so nothing is missing. */
+    restDay: string;
+    /** No schedule reaches this person: the absence of a rule, not a zero. */
+    expectedUnknown: string;
+    noSchedule: {
+      title: string;
+      body: string;
+    };
+    /** A second clock-in while one is open: a stale tab, not a failure. */
+    alreadyClockedIn: {
+      title: string;
+      body: string;
+    };
+    /** Today's rows. */
+    events: {
+      heading: string;
+      empty: string;
+      emptyHint: string;
+      time: string;
+      kind: string;
+      source: string;
+      corrected: string;
+      madeUp: string;
+      original: string;
+      chainHeading: string;
+    };
+    kind: {
+      clock_in: string;
+      clock_out: string;
+      correction: string;
+    };
+    source: {
+      web: string;
+      correction: string;
+    };
+    /** The pattern behind the day, and why it is that one. */
+    schedule: {
+      heading: string;
+      patternLabel: string;
+      patternNone: string;
+      sourceLabel: string;
+      source: {
+        override: string;
+        department: string;
+        default: string;
+        none: string;
+      };
+      holidayLabel: string;
+      holidayNone: string;
+    };
+    /** What the nightly pass flagged, resolved or not. */
+    anomalies: {
+      heading: string;
+      none: string;
+      resolved: string;
+    };
+    loading: string;
+    error: string;
+    /** What the reader can do about a failed read, beside the retry button. */
+    errorHint: string;
+    retry: string;
+  };
+  attendance: {
+    title: string;
+    intro: string;
+    /** The month being shown, with the month interpolated. */
+    monthOf: string;
+    /** Accessible name of the month navigation landmark. */
+    monthNavLabel: string;
+    previousMonth: string;
+    nextMonth: string;
+    thisMonth: string;
+    /** The month's totals: worked, expected, and how many days were flagged. */
+    summary: {
+      heading: string;
+      worked: string;
+      expected: string;
+      /** Expected hours the API could not compute: no stored snapshot and no pattern. */
+      expectedUnknown: string;
+      /** The figure is a frozen snapshot: the rules that produced it are stored with it. */
+      expectedSnapshot: string;
+      /** The figure is live: nobody has frozen it, so a schedule edited since counts. */
+      expectedLive: string;
+      flaggedLabel: string;
+      /** The count is a number in the value cell, so the sentence carries no inflection. */
+      flaggedNone: string;
+    };
+    month: {
+      /** The section heading above the table; `caption` is the table's own caption. */
+      heading: string;
+      caption: string;
+      date: string;
+      status: string;
+      firstIn: string;
+      lastOut: string;
+      worked: string;
+      expected: string;
+      /** Accessible name of the control that opens one day's record. */
+      open: string;
+      empty: string;
+      emptyHint: string;
+      /** Shown in a cell where the API answered with nothing. */
+      dash: string;
+      /** A day that carries more anomalies than the row can show. */
+      flagged: string;
+    };
+    day: {
+      heading: string;
+      selectPrompt: string;
+      worked: string;
+      expected: string;
+      /** Expected hours the API answered with nothing for: no pattern reaches the day. */
+      expectedUnknown: string;
+      overtime: string;
+      firstIn: string;
+      lastOut: string;
+      /** The chain of a punch: what it was written as, and what restated it. */
+      chainHeading: string;
+      original: string;
+      correction: string;
+      effective: string;
+      supersedes: string;
+      reason: string;
+      madeUp: string;
+      corrected: string;
+      noPunches: string;
+      anomaliesHeading: string;
+      anomaliesNone: string;
+      resolved: string;
+      unresolved: string;
+      detectedAt: string;
+    };
+    /** The correction document: how to file one, and what it becomes. */
+    correction: {
+      heading: string;
+      description: string;
+      dateLabel: string;
+      /** The bound the API enforces: only days that have already happened. */
+      dateHint: string;
+      kindLabel: string;
+      timeLabel: string;
+      timeHint: string;
+      reasonLabel: string;
+      reasonPlaceholder: string;
+      reasonHint: string;
+      submit: string;
+      submitting: string;
+      filed: string;
+      dateRequired: string;
+      timeRequired: string;
+      reasonRequired: string;
+      future: string;
+      /** What the two approvals mean for the punch itself. */
+      note: string;
+      /** Heading of a refusal: the record loaded, the request is what did not go through. */
+      refused: string;
+      listHeading: string;
+      listEmpty: string;
+      listEmptyHint: string;
+      submittedAt: string;
+      appliedAt: string;
+      appliedEvent: string;
+      viewDay: string;
+      /** The state of a document, as words. */
+      state: {
+        draft: string;
+        in_approval: string;
+        approved: string;
+        applied: string;
+        rejected: string;
+        withdrawn: string;
+      };
+      /** Which punch the document is about. */
+      kind: {
+        clock_in: string;
+        clock_out: string;
+      };
+    };
+    export: {
+      label: string;
+      hint: string;
+    };
+    loading: string;
+    error: string;
+    errorHint: string;
+    retry: string;
+  };
+  leave: {
+    title: string;
+    intro: string;
+    /** The year the balances are about, with the year interpolated. */
+    yearOf: string;
+    /**
+     * The configured allowance, with the days interpolated.
+     *
+     * Phrased so the sentence carries no plural agreement: the count sits at the end, where
+     * "1 días" and "1 days" cannot happen — a rule this screen learned the hard way.
+     */
+    allowance: string;
+    balances: {
+      heading: string;
+      /** One balance's figures. */
+      entitled: string;
+      carried: string;
+      used: string;
+      pending: string;
+      remaining: string;
+      /** A year nobody has needed yet: the figures are what the allowance would grant. */
+      projected: string;
+      historyHeading: string;
+      historyEmpty: string;
+      /** The four figures each movement left behind, with both numbers interpolated. */
+      historyRow: string;
+      empty: string;
+      emptyHint: string;
+      noAllowanceType: string;
+      /** The types that have no annual allowance to track, named once. */
+      otherTypes: string;
+    };
+    /** Where a balance's days came from, or went. */
+    entry: {
+      grant: string;
+      carry_over: string;
+      adjustment: string;
+      reserve: string;
+      release: string;
+      consume: string;
+      refund: string;
+    };
+    type: {
+      paid: string;
+      unpaid: string;
+      needsAttachment: string;
+      countsAgainstAnnual: string;
+      noAttachment: string;
+    };
+    request: {
+      heading: string;
+      description: string;
+      typeLabel: string;
+      typePlaceholder: string;
+      startLabel: string;
+      endLabel: string;
+      attachmentLabel: string;
+      attachmentHint: string;
+      attachmentRequired: string;
+      startRequired: string;
+      endRequired: string;
+      endBeforeStart: string;
+      typeRequired: string;
+      /** The step that asks the API to compute the range, before anything is filed. */
+      preview: string;
+      previewing: string;
+      /** What the API answered the range is worth, with the count interpolated. */
+      computed: string;
+      computedSplit: string;
+      /** The draft is written but not filed: the days are not reserved yet. */
+      drafted: string;
+      submit: string;
+      submitting: string;
+      discard: string;
+      filed: string;
+      filedHint: string;
+      /** Why there is no note field, said on screen rather than left to be noticed. */
+      noNote: string;
+      overlapHint: string;
+      /** Heading of a refusal: the page loaded, the request is what did not go through. */
+      refused: string;
+    };
+    list: {
+      heading: string;
+      empty: string;
+      emptyHint: string;
+      /** How many working days the API charged the range. Count last, so it cannot inflect. */
+      days: string;
+      daysSplit: string;
+      period: string;
+      requestedOn: string;
+      attachment: string;
+      attachmentHrOnly: string;
+      withdraw: string;
+      withdrawing: string;
+      withdrawn: string;
+      /** The engine's decisions, one line each. */
+      decisionsHeading: string;
+      decisionsEmpty: string;
+      decisionLine: string;
+      level: string;
+      round: string;
+      comment: string;
+      /** The state of a request, as words. */
+      state: {
+        draft: string;
+        in_approval: string;
+        approved: string;
+        rejected: string;
+        withdrawn: string;
+      };
+      decisions: {
+        approved: string;
+        rejected: string;
+        returned: string;
+        pending: string;
+        skipped: string;
+      };
+    };
+    calendar: {
+      heading: string;
+      description: string;
+      caption: string;
+      previousMonth: string;
+      nextMonth: string;
+      thisMonth: string;
+      /** The month being shown, with the month interpolated. */
+      monthOf: string;
+      monthNavLabel: string;
+      /** Accessible name of one day cell; the date is interpolated. */
+      dayLabel: string;
+      /** A day covered by approved leave. */
+      onLeave: string;
+      empty: string;
+      emptyHint: string;
+      /** The month's approved days, grouped by leave type. */
+      summary: string;
+      summaryEmpty: string;
+      loading: string;
+      error: string;
+    };
+    loading: string;
+    error: string;
+    errorHint: string;
+    retry: string;
   };
   timesheets: {
     title: string;

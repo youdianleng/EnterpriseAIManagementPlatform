@@ -9,8 +9,21 @@
 import { cookies } from "next/headers";
 
 import { ApiError, API_SERVER_BASE_URL } from "@/lib/api/client";
+import type {
+  AttendanceDay,
+  AttendanceRange,
+  CorrectionPage,
+  DayDetail,
+} from "@/lib/api/attendance";
 import type { AuthSession, OwnProfile, PasswordPolicy } from "@/lib/api/auth";
 import type { DocumentPage } from "@/lib/api/documents";
+import type {
+  BalancePage,
+  LeaveCalendarRead,
+  LeaveRequestPage,
+  LeaveType,
+} from "@/lib/api/leave";
+import type { ExpectedHours, MySchedule } from "@/lib/api/schedule";
 import type { NotificationPage, UnreadCount } from "@/lib/api/notifications";
 import type { TimesheetStatusRead, TimesheetWeek } from "@/lib/api/timesheets";
 
@@ -151,6 +164,149 @@ export async function readServerWeekStatus(
 export async function readServerDocuments(limit = 50): Promise<DocumentPage | null> {
   try {
     return await serverRequest<DocumentPage>(`/api/v1/documents?limit=${limit}`);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The caller's own day, for the clock's first paint.
+ *
+ * `businessDate` omitted asks the API for *today in Madrid*, which is the module's
+ * answer rather than the browser's: a laptop in another zone must not decide which
+ * business day a punch belongs to. Null when it cannot be read, which the screen renders
+ * as its error state with a retry — the same shape every other reader here uses.
+ */
+export async function readServerDay(businessDate?: string): Promise<AttendanceDay | null> {
+  try {
+    const query = businessDate ? `?business_date=${encodeURIComponent(businessDate)}` : "";
+    return await serverRequest<AttendanceDay>(`/api/v1/attendance/day${query}`);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The day's punches and what was flagged about it.
+ *
+ * Read on the server as well as the day, because the clock's timer needs the punch the
+ * open shift began with and the day read does not carry it — and a timer that appeared
+ * a second after the state it belongs to would be two answers to one question.
+ */
+export async function readServerPunches(businessDate?: string): Promise<DayDetail | null> {
+  try {
+    const query = businessDate ? `?business_date=${encodeURIComponent(businessDate)}` : "";
+    return await serverRequest<DayDetail>(`/api/v1/attendance/punches${query}`);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Which pattern governs the caller's day, and why it is that one.
+ *
+ * The clock needs this for one distinction: "no working time is expected today" is not a
+ * problem to be reported, and the day read alone cannot tell a holiday from a schedule
+ * nobody configured.
+ */
+export async function readServerMySchedule(onDate?: string): Promise<MySchedule | null> {
+  try {
+    const query = onDate ? `?on_date=${encodeURIComponent(onDate)}` : "";
+    return await serverRequest<MySchedule>(`/api/v1/schedules/mine${query}`);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A month of the caller's days, gaps included, for the attendance record's first paint.
+ *
+ * The range endpoint answers every day in the window — a day nobody worked comes back
+ * marked `absent` rather than missing — which is what lets the month table be complete
+ * without a request per day.
+ */
+export async function readServerRange(
+  fromDate: string,
+  toDate: string,
+): Promise<AttendanceRange | null> {
+  try {
+    const query = new URLSearchParams({ from_date: fromDate, to_date: toDate });
+    return await serverRequest<AttendanceRange>(`/api/v1/attendance/range?${query.toString()}`);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The caller's correction documents, newest first.
+ *
+ * Read on the server with the month so the list's states are on the first paint: a
+ * document waiting for a decision is the reason somebody opens this screen, and a list
+ * that arrives after a round trip makes "nothing is in flight" a claim the page has not
+ * earned yet.
+ */
+export async function readServerCorrections(limit = 50): Promise<CorrectionPage | null> {
+  try {
+    return await serverRequest<CorrectionPage>(`/api/v1/attendance/corrections?limit=${limit}`);
+  } catch {
+    return null;
+  }
+}
+
+/** The month's expected hours, snapshotted or live, for the month summary. */
+export async function readServerExpectedHours(
+  year: number,
+  month: number,
+): Promise<ExpectedHours | null> {
+  try {
+    return await serverRequest<ExpectedHours>(
+      `/api/v1/schedules/expected-hours?year=${year}&month=${month}`,
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The leave catalogue, the balances, the requests and the calendar of one month.
+ *
+ * Four reads because the leave screen is four facts, and each is a different question: the
+ * types the company offers (which decides what the form may ask for), the allowance and how
+ * it was reached, the documents with their states, and which days are already away. All four
+ * are the caller's own — `leave.read_own` is self-only at the kernel, so no role check is
+ * needed to offer the screen.
+ */
+export async function readServerLeaveTypes(): Promise<LeaveType[] | null> {
+  try {
+    return await serverRequest<LeaveType[]>("/api/v1/leave/types");
+  } catch {
+    return null;
+  }
+}
+
+export async function readServerBalances(year: number): Promise<BalancePage | null> {
+  try {
+    return await serverRequest<BalancePage>(`/api/v1/leave/balances?year=${year}`);
+  } catch {
+    return null;
+  }
+}
+
+export async function readServerLeaveRequests(limit = 20): Promise<LeaveRequestPage | null> {
+  try {
+    return await serverRequest<LeaveRequestPage>(`/api/v1/leave/requests?limit=${limit}`);
+  } catch {
+    return null;
+  }
+}
+
+export async function readServerLeaveCalendar(
+  fromDate: string,
+  toDate: string,
+): Promise<LeaveCalendarRead | null> {
+  try {
+    const query = new URLSearchParams({ from_date: fromDate, to_date: toDate });
+    return await serverRequest<LeaveCalendarRead>(`/api/v1/leave/calendar?${query.toString()}`);
   } catch {
     return null;
   }

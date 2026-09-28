@@ -109,3 +109,48 @@
   "员工撤回申请"的接口没有做：申请一旦提出，出口是审批人的退回或拒绝，被拒后另立新文档——
   引擎的 `withdraw` 仍可用，只是本表层没有暴露它。
 
+---
+
+## 前端实现
+
+**新增**：`web/app/[locale]/(app)/attendance/`（`page.tsx` 服务端组件 + `attendance-screen.tsx` 交互 +
+`attendance-day.tsx` 当日面板 + `loading.tsx`）；客户端 `web/lib/api/attendance.ts`（含
+`effectivePunches` / `openShiftStart` / `madridInstant`）。导航条目在 `site-header.tsx`。
+
+**关闭的清单行** —「同日多次更正形成链式记录，界面上能看出完整演变过程」：当日面板把每个打卡画成
+一条**有序链**——先写下的那一行（`Original`），再按写入顺序列出每一次更正，每条都写明
+**「Sustituye a <被它取代的那一时刻>」**（第一条指向原件，第二条指向第一条），最后是
+`effective_at`（`Valor vigente`）。原件一行也不隐藏，因为它正是「追加式」这个保证本身。
+同屏另加：月度视图（`GET /attendance/range` 一次请求给出整月，连没有任何打卡的日子也各占一行）、
+按天更正表单、以及申请列表（状态 + 决定）。
+
+**状态覆盖**
+- 空：某日无打卡 → 「该日没有任何打卡」；整月无记录 → 中性提示 + 换月/回本月。
+- 加载：`loading.tsx` 骨架屏。
+- 错误：读失败 → 标题 + 重试；**写被拒 → 自己的标题**（「No se pudo enviar la solicitud」），
+  不用「记录加载失败」——记录是加载成功的，被拒的是这次申请。两个标题分开是看图后改的。
+- 权限拒绝：写/读被内核拒绝时显示目录里的双语句子；不可能出现的入口（改他人打卡）界面上不提供。
+- 设计态：异常日（`missing_out` / `incomplete`）的**名字**从「异常日」逐日读取（API 只按天提供异常，
+  且异常自带检测与解决时间），月度表把它们显示在状态徽章旁；已解决的异常显示「Resuelta」。
+
+**API 调用**：`GET /attendance/range`（整月）、`GET /attendance/punches?business_date=`（当日详情 +
+链 + 异常；仅对 `missing_out` / `incomplete` 两态逐日补读，数量由当月问题数决定）、
+`GET /attendance/corrections`（申请列表）、`GET /schedules/expected-hours`（月度预估值）、
+`POST /attendance/corrections` → `POST /{id}/submit`（两次调用对应用户的一次「发送」）、
+`GET /attendance/export`（CSV 下载链接）。
+
+**§8.2 自查**：全部通过。看图后改了三处：320px 下状态徽章在「Sin fichajes」「Jornada cerrada」
+中间断行，改为徽章 `whitespace-nowrap` 且窄屏只保留「Day + State」两列（分钟数在下方当日面板里，
+比硬挤六列更好读，§7 的「有意识地降级」）；「1 días」的西语复数错误，改成计数单列（`Días con
+incidencias: 1`）；月度面板的导航标签曾把「Estados」当标签用。
+
+**验证**：`npx tsc --noEmit` 干净；`npx next build` 成功（`/[locale]/attendance` 6.13 kB）；
+`npm run visual` 全绿，其中本屏 24 条断言，截图 `attendance-chain-es.png`、`attendance-form-es.png`、
+`attendance-320-es.png`、`320/768/1280-{es,en}-attendance.png`。
+
+**没做的**：经理视角（读下属的更正）**未实现**——`attendance.read_report` 在目录里，但 API 没有
+「我的下属」列表接口，`GET /attendance/corrections?employee_id=` 只有拿到对方 UUID 才可用；
+要显示它就必须在客户端自己判断角色与汇报关系，而任务要求「按 API 返回的来，不在客户端做角色检查」，
+所以留空。导出文件故意不含异常与更正链（票据 24 的实现说明），界面上的「链」只在按天明细里看。
+
+

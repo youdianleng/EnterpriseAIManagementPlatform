@@ -32,7 +32,7 @@ export function localeTag(locale: Locale): string {
  *    in UTC and a browser in Madrid would disagree about the hour, and React
  *    reports that as a hydration mismatch rather than as a wrong clock.
  */
-const DISPLAY_TIME_ZONE = "Europe/Madrid";
+export const DISPLAY_TIME_ZONE = "Europe/Madrid";
 
 function numberFormatter(locale: Locale, options: Intl.NumberFormatOptions): Intl.NumberFormat {
   const key = `${localeTag(locale)}:${JSON.stringify(options)}`;
@@ -130,6 +130,63 @@ export function formatDateTime(value: Date | string, locale: Locale = DEFAULT_LO
     minute: "2-digit",
     timeZone: DISPLAY_TIME_ZONE,
   }).format(date);
+}
+
+/**
+ * The time of day, for a record whose date is already on the page.
+ *
+ * A day's punch list is a column of hours, and repeating the date on every row
+ * would push the one fact that differs — the hour — out of the column. Rendered in
+ * the product's zone like every other instant, so two renderers cannot disagree.
+ */
+export function formatTime(value: Date | string, locale: Locale = DEFAULT_LOCALE): string {
+  const date = typeof value === "string" ? new Date(value) : value;
+  return dateFormatter(locale, {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: DISPLAY_TIME_ZONE,
+  }).format(date);
+}
+
+/** "marzo de 2026" / "March 2026" — a month heading, not a table cell. */
+export function formatMonth(value: Date | string, locale: Locale = DEFAULT_LOCALE): string {
+  const date = typeof value === "string" ? new Date(value) : value;
+  return dateFormatter(locale, {
+    month: "long",
+    year: "numeric",
+    timeZone: DISPLAY_TIME_ZONE,
+  }).format(date);
+}
+
+/** "lun" / "Mon" — a calendar's column header, where only the weekday name fits. */
+export function formatWeekdayShort(value: Date | string, locale: Locale = DEFAULT_LOCALE): string {
+  const date = typeof value === "string" ? new Date(value) : value;
+  return dateFormatter(locale, {
+    weekday: "short",
+    timeZone: DISPLAY_TIME_ZONE,
+  }).format(date);
+}
+
+/**
+ * A running stopwatch: `H:MM:SS`, for the one duration that is still counting.
+ *
+ * `formatDuration` is the right shape for every finished duration in this system,
+ * because minutes are the unit the record is kept in. A *timer* is the exception:
+ * "7 h 30 min" does not move for a minute, and the reader pressing "clock out" is
+ * watching exactly that number. Hours are not padded and minutes and seconds are,
+ * so the digits do not jump as the value grows, and the call site pairs it with
+ * `tabular` numerals (§2.3) so the column does not twitch once a second.
+ */
+export function formatElapsed(seconds: number, locale: Locale = DEFAULT_LOCALE): string {
+  const total = Number.isFinite(seconds) ? Math.max(0, Math.trunc(seconds)) : 0;
+  const hours = Math.trunc(total / 3600);
+  const minutes = Math.trunc((total % 3600) / 60);
+  const rest = total % 60;
+  const two = (value: number) => formatNumber(value, locale, {
+    minimumIntegerDigits: 2,
+    useGrouping: false,
+  });
+  return `${hours}:${two(minutes)}:${two(rest)}`;
 }
 
 /** Durations are shown as "7 h 30 min" / "7 h 30 min" — never as "7.5 h". */

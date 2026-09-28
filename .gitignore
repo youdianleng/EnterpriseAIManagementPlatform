@@ -62,6 +62,10 @@ next-env.d.ts
 # evidence a UI change was actually looked at is the report, not the images.
 .scratch/visual/
 .scratch/**/*.png
+# Ad-hoc shots taken while working on a screen, from inside the web app. Named
+# separately because the two patterns above are anchored at the repository root,
+# so `web/.scratch/` would otherwise be tracked.
+web/.scratch/
 
 # Unit test / coverage reports
 htmlcov/

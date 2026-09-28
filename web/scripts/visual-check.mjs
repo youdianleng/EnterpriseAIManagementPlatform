@@ -28,7 +28,17 @@ const OUT = join(HERE, "..", "..", ".scratch", "visual");
 const API = process.env.EAM_API_URL ?? "http://localhost:8000";
 
 const LOCALES = ["es", "en"];
-const PATHS = ["", "/style-guide", "/notifications", "/timesheets", "/documents", "/login"];
+const PATHS = [
+  "",
+  "/style-guide",
+  "/notifications",
+  "/clock",
+  "/attendance",
+  "/leave",
+  "/timesheets",
+  "/documents",
+  "/login",
+];
 const VIEWPORTS = [
   { name: "320", width: 320, height: 720 },
   // 375 as well as 320, because the ticket names 375 explicitly and the timesheet grid
@@ -639,6 +649,701 @@ async function checkLockAndCorrection(browser, sessionCookie, session) {
   await context.close();
 }
 
+/**
+ * The clock (ticket 21).
+ *
+ * `PATHS` already covers its headings, overflow, control names and both languages at
+ * every width. What is asserted here is the ticket's own line — *the employee's state is
+ * visible in the interface, live: working and counting, clocked out, or not clocked in
+ * yet* — and each assertion is a rule from the design system rather than a preference:
+ *
+ *   - the state is a **word beside an icon**, not a colour (§5), and it is the API's own
+ *     derived status rather than something the screen worked out (`data-day-status`);
+ *   - while a shift is open the elapsed time **ticks** — not "is displayed", which a
+ *     frozen string would also satisfy;
+ *   - clocking out goes through a real `<dialog>` whose **Cancel** leaves the day
+ *     untouched, because a punch cannot be edited afterwards;
+ *   - a success is confirmed in words (§6.2: the reader closes the page immediately, so
+ *     the state change and the notice have to be there before they do);
+ *   - the punches list names its source, so a made-up punch is never mistaken for one
+ *     somebody clocked;
+ *   - and the primary target is at least 44px tall at 320px (§5, touch).
+ *
+ * **Rerun-safe on purpose.** The clock is always *today*, so the first run drives
+ * `absent → working → ok` and a second run finds the day already closed. Rather than
+ * failing on its own second run, the sequence is entered when a clock-in button is
+ * offered and the closed-day invariants are asserted when it is not — and the run says
+ * which of the two it did.
+ */
+async function checkClock(browser, sessionCookie) {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await context.addCookies([sessionCookie]);
+  const page = await context.newPage();
+
+  const state = page.locator('[data-testid="clock-state"]');
+  const timer = page.locator('[data-testid="clock-elapsed"]');
+  const punches = page.locator('[data-testid="clock-punches"]');
+
+  await page.goto(`${BASE}/es/clock`, { waitUntil: "networkidle" });
+  await state.waitFor({ state: "visible", timeout: 30000 });
+
+  // 1. A designed state, in words, from the API's own derivation.
+  const status = await state.getAttribute("data-day-status");
+  expect(
+    ["working", "ok", "absent", "missing_out", "incomplete", "holiday", "non_working"].includes(
+      status ?? "",
+    ),
+    `clock: the day reports one of the derived statuses (${status})`,
+  );
+  const stateText = (await state.innerText()).replace(/\s+/g, " ");
+  const stateWords = {
+    absent: /Todavía no has fichado/,
+    working: /Jornada abierta/,
+    ok: /Jornada cerrada/,
+  };
+  expect(
+    stateWords[status]?.test(stateText) ?? true,
+    `clock: the state is stated in words for "${status}" ("${stateText.slice(0, 90)}")`,
+  );
+  // The badge is icon + word: the icon is decorative, so the word is what carries it.
+  expect(
+    (await state.locator("svg").count()) >= 1,
+    "clock: the state badge carries an icon as well as its word",
+  );
+
+  const clockIn = page.getByRole("button", { name: /^Fichar entrada$/i });
+  const clockOut = page.getByRole("button", { name: /^Fichar salida$/i });
+
+  if ((await clockIn.count()) > 0) {
+    // The empty state is a designed state, not a blank table (§4.3) — but only a day with
+    // nothing on it has one. A closed day also offers "clock in" (a second shift is real),
+    // so the empty-state wording is asserted against the table's absence instead of the
+    // button's presence.
+    if ((await punches.count()) === 0) {
+      expect(
+        /Todavía no hay fichajes hoy/.test(
+          (await page.locator("main").innerText()).replace(/\s+/g, " "),
+        ),
+        "clock: a day with no punches says so and says what to do",
+      );
+    }
+
+    await clockIn.click();
+    await page.waitForFunction(
+      () => document.querySelector('[data-testid="clock-state"]')?.dataset.dayStatus === "working",
+      undefined,
+      { timeout: 20000 },
+    );
+    ok("clock: clocking in moves the screen to the open-shift state");
+
+    // §6.2: the reader closes the page immediately, so the confirmation has to be there.
+    // Scoped to `main`, because the shell's unread badge is a `role="status"` too and its
+    // number would otherwise be read as the confirmation.
+    const notice = (
+      await page.locator('main [role="status"]').first().innerText()
+    ).replace(/\s+/g, " ");
+    expect(
+      /Entrada fichada a las/i.test(notice),
+      `clock: clocking in is confirmed in words ("${notice.slice(0, 80)}")`,
+    );
+  } else {
+    console.log(
+      `[note] clock: the day is already "${status}" — the punch sequence is skipped (it is always today)`,
+    );
+  }
+
+  // 2. While the shift is open the elapsed time has to be *moving*.
+  if ((await page.locator('[data-testid="clock-state"][data-day-status="working"]').count()) > 0) {
+    await timer.waitFor({ state: "visible", timeout: 10000 });
+    const first = await timer.innerText();
+    const ticked = await page
+      .waitForFunction(
+        (previous) => {
+          const element = document.querySelector('[data-testid="clock-elapsed"]');
+          return element !== null && element.textContent.trim() !== previous;
+        },
+        first,
+        { timeout: 6000 },
+      )
+      .then(() => true)
+      .catch(() => false);
+    expect(ticked, `clock: the open shift's timer ticks (was "${first}")`);
+    expect(
+      /^\d+:\d{2}:\d{2}$/.test((await timer.innerText()).trim()),
+      `clock: the timer is H:MM:SS, not a decimal ("${await timer.innerText()}")`,
+    );
+    await page.screenshot({ path: join(OUT, "clock-working-es.png"), fullPage: true });
+
+    // 3. Clocking out is confirmed, and cancelling it changes nothing.
+    await clockOut.click();
+    const dialog = page.locator("dialog[open]");
+    await dialog.waitFor({ state: "visible", timeout: 5000 });
+    const dialogText = (await dialog.innerText()).replace(/\s+/g, " ");
+    expect(
+      /Se registrará tu salida a las/i.test(dialogText),
+      `clock: the confirmation names the time it will record ("${dialogText.slice(0, 100)}")`,
+    );
+    expect(
+      (await dialog.getAttribute("aria-labelledby")) !== null,
+      "clock: the confirmation dialog is labelled",
+    );
+    await page.screenshot({ path: join(OUT, "clock-confirm-es.png") });
+    await page.getByRole("button", { name: /^Cancelar$/ }).click();
+    await dialog.waitFor({ state: "detached", timeout: 5000 });
+    expect(
+      (await page.locator('[data-testid="clock-state"][data-day-status="working"]').count()) === 1,
+      "clock: cancelling the confirmation leaves the day open",
+    );
+
+    await clockOut.click();
+    await page.locator("dialog[open]").waitFor({ state: "visible", timeout: 5000 });
+    await page.getByRole("button", { name: /^Sí, fichar la salida$/ }).click();
+    await page.waitForFunction(
+      () => document.querySelector('[data-testid="clock-state"]')?.dataset.dayStatus === "ok",
+      undefined,
+      { timeout: 20000 },
+    );
+    ok("clock: clocking out closes the day");
+  }
+
+  // 4. The closed day: both punches on screen, with their source named.
+  const closed = (await page.locator('[data-testid="clock-state"]').getAttribute("data-day-status")) === "ok";
+  if (closed && (await punches.count()) > 0) {
+    const rows = await punches.locator("tbody tr").count();
+    expect(rows >= 2, `clock: a closed day lists its entry and exit (${rows} rows)`);
+    const listed = (await punches.innerText()).replace(/\s+/g, " ");
+    expect(/Fichado en la web/.test(listed), `clock: the source of a punch is named ("${listed.slice(0, 90)}")`);
+    expect(
+      /Salida/.test(listed) && /Entrada/.test(listed),
+      "clock: the kind of each punch is named",
+    );
+    const worked = (await page.locator('[data-testid="clock-worked"]').innerText()).trim();
+    expect(
+      /\d+ h/.test(worked) || /\d+ min/.test(worked),
+      `clock: the day's worked time is a duration, not a decimal ("${worked}")`,
+    );
+  }
+  await page.screenshot({ path: join(OUT, "clock-closed-es.png"), fullPage: true });
+
+  // 5. English: the same screen in the other language.
+  await page.goto(`${BASE}/en/clock`, { waitUntil: "networkidle" });
+  await state.waitFor({ state: "visible", timeout: 20000 });
+  const english = (await page.locator("main").innerText()).replace(/\s+/g, " ");
+  expect(
+    /(Shift open|Shift closed|You have not clocked in yet)/.test(english),
+    "clock en: the state is stated in English",
+  );
+  expect(
+    !/Jornada (abierta|cerrada)/.test(english),
+    "clock en: no Spanish leaked into the English screen",
+  );
+  await page.screenshot({ path: join(OUT, "clock-en.png"), fullPage: true });
+
+  // 6. 320px: the primary target is still a touch target (§5), and nothing overflows.
+  await page.setViewportSize({ width: 320, height: 720 });
+  await page.goto(`${BASE}/es/clock`, { waitUntil: "networkidle" });
+  const target = page.locator('[data-testid="clock-state"] a, [data-testid="clock-state"] button').first();
+  if ((await target.count()) > 0) {
+    const box = await target.boundingBox();
+    expect(
+      box !== null && box.height >= 44,
+      `clock 320px: the primary target is at least 44px tall (${box ? Math.round(box.height) : "none"})`,
+    );
+  }
+  await page.screenshot({ path: join(OUT, "clock-320-es.png"), fullPage: true });
+
+  await context.close();
+}
+
+/**
+ * The attendance record and the correction flow (ticket 24).
+ *
+ * `PATHS` already covers the screen's headings, overflow, control names and both languages
+ * at every width. What is asserted here is the ticket's own lines:
+ *
+ *   - **the month is complete** — every day of the month is a row, the days nobody worked
+ *     included, because a record that listed only the days somebody punched would answer a
+ *     different question;
+ *   - **a flagged day says what was flagged** — the status word is the API's derivation, and
+ *     the anomaly names beside it come from the day's own record;
+ *   - **the chain of same-day corrections is visible, each link naming what it supersedes**
+ *     — this is the checklist's explicit line and the reason the panel draws an ordered
+ *     evolution rather than one "current value";
+ *   - **the correction form is a form** — labelled fields, a refusal that names the missing
+ *     piece without costing a round trip, and a filing whose outcome is reported on screen
+ *     whether it is accepted or refused;
+ *   - and **the record can leave the building**, as the ticket's export line asks.
+ *
+ * Rerun-safe: a day that already has a correction in flight is refused by the API with its
+ * own bilingual code, and the check asserts the refusal is rendered rather than failing on
+ * correct behaviour — the same convention `checkDocuments` uses for a duplicate upload.
+ */
+async function checkAttendance(browser, sessionCookie, session) {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await context.addCookies([sessionCookie]);
+  const page = await context.newPage();
+
+  const table = page.locator('[data-testid="attendance-month-table"]');
+  const panel = page.locator("#attendance-day");
+  const chain = page.locator('[data-testid="attendance-chain"]');
+
+  await page.goto(`${BASE}/es/attendance`, { waitUntil: "networkidle" });
+  await table.waitFor({ state: "visible", timeout: 30000 });
+
+  // 1. The month is complete: one row per calendar day.
+  const rows = await table.locator("tbody tr").count();
+  const monthLabel = (await page.locator('[data-testid="attendance-month"]').innerText()).trim();
+  expect(rows >= 28 && rows <= 31, `attendance: every day of the month is a row (${rows} for "${monthLabel}")`);
+
+  const statuses = await table.locator("tbody tr td:nth-child(2)").allInnerTexts();
+  expect(
+    statuses.length === rows && statuses.every((text) => text.trim().length > 0),
+    "attendance: every day states its state in words",
+  );
+  const monthText = (await table.innerText()).replace(/\s+/g, " ");
+  expect(
+    /(Jornada cerrada|Sin fichajes|Día no laborable)/.test(monthText),
+    `attendance: the month shows worked and non-working days ("${monthText.slice(0, 120)}")`,
+  );
+
+  // 2. A flagged day carries the anomaly that was found on it, not just its status word.
+  //
+  // The markers are fetched a round trip *after* the month's first paint (the API serves
+  // anomalies one day at a time), so this waits for one rather than sampling the page the
+  // moment it settles — otherwise the check reports "nothing was flagged" for a month that
+  // was still loading its flags.
+  const flagged = page.locator('[data-testid="attendance-day-flags"]');
+  const anyFlagged = await flagged
+    .first()
+    .waitFor({ state: "visible", timeout: 15000 })
+    .then(() => true)
+    .catch(() => false);
+  if (anyFlagged) {
+    const text = (await flagged.first().innerText()).replace(/\s+/g, " ");
+    expect(text.length > 0, `attendance: a flagged day names its anomaly ("${text}")`);
+    const row = flagged.first().locator("xpath=ancestor::tr");
+    expect(
+      /Falta la salida|Fichaje incompleto/.test(await row.innerText()),
+      "attendance: and the row's state agrees that something was flagged",
+    );
+  } else {
+    console.log("[note] attendance: no day carries an anomaly — the flag checks are skipped");
+  }
+
+  // 3. The chain: a corrected punch shows its original, its corrections and the value in
+  //    force, each correction naming the link it replaced. Found through the API rather
+  //    than by guessing which day the fixture happened to correct.
+  const applied = await session.get(`${API}/api/v1/attendance/corrections?state=applied&limit=1`);
+  const appliedBody = applied.ok() ? await applied.json() : { items: [] };
+  const correctedDay = appliedBody.items?.[0]?.business_date;
+  if (correctedDay) {
+    await page.goto(`${BASE}/es/attendance?month=${correctedDay.slice(0, 7)}&day=${correctedDay}`, {
+      waitUntil: "networkidle",
+    });
+    await chain.first().waitFor({ state: "visible", timeout: 20000 });
+    // Every chain in the panel, not just the first: the day's clock-in has no correction and
+    // the clock-out does, so reading `.first()` would describe the wrong punch.
+    const flat = (await chain.allInnerTexts()).join(" ").replace(/\s+/g, " ");
+    expect(/Original/.test(flat), `attendance: the chain shows the original row ("${flat.slice(0, 120)}")`);
+    expect(/Corrección/.test(flat), "attendance: the chain shows the correction that restated it");
+    expect(
+      /Sustituye a/.test(flat),
+      `attendance: each correction names what it supersedes ("${flat.slice(0, 160)}")`,
+    );
+    const effective = (
+      await page.locator('[data-testid="attendance-punch-effective"]').first().innerText()
+    ).trim();
+    expect(
+      /Valor vigente:/.test(effective),
+      `attendance: the value in force is stated ("${effective}")`,
+    );
+    expect(
+      (await page.locator('[data-testid="attendance-day-anomalies"]').count()) > 0,
+      "attendance: the corrected day still lists the anomaly it resolved",
+    );
+    await page.screenshot({ path: join(OUT, "attendance-chain-es.png"), fullPage: true });
+  } else {
+    console.log("[note] attendance: no applied correction exists — the chain checks are skipped");
+  }
+
+  // 4. The form: labelled fields, a local refusal, and a filing that reports its outcome.
+  await page.goto(`${BASE}/es/attendance`, { waitUntil: "networkidle" });
+  const correctionForm = page.locator("section:has(#attendance-correction-heading) form").first();
+  await correctionForm.waitFor({ state: "visible", timeout: 20000 });
+
+  const dateField = correctionForm.locator('input[type="date"]');
+  const timeField = correctionForm.locator('input[type="time"]');
+  expect((await dateField.count()) === 1, "attendance: the form has a date field");
+  expect((await timeField.count()) === 1, "attendance: the form has a time field");
+  expect(
+    (await correctionForm.locator("select").count()) === 1,
+    "attendance: the form has a kind selector",
+  );
+  expect(
+    (await correctionForm.locator("textarea").count()) === 1,
+    "attendance: the form has a reason textarea",
+  );
+  expect(
+    (await correctionForm.locator("label").count()) >= 4,
+    "attendance: every form control carries a label",
+  );
+  expect(
+    (await dateField.getAttribute("max")) !== null,
+    "attendance: the date field states the bound the API enforces",
+  );
+
+  // An empty reason must be refused on screen, with the remedy, and without a round trip.
+  await correctionForm.locator("textarea").fill("");
+  await correctionForm.getByRole("button", { name: /^Enviar la solicitud$/ }).click();
+  await page.waitForTimeout(150);
+  const refusedLocally = (await correctionForm.innerText()).replace(/\s+/g, " ");
+  expect(
+    /Explica por qué hay que corregir/i.test(refusedLocally),
+    `attendance: an empty reason is refused on screen ("${refusedLocally.slice(-140)}")`,
+  );
+
+  // A real filing. Either it is accepted — and the list gains a document waiting for a
+  // decision — or the API refuses it because one is already open for that day, which the
+  // screen has to render as a sentence in the reader's language.
+  await correctionForm.locator("textarea").fill("Verificacion automatica de la interfaz.");
+  await correctionForm.getByRole("button", { name: /^Enviar la solicitud$/ }).click();
+  // Scoped to `main`: the shell's unread badge carries `role="status"` as well.
+  const outcome = await Promise.race([
+    page
+      .locator('main [role="status"]')
+      .first()
+      .waitFor({ state: "visible", timeout: 20000 })
+      .then(() => "status"),
+    page
+      .locator('main [role="alert"]')
+      .first()
+      .waitFor({ state: "visible", timeout: 20000 })
+      .then(() => "alert"),
+  ]).catch(() => "none");
+  expect(outcome !== "none", "attendance: filing a correction reports its outcome on screen");
+  if (outcome === "status") {
+    const notice = (
+      await page.locator('main [role="status"]').first().innerText()
+    ).replace(/\s+/g, " ");
+    expect(
+      /Solicitud enviada/i.test(notice),
+      `attendance: an accepted filing says so ("${notice.slice(0, 90)}")`,
+    );
+    const list = page.locator('[data-testid="attendance-corrections"] > li');
+    await page.waitForFunction(
+      () => document.querySelectorAll('[data-testid="attendance-corrections"] > li').length > 0,
+      undefined,
+      { timeout: 20000 },
+    );
+    ok(`attendance: the filed request appears in the list (${await list.count()})`);
+  } else {
+    const alert = (
+      await page.locator('main [role="alert"]').first().innerText()
+    ).replace(/\s+/g, " ");
+    expect(
+      alert.length > 20 && !/errors\./.test(alert),
+      `attendance: a refused filing is a sentence, not a code ("${alert.slice(0, 140)}")`,
+    );
+  }
+  await page.screenshot({ path: join(OUT, "attendance-form-es.png"), fullPage: true });
+
+  // 5. The export: the record leaves the building as the file the API renders.
+  const exportLink = page.locator('a[href*="/attendance/export"]').first();
+  expect((await exportLink.count()) === 1, "attendance: the month can be exported");
+  if ((await exportLink.count()) === 1) {
+    const href = (await exportLink.getAttribute("href")) ?? "";
+    const from = /from_date=(\d{4}-\d{2}-\d{2})/.exec(href)?.[1];
+    const to = /to_date=(\d{4}-\d{2}-\d{2})/.exec(href)?.[1];
+    expect(
+      Boolean(from && to && from.endsWith("-01")),
+      `attendance: the export covers the month on screen ("${href}")`,
+    );
+    const file = await session.get(`${API}/api/v1/attendance/export?from_date=${from}&to_date=${to}`);
+    expect(file.ok(), `attendance: the export endpoint answers (${file.status()})`);
+    const csv = await file.text();
+    expect(
+      /empleado|employee/.test(csv.split("\n")[0] ?? ""),
+      "attendance: the file has the documented bilingual header",
+    );
+  }
+
+  // 6. English: the same screen in the other language.
+  await page.goto(`${BASE}/en/attendance`, { waitUntil: "networkidle" });
+  await table.waitFor({ state: "visible", timeout: 20000 });
+  const english = (await page.locator("main").innerText()).replace(/\s+/g, " ");
+  expect(
+    /(Shift closed|No punches|Non-working day)/.test(english),
+    "attendance en: the states are in English",
+  );
+  expect(
+    !/Jornada cerrada|Sin fichajes|Día no laborable/.test(english),
+    "attendance en: no Spanish leaked into the English screen",
+  );
+  expect(
+    /Request a correction/.test(english),
+    "attendance en: the correction form is in English",
+  );
+  await page.screenshot({ path: join(OUT, "attendance-en.png"), fullPage: true });
+
+  // 7. Narrow: the table drops the minutes column rather than scrolling sideways or
+  //    squeezing a state badge onto two lines (§3.1, §7).
+  await page.setViewportSize({ width: 320, height: 720 });
+  await page.goto(`${BASE}/es/attendance`, { waitUntil: "networkidle" });
+  await table.waitFor({ state: "visible", timeout: 20000 });
+  const visibleColumns = await table.locator("thead th").evaluateAll(
+    (cells) => cells.filter((cell) => cell.offsetParent !== null).length,
+  );
+  expect(
+    visibleColumns === 2,
+    `attendance 320px: the day and its state are shown, the minutes are dropped (${visibleColumns} columns)`,
+  );
+  const wrappedBadges = await table
+    .locator("tbody tr td:nth-child(2) span")
+    .evaluateAll((badges) => badges.filter((badge) => badge.getClientRects().length > 1).length);
+  expect(
+    wrappedBadges === 0,
+    `attendance 320px: no state badge is broken over two lines (${wrappedBadges} wrapped)`,
+  );
+  await page.screenshot({ path: join(OUT, "attendance-320-es.png"), fullPage: true });
+
+  await context.close();
+}
+
+/**
+ * Leave: the balances, the request form and the calendar (ticket 25).
+ *
+ * `PATHS` already covers the screen's headings, overflow, control names and both languages at
+ * every width. What is asserted here is the ticket's own lines:
+ *
+ *   - **the allowance and what is left, per type** — the four figures the API keeps, with the
+ *     configured allowance travelling beside them so "22 of what" is answerable;
+ *   - **the working-day count is the API's** — the form drafts first and shows the number the
+ *     server computed for the range; the check never does the arithmetic itself, it compares
+ *     what is on screen with what the API answered for the same dates;
+ *   - **the request's status and the decision** — a filed request shows its state in words and
+ *     the engine's decisions, level by level, with the approver's comment;
+ *   - **the calendar shows the approved absences**, weekends included;
+ *   - and **there is no free-text field**, which is the design's rule rather than an omission:
+ *     the request body refuses one, so the screen must not offer one.
+ *
+ * Rerun-safe: the filing is attempted on a range the fixture has not used, and a refusal —
+ * which is what an overlapping range produces — is asserted as a rendered sentence rather
+ * than allowed to fail the run.
+ */
+async function checkLeave(browser, sessionCookie, session) {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await context.addCookies([sessionCookie]);
+  const page = await context.newPage();
+
+  const balances = page.locator('[data-testid="leave-balances"]');
+  const form = page.locator("section:has(#leave-request-heading) form").first();
+  const requests = page.locator('[data-testid="leave-requests"]');
+
+  await page.goto(`${BASE}/es/leave`, { waitUntil: "networkidle" });
+  await balances.waitFor({ state: "visible", timeout: 30000 });
+
+  // 1. The allowance, and what is left of it.
+  const balanceText = (await balances.innerText()).replace(/\s+/g, " ");
+  for (const label of ["Reconocidos", "Disfrutados", "En trámite", "Disponibles"]) {
+    expect(balanceText.includes(label), `leave: the balance shows "${label}" ("${balanceText.slice(0, 90)}")`);
+  }
+  const allowance = (await page.locator("main h1").locator("xpath=../p[2]").innerText()).replace(
+    /\s+/g,
+    " ",
+  );
+  expect(
+    /Cupo anual/.test(allowance),
+    `leave: the configured allowance is stated ("${allowance}")`,
+  );
+  expect(
+    /Cupo anual/.test(allowance) && /\d/.test(allowance),
+    "leave: and it carries the number the API configured",
+  );
+
+  // 2. The form asks for a type and two dates, and offers no free text on the request itself.
+  expect(
+    (await form.locator("select").count()) === 1,
+    "leave: the form offers the leave-type catalogue",
+  );
+  expect(
+    (await form.locator('input[type="date"]').count()) === 2,
+    "leave: the form asks for a start and an end date",
+  );
+  expect(
+    (await form.locator("textarea").count()) === 0,
+    "leave: the form offers no note field, because the API refuses one",
+  );
+  expect(
+    (await form.locator("label").count()) >= 3,
+    "leave: every form control carries a label",
+  );
+
+  // An empty submission is refused on screen, with the remedy.
+  await form.getByRole("button", { name: /^Calcular los días$/ }).click();
+  await page.waitForTimeout(150);
+  expect(
+    /Elige el tipo de permiso/i.test((await form.innerText()).replace(/\s+/g, " ")),
+    "leave: an empty form is refused on screen",
+  );
+
+  // 3. The draft: the working-day count is the API's, and the screen shows it before filing.
+  //
+  // A range the fixture has not used, so the draft succeeds on a first run; a second run of
+  // this script is refused as an overlap, which is asserted below rather than treated as a
+  // failure.
+  const stamp = new Date();
+  const start = isoDay(new Date(stamp.getFullYear(), stamp.getMonth() + 3, 9));
+  const end = isoDay(new Date(stamp.getFullYear(), stamp.getMonth() + 3, 11));
+  await form.locator("select").selectOption("annual");
+  await form.locator('input[type="date"]').first().fill(start);
+  await form.locator('input[type="date"]').nth(1).fill(end);
+  await form.getByRole("button", { name: /^Calcular los días$/ }).click();
+
+  const draft = page.locator('[data-testid="leave-draft"]');
+  const drafted = await draft
+    .waitFor({ state: "visible", timeout: 20000 })
+    .then(() => true)
+    .catch(() => false);
+
+  if (drafted) {
+    const shown = (await draft.innerText()).replace(/\s+/g, " ");
+    const computed = Number(/Días laborables de ese periodo: (\d+)/.exec(shown)?.[1] ?? NaN);
+    expect(
+      Number.isFinite(computed),
+      `leave: the API's working-day count is shown ("${shown.slice(0, 90)}")`,
+    );
+    await page.screenshot({ path: join(OUT, "leave-draft-es.png"), fullPage: true });
+
+    // Filing it: the state moves, and the list says so.
+    await form.getByRole("button", { name: /^Enviar a aprobación$/ }).click();
+    await page.waitForFunction(() => /Solicitud enviada/.test(document.body.innerText), undefined, {
+      timeout: 20000,
+    });
+    ok("leave: the request was filed and the screen confirmed it");
+
+    // The same question asked of the API about the document that now exists: the number on
+    // screen has to be the server's, not a count this check — or the browser — worked out.
+    const listed = await session.get(`${API}/api/v1/leave/requests?limit=20`);
+    if (listed.ok()) {
+      const body = await listed.json();
+      const filed = (body.items ?? []).find((item) => item.start_date === start);
+      if (filed) {
+        expect(
+          filed.business_days_count === computed,
+          `leave: the count on screen is the API's (${computed} shown, ${filed.business_days_count} stored)`,
+        );
+      } else {
+        console.log("[note] leave: the filed request is not in the list yet — count unchecked");
+      }
+    }
+  } else {
+    // A refusal is a designed state here too: an overlapping request is refused by the API,
+    // and what the reader gets has to be a sentence about the range rather than a code.
+    const refused = (await form.innerText()).replace(/\s+/g, " ");
+    expect(
+      refused.length > 40 && !/errors\.|ERR_/.test(refused),
+      `leave: a refused range is explained in words ("${refused.slice(-140)}")`,
+    );
+    console.log("[note] leave: the draft was refused (an overlapping request exists) — filing skipped");
+  }
+
+  // 4. The list: states in words, the API's day count, and the engine's decisions.
+  await page.goto(`${BASE}/es/leave`, { waitUntil: "networkidle" });
+  // Direct children only: each request holds a nested list of the engine's decisions, and a
+  // bare `li` would count those as requests.
+  const requestRows = requests.locator("> li");
+  if ((await requests.count()) > 0) {
+    const states = await requestRows.evaluateAll((rows) =>
+      rows.map((row) => row.getAttribute("data-leave-state") ?? ""),
+    );
+    expect(
+      states.length > 0 && states.every((state) => state.length > 0),
+      `leave: every request carries its state (${states.join(", ")})`,
+    );
+    const listText = (await requests.innerText()).replace(/\s+/g, " ");
+    expect(
+      /Días laborables: \d+/.test(listText),
+      `leave: the list shows the API's day count ("${listText.slice(0, 120)}")`,
+    );
+    expect(
+      /(Borrador sin enviar|Pendiente de aprobación|Aprobada|Rechazada|Retirada)/.test(listText),
+      "leave: the states are words, not colours",
+    );
+    // The decision, with the level it was taken at and the approver's own words. The
+    // decisions are read after the first paint (the list endpoint does not carry them), so
+    // this waits for them rather than sampling the page the instant it settles.
+    const decided = await page
+      .waitForFunction(() => /Nivel \d · ronda \d/.test(document.body.innerText), undefined, {
+        timeout: 20000,
+      })
+      .then(() => true)
+      .catch(() => false);
+    if (decided) {
+      const filed = requestRows.filter({ hasText: /Nivel \d/ }).first();
+      const decisions = (await filed.innerText()).replace(/\s+/g, " ");
+      expect(
+        /Nivel \d · ronda \d/.test(decisions) && /(Aprobada|Rechazada|Devuelta)/.test(decisions),
+        `leave: a filed request states the decision and its level ("${decisions.slice(0, 160)}")`,
+      );
+    } else {
+      console.log("[note] leave: no request has been decided — the decision checks are skipped");
+    }
+    await page.screenshot({ path: join(OUT, "leave-requests-es.png"), fullPage: true });
+  } else {
+    console.log("[note] leave: no leave requests exist — the list checks are skipped");
+  }
+
+  // 5. The calendar: the approved absence, on every calendar day it covers.
+  const approved = await session.get(`${API}/api/v1/leave/requests?limit=20`);
+  const approvedBody = approved.ok() ? await approved.json() : { items: [] };
+  const away = (approvedBody.items ?? []).find((item) => item.state === "approved");
+  if (away) {
+    await page.goto(`${BASE}/es/leave?month=${away.start_date.slice(0, 7)}`, {
+      waitUntil: "networkidle",
+    });
+    const calendar = page.locator('[data-testid="leave-calendar"]');
+    await calendar.waitFor({ state: "visible", timeout: 20000 });
+    const marked = await calendar.locator('[data-on-leave="true"]').count();
+    expect(
+      marked >= away.business_days_count,
+      `leave: the calendar marks the approved absence on every day it covers (${marked} marked for ${away.business_days_count} working days)`,
+    );
+    const monthLabel = (await page.locator('[data-testid="leave-calendar-month"]').innerText()).trim();
+    expect(
+      !/\d{2}\/\d{2}\/\d{4}/.test(monthLabel),
+      `leave: the calendar names the month rather than a date ("${monthLabel}")`,
+    );
+    const summary = (
+      await page.locator('[data-testid="leave-calendar-summary"]').innerText()
+    ).replace(/\s+/g, " ");
+    expect(
+      !/no tienes ninguna ausencia/i.test(summary),
+      `leave: the month's absences are summarised in words ("${summary}")`,
+    );
+    await page.screenshot({ path: join(OUT, "leave-calendar-es.png"), fullPage: true });
+  } else {
+    console.log("[note] leave: no approved leave exists — the calendar checks are skipped");
+  }
+
+  // 6. English: the same screen in the other language.
+  await page.goto(`${BASE}/en/leave`, { waitUntil: "networkidle" });
+  await balances.waitFor({ state: "visible", timeout: 20000 });
+  const english = (await page.locator("main").innerText()).replace(/\s+/g, " ");
+  expect(/Available/.test(english), "leave en: the balance labels are in English");
+  expect(!/Disponibles|En trámite/.test(english), "leave en: no Spanish leaked into the English screen");
+  expect(/Request leave/.test(english), "leave en: the form is in English");
+  await page.screenshot({ path: join(OUT, "leave-en.png"), fullPage: true });
+
+  await context.close();
+}
+
+/** A `YYYY-MM-DD` string for a local date, so a fixture range cannot move by a timezone. */
+function isoDay(date) {
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
 /** The Monday of the week `value` falls in, as `YYYY-MM-DD`, without a timezone. */
 function mondayOf(value) {
   const copy = new Date(value.getFullYear(), value.getMonth(), value.getDate());
@@ -778,6 +1483,9 @@ async function main() {
   if (sessionCookie) {
     await checkStyleGuide(browser, sessionCookie);
     await checkNotifications(browser, sessionCookie);
+    await checkClock(browser, sessionCookie);
+    await checkAttendance(browser, sessionCookie, request);
+    await checkLeave(browser, sessionCookie, request);
     await checkTimesheets(browser, sessionCookie);
     await checkLockAndCorrection(browser, sessionCookie, request);
     await checkDocuments(browser, sessionCookie, request);

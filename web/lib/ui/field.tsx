@@ -17,11 +17,19 @@ const CONTROL_CLASSES =
 export type TextFieldProps = CommonProps & {
   value: string;
   onChange: (value: string) => void;
-  type?: "text" | "email" | "password" | "number" | "date" | "search";
+  /**
+   * `time` is on the list because a punch is corrected *to a time of day*: the date is
+   * the day the document names and the field that is wrong is the hour, so a native time
+   * control is the one a correction form actually needs.
+   */
+  type?: "text" | "email" | "password" | "number" | "date" | "time" | "search";
   placeholder?: string;
   autoComplete?: string;
   inputMode?: "text" | "numeric" | "decimal" | "tel";
   name?: string;
+  /** Bounds the browser enforces for `type="date"` / `type="time"`, in the value's format. */
+  min?: string;
+  max?: string;
 };
 
 /**
@@ -43,6 +51,8 @@ export function TextField({
   autoComplete,
   inputMode,
   name,
+  min,
+  max,
 }: TextFieldProps) {
   const id = useId();
   const errorId = `${id}-error`;
@@ -68,6 +78,8 @@ export function TextField({
         placeholder={placeholder}
         autoComplete={autoComplete}
         inputMode={inputMode}
+        min={min}
+        max={max}
         required={required}
         aria-invalid={error ? true : undefined}
         aria-describedby={describedBy || undefined}
@@ -138,6 +150,79 @@ export function SelectField({
           </option>
         ))}
       </select>
+      {hint && !error && (
+        <p id={hintId} className="text-sm text-fg-subtle">
+          {hint}
+        </p>
+      )}
+      {error && (
+        <p id={errorId} className="text-sm text-danger">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+export type TextAreaFieldProps = CommonProps & {
+  value: string;
+  onChange: (value: string) => void;
+  rows?: number;
+  placeholder?: string;
+  name?: string;
+  /** The ceiling the API enforces, so a refusal is predicted rather than discovered. */
+  maxLength?: number;
+};
+
+/**
+ * Labelled multi-line input.
+ *
+ * A correction is refused without a reason, and a rejection is refused without a comment,
+ * so the free text this system needs is a *paragraph* rather than a line: a one-line
+ * input would clip "salí a las 15:00 por una urgencia" into a box the reader cannot see
+ * the end of. It carries the same label/error/hint wiring as the other controls, because
+ * a textarea that forgets `htmlFor` is the same defect as an input that does.
+ */
+export function TextAreaField({
+  label,
+  error,
+  hint,
+  required,
+  value,
+  onChange,
+  rows = 3,
+  placeholder,
+  name,
+  maxLength,
+}: TextAreaFieldProps) {
+  const id = useId();
+  const errorId = `${id}-error`;
+  const hintId = `${id}-hint`;
+  const describedBy = [error ? errorId : null, hint ? hintId : null].filter(Boolean).join(" ");
+
+  return (
+    <div className="flex flex-col gap-1">
+      <label htmlFor={id} className="text-sm font-medium">
+        {label}
+        {required && (
+          <span aria-hidden="true" className="ml-1 text-danger">
+            *
+          </span>
+        )}
+      </label>
+      <textarea
+        id={id}
+        name={name}
+        rows={rows}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        required={required}
+        maxLength={maxLength}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={describedBy || undefined}
+        className={cn(CONTROL_CLASSES, "resize-y", error && "border-danger")}
+      />
       {hint && !error && (
         <p id={hintId} className="text-sm text-fg-subtle">
           {hint}

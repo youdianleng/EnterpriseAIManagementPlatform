@@ -8,6 +8,10 @@ import { useEffect, useRef, type ReactNode } from "react";
  * The browser already provides focus trapping, Escape-to-close and the top
  * layer, so this wraps that instead of reimplementing it. A hand-rolled modal
  * is where keyboard traps and invisible-content bugs come from.
+ *
+ * `m-auto` is load-bearing: a modal dialog is centred by the user agent's own
+ * `margin: auto`, and Tailwind's preflight resets every element's margin to zero — so
+ * without it the dialog is pinned to the top-left corner of the viewport.
  */
 export function Dialog({
   open,
@@ -39,7 +43,7 @@ export function Dialog({
       // Fires for Escape and for close(); one path keeps state in sync.
       onClose={onClose}
       aria-labelledby="dialog-title"
-      className="w-[min(32rem,calc(100vw-2rem))] rounded-lg border border-border bg-surface p-6 text-fg backdrop:bg-black/40"
+      className="m-auto w-[min(32rem,calc(100vw-2rem))] rounded-lg border border-border bg-surface p-6 text-fg backdrop:bg-black/40"
     >
       <div className="mb-4 flex items-start justify-between gap-4">
         <h2 id="dialog-title" className="text-lg font-semibold">

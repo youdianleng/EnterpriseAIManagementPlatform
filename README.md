@@ -136,6 +136,20 @@ docker compose exec -T api python /app/tests/tools/probe_auth.py   # one probe
 cd web && npx tsc --noEmit && node scripts/visual-check.mjs        # frontend
 ```
 
+`node scripts/visual-check.mjs` drives a real browser against the running stack and
+signs in as a demo account (`EAM_USERNAME`/`EAM_PASSWORD`), so it needs that account
+to have data. The fixtures that give it some live in `scripts/demo/`:
+
+```powershell
+& .\scripts\demo\seed-screens.ps1     # clock, attendance and leave, for devlead by default
+```
+
+They set a known password on the four demo accounts and write a month of punches, a
+correction chain and leave requests in every state. That is the opposite of what
+`api/app/seed.py` does — it issues one-time passwords so none is ever stored — and it is
+deliberate: a password printed once cannot be typed into an automated run, and the four
+demo accounts are the only ones affected.
+
 **Do not add `-q` to the pytest command.** `api/pyproject.toml` already sets
 `addopts = "-q"`, and a second one makes pytest quiet enough to drop its summary
 line — the run then prints nothing but dots and an exit code, so "did it pass, and
