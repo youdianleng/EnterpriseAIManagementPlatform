@@ -17,6 +17,12 @@
 
 ## 边界
 
+- **先确认数据库层的读子句只有 compliance。** 票据 34 的迁移
+  （`api/alembic/versions/20261006_1000_answers.py` 的 `AUDIENCES`）最初把 `admin` 也放进了
+  `rag_conversations_read` / `rag_messages_read` 的读子句，这与 §5.3「员工对话内容**只有 compliance
+  可查**」和 §4 角色表（admin 是系统管理，连工资单内容都看不到）冲突，已要求改为仅 compliance。
+  实现本票前先读那两个策略：若读子句仍是 `admin, compliance`，先修策略再实现接口——否则应用层的
+  "仅 compliance" 与数据库层的"admin 也行"会同时存在，而后者才是绕过接口的那条路。
 - 复用现有审计写入（`app/audit.py`）与会话/消息表（票据 34 的迁移），不新建平行表。
 - 不改变票据 34 已定的所有者语义；本票只**增加**一个角色的读取面。
 - `message_key`、错误码按既有约定：`ERR_<DOMAIN>_<NNN>` + `api/app/core/messages.py` 的西/英双语条目；需要前端新增的 key 在实现说明里列出（`web/` 由父代理统一补，避免与前端工作冲突）。
