@@ -4,7 +4,7 @@
 
 **Blocked by:** 15 — 权限矩阵与越权测试套件
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] 支持上传 PDF、DOCX、XLSX、TXT、Markdown；其他类型被拒绝并给出可读的西/英提示
 - [ ] 单文件大小上限为 50MB，超限被拒绝；文件名规范化以防止路径穿越
