@@ -106,6 +106,14 @@ class AuditAction(StrEnum):
     DOCUMENT_PARSED = "document.parsed"  # 31
     DOCUMENT_PARSE_FAILED = "document.parse_failed"  # 31
     DOCUMENT_VISIBILITY_CHANGED = "document.visibility_changed"  # 36
+    #: A grounded question (ticket 34). §3.6 records the *message* — its citations, its
+    #: model, its token counts, whether it refused — and that is the transcript. This is
+    #: the compliance trail §3.7 asks for: "who asked the knowledge base what, and did
+    #: the system answer or refuse", which is a question about an act rather than about a
+    #: body of text. The two are deliberately different records: `rag_messages` is D18's
+    #: 90-day material, readable by its owner and by compliance, and this is the four-year
+    #: trail that outlives it.
+    CONVERSATION_ASKED = "conversation.asked"  # 34
     SALARY_RECORD_READ = "salary.record_read"  # 43
     PAYSLIP_UPLOADED = "payslip.uploaded"  # 44
     PAYSLIP_DOWNLOADED = "payslip.downloaded"  # 45

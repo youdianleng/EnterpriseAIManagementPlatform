@@ -26,6 +26,11 @@ second implementation of §4.2 the design forbids.
 """
 
 from app.domain.retrieval.errors import require_limit, require_query
+from app.domain.retrieval.filtering import (
+    answer_filter_for,
+    retrieval_filter_explanation,
+    unfiltered,
+)
 from app.domain.retrieval.fusion import fusion_rank_of, reciprocal_rank_fusion
 from app.domain.retrieval.models import (
     DEFAULT_FUSION_K,
@@ -66,9 +71,12 @@ __all__ = [
     "RrfLeg",
     "SearchHit",
     "SearchOutcome",
+    "answer_filter_for",
     "build_reranker",
     "fusion_rank_of",
     "reciprocal_rank_fusion",
     "require_limit",
     "require_query",
+    "retrieval_filter_explanation",
+    "unfiltered",
 ]

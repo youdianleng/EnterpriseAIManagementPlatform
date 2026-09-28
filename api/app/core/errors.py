@@ -454,6 +454,20 @@ class ErrorCode(StrEnum):
     # something else.
     RETRIEVAL_QUERY_INVALID = "ERR_RET_001"
 
+    # Answers (ticket 34). One code, and the restraint is the same decision ticket 33
+    # made: D20's refusal is **not** an error — it is the honest answer to a question
+    # the corpus does not cover, and it travels as a 200 with `is_refusal` on the
+    # persisted message (§5.2), never as a status the client has to catch. What is left
+    # is the one failure the ticket forbids a silent fallback for: the generation model
+    # could not be reached, refused the call, timed out, or the deployment holds no key.
+    # A 503 rather than a 500 for `DOCUMENT_EMBEDDING_UNAVAILABLE`'s reason — nothing
+    # about the request is wrong and nothing about the corpus is wrong, and the remedy
+    # is an operator's — and the failure says it is retryable, so a client can offer the
+    # same question again. The provider's own message never reaches the body
+    # (`expose_detail=False`): it can name the key it refused, and the operator reads it
+    # in the log instead.
+    ANSWER_MODEL_UNAVAILABLE = "ERR_ANS_001"
+
     # Cross-cutting.
     INTERNAL_ERROR = "ERR_INTERNAL_001"
     SERVICE_UNAVAILABLE = "ERR_INTERNAL_002"
@@ -809,6 +823,13 @@ ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
     # `MAX_QUERY_CHARS` is the caller's mistake and nothing about the deployment is
     # wrong, so it is not the 503 the embedding failure gets.
     ErrorCode.RETRIEVAL_QUERY_INVALID: ErrorDefinition(422, "errors.retrieval_query_invalid"),
+    # 503: the generation model could not be reached, refused the call, timed out, or
+    # the deployment holds no key. See the enum entry above for the whole reasoning:
+    # nothing about the request is wrong, the remedy is an operator's, and the failure
+    # is explicit rather than a silent fallback to an ungrounded answer.
+    ErrorCode.ANSWER_MODEL_UNAVAILABLE: ErrorDefinition(
+        503, "errors.answer_model_unavailable", expose_detail=False
+    ),
     ErrorCode.INTERNAL_ERROR: ErrorDefinition(500, "errors.internal_error", expose_detail=False),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorDefinition(
         503, "errors.service_unavailable", expose_detail=False

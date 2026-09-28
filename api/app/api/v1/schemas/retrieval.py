@@ -40,11 +40,17 @@ NO_PAGE = None
 
 
 class DocumentRefRead(BaseModel):
-    """The document a citation points at: `file name + page` needs nothing more."""
+    """The document a citation points at: `file name + page` needs nothing more.
+
+    `is_company_kb` is carried so the answer's citation can be marked as coming from a
+    personal document (Q29's banner). It says which side a document is on, not whether
+    the caller may see it — that was decided before the search ran.
+    """
 
     id: UUID
     title: str
     filename: str
+    is_company_kb: bool
 
 
 class SearchHitRead(BaseModel):
@@ -145,7 +151,10 @@ class RetrievalDebugRead(BaseModel):
 
 def _document_read(hit: SearchHit) -> DocumentRefRead:
     return DocumentRefRead(
-        id=hit.document.id, title=hit.document.title, filename=hit.document.filename
+        id=hit.document.id,
+        title=hit.document.title,
+        filename=hit.document.filename,
+        is_company_kb=hit.document.is_company_kb,
     )
 
 

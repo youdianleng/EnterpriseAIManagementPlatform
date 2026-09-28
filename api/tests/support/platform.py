@@ -34,6 +34,13 @@ from app.main import app
 #: Two agents lost time to exactly that. A cascade cannot be wrong about an order.
 CLEANUP_TABLES = (
     "audit_log",
+    # The answer transcript (ticket 34): conversations, and the messages in them. Named
+    # rather than left to the cascade from `users`, for the reason the documents are: a
+    # reader looking for "does anything survive a wipe" should find the answer here.
+    # `rag_messages` refers to `rag_conversations`, so the cascade would reach it either
+    # way — being on the list is what makes that a decision rather than a hope.
+    "rag_messages",
+    "rag_conversations",
     # The uploaded documents (ticket 31) and the chunks the pipeline derives from
     # them. Named rather than left to the cascade from `employees`, for the reason the
     # overtime ledger is: a reader looking for "does anything survive a wipe" should

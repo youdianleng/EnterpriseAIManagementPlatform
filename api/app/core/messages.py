@@ -388,6 +388,20 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.retrieval_query_invalid": (
             "La consulta no es válida: escribe una pregunta y vuelve a intentarlo."
         ),
+        # Answers (ticket 34). The copy names *what to do*: the model failure is
+        # retryable, and the refusal is not the caller's mistake. This last key has no
+        # `ErrorCode` on purpose — D20's refusal is a successful answer, and a client
+        # that wants exactly one language renders this instead of the two-language
+        # sentence the API stores in the message's own content.
+        "errors.knowledge_base_no_basis": (
+            "No he encontrado base en la base de conocimiento de la empresa para "
+            "responder a esta pregunta. Prueba a reformularla o a aportar el documento "
+            "que la contiene."
+        ),
+        "errors.answer_model_unavailable": (
+            "No se ha podido generar la respuesta: el modelo de lenguaje no está "
+            "disponible en este momento. Vuelve a intentarlo en unos minutos."
+        ),
         "errors.internal_error": "Se produjo un error interno. Inténtalo de nuevo más tarde.",
         "errors.service_unavailable": "El servicio no está disponible en este momento.",
     },
@@ -738,6 +752,14 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         ),
         "errors.retrieval_query_invalid": (
             "The search query is not valid: write a question and try again."
+        ),
+        "errors.knowledge_base_no_basis": (
+            "I found no basis in the company knowledge base to answer this question. "
+            "Try rephrasing it, or upload the document that contains the answer."
+        ),
+        "errors.answer_model_unavailable": (
+            "The answer could not be generated: the language model is unavailable right "
+            "now. Please try the same question again in a few minutes."
         ),
         "errors.internal_error": "An internal error occurred. Please try again later.",
         "errors.service_unavailable": "The service is unavailable right now.",

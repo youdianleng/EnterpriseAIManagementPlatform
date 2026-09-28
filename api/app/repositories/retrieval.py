@@ -162,7 +162,8 @@ _ANSWER_COLUMNS = """
             parent.content,
             c.heading_path,
             c.page_from,
-            c.page_to
+            c.page_to,
+            d.is_company_kb
 """
 
 _VECTOR_ORDER = "c.embedding <=> CAST(:probe AS vector)"
@@ -401,6 +402,10 @@ def _candidate(row) -> RankedCandidate:  # noqa: ANN001 - a SQLAlchemy Row
         rank=int(row[0]),
         vector_distance=float(row[1]) if row[1] is not None else None,
         text_rank=float(row[2]) if row[2] is not None else None,
+        # Appended to `_ANSWER_COLUMNS` rather than inserted after `filename`, so the
+        # positional contract above stays legible: a new column is a new index at the
+        # end, and nothing before it moves.
+        is_company_kb=bool(row[13]),
     )
 
 

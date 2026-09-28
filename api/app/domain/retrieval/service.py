@@ -216,6 +216,7 @@ class RetrievalService:
                 id=candidate.document_id,
                 title=candidate.document_title,
                 filename=candidate.filename,
+                is_company_kb=candidate.is_company_kb,
             ),
             chunk_id=candidate.chunk_id,
             page_from=candidate.page_from,

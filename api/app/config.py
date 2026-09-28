@@ -149,6 +149,45 @@ class Settings(BaseSettings):
     # `tests/tools/eval_retrieval.py` and move it deliberately rather than inheriting it.
     retrieval_min_score: float = 0.35
 
+    # --- answers (ticket 34) ------------------------------------------------
+    # Which adapter generates an answer, derived from the environment exactly as
+    # `embeddings_provider` is and for the same reason:
+    #
+    #   development, test → `fake`   a deterministic, offline adapter that answers
+    #                                from the retrieved passages alone. `docker compose
+    #                                up` must work with no OpenAI account, and a test
+    #                                that asks a question must get a reproducible
+    #                                answer with citations rather than a 503.
+    #   anything else      → `openai` the real implementation, so a deployment that
+    #                                forgot the key fails loudly with `ERR_ANS_001`
+    #                                instead of answering from a fake.
+    #
+    # There is deliberately **no `none`**, unlike embeddings. A corpus with no vectors
+    # still answers by full text (§5.3's degradation), but an answer with no model is
+    # not an answer at all: D20 forbids falling back to the model's own knowledge, and
+    # there is nothing else to fall back to. So the adapter is always built, and a
+    # deployment that names a provider this repository does not have is refused where
+    # the adapter is built rather than degraded into an ungrounded answer.
+    chat_provider: str | None = None
+    #: The generation model, and unlike the embedding model this one *is* a setting:
+    #: §5.3's `CHAT_CHAIN` lists several interchangeable providers, so the model name is a
+    #: deployment's choice rather than a schema decision — `rag_messages.model_used`
+    #: records which one answered, which is what keeps that choice auditable. The
+    #: embedding model is not a setting for the opposite reason: vectors from two models
+    #: are not comparable and the rows would go stale.
+    chat_model: str = "gpt-4o"
+    #: Seconds before a generation call is abandoned. Its expiry is the ticket's
+    #: 「模型调用失败或超时」, and the answer stream closes with `ERR_ANS_001` rather than
+    #: with a half-written answer presented as complete.
+    chat_timeout_seconds: float = 60.0
+
+    @property
+    def chat_provider_name(self) -> str:
+        """Which chat adapter this deployment uses. See `chat_provider`."""
+        if self.chat_provider is not None:
+            return self.chat_provider
+        return "fake" if self.is_development or self.app_env == "test" else "openai"
+
     # --- leave (ticket 25) --------------------------------------------------
     # The annual allowance, in natural days, and the whole of `docs/DESIGN.md`'s
     # D7: "30 自然日 ... 额度可配置 (`annual_leave_days=30`)". A setting rather than

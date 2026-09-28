@@ -1245,6 +1245,15 @@ HTTP_MATRIX: tuple[tuple[str, str, RouteAccess], ...] = (
     # wholesale (仅授权角色可见).
     ("GET", "/api/v1/retrieval/search", Action.DOCUMENT_READ),
     ("GET", "/api/v1/retrieval/debug", Action.RETRIEVAL_DEBUG),
+    # Answers (ticket 34). The streamed answer is guarded by the *document read* a citation
+    # needs in order to be openable — the same action the search uses, and for the same
+    # reason: *which* documents may ground an answer is §4.2's question, answered by
+    # `domain/retrieval/filtering.py::answer_filter_for`, not a second action here. The
+    # conversation read is a surface that answers about the caller, so the role-level guard
+    # is "signed in" (`session.read_own`, the shape tickets 21 and 28 established) and the
+    # ownership refusal is asserted by name in `test_answer.py`.
+    ("POST", "/api/v1/answers", Action.DOCUMENT_READ),
+    ("GET", "/api/v1/answers/conversations/{conversation_id}", Action.SESSION_READ_OWN),
 )
 
 
@@ -1304,8 +1313,18 @@ RESOURCE_FREE_ROUTES: frozenset[str] = frozenset(
         # it cannot tell apart from an unwired route.
         "/api/v1/timesheets/report",
         "/api/v1/timesheets/report/export",
+        # Ticket 34. The answer streams, and over an empty corpus every admitted caller
+        # gets the same 200 with a D20 refusal in it — so this layer can assert the status
+        # exactly instead of settling for "not a 403". What the stream *carries* is
+        # `test_answer.py`'s subject, not this table's.
+        "/api/v1/answers",
     }
 )
+
+#: The routes that answer 200 to a `POST` because they stream rather than create. Named
+#: separately from `RESOURCE_FREE_ROUTES` so that "this endpoint has an answer this layer
+#: can check" and "this endpoint's status is not a creation status" stay two facts.
+STREAMED_ROUTES: frozenset[str] = frozenset({"/api/v1/answers"})
 
 
 def http_payload(path: str, *, department: str, employee: str) -> dict:
@@ -1460,6 +1479,12 @@ def http_payload(path: str, *, department: str, employee: str) -> dict:
             "note": "Matriz",
         },
         "/api/v1/overtime/settlements": {"month": "2026-03"},
+        # Answers (ticket 34). A real question, and the corpus is empty in this test, so
+        # every role the guard admits gets the D20 refusal: a 200 whose stream carries a
+        # `refusal` and a `done`. That is deliberately the *cheapest* permitted answer —
+        # supplying passages would make this layer a test about the model, and the only
+        # thing it is about is whether the guard is wired to the catalogue.
+        "/api/v1/answers": {"question": "¿Cuántos días de vacaciones?"},
     }[path]
 
 
@@ -1506,6 +1531,7 @@ async def test_the_http_matrix_for(platform: Platform, role: str) -> None:
             correction_id=subject,
             request_id=subject,
             record_id=subject,
+            conversation_id=subject,
             code="no-such-type",
         )
         payload = (
@@ -1563,7 +1589,14 @@ async def test_the_http_matrix_for(platform: Platform, role: str) -> None:
         # matrix cannot create (the project id is a fresh uuid per row) and answer 404
         # for a reason that has nothing to do with permission. `test_projects.py`
         # asserts what those routes do with a row that exists.
-        expected = 200 if access is None else (201 if method == "POST" else 200)
+        #
+        # A `POST` that streams is the one route this convention does not fit: it answers
+        # 200 because its body is an `event-stream` rather than a created resource, and a
+        # 201 would claim a resource was created whose id is in the second frame. So the
+        # status is asserted as a GET's is, and `test_answer.py` owns what the stream
+        # carries.
+        streamed = template in STREAMED_ROUTES
+        expected = 200 if access is None or streamed else (201 if method == "POST" else 200)
         if response.status_code == 403 or response.status_code >= 500:
             failures.append(
                 f"{label}: expected the action to be permitted ({expected}), got "
@@ -1576,9 +1609,10 @@ async def test_the_http_matrix_for(platform: Platform, role: str) -> None:
             )
 
     # Literal on purpose, so that adding an endpoint is a decision somebody makes here
-    # rather than something that happens. Ticket 33 adds the two retrieval routes — the
-    # search and the debug view — and the count moves with them.
-    assert checked == 76
+    # rather than something that happens. Ticket 33 added the two retrieval routes — the
+    # search and the debug view — and the count moved with them; ticket 34 adds the two
+    # answer routes (the streamed question and the conversation read).
+    assert checked == 78
     assert checked == len(HTTP_MATRIX)
     assert failures == [], "\n".join(failures)
 
@@ -1589,7 +1623,8 @@ async def test_an_unauthenticated_request_reaches_no_endpoint(platform: Platform
     for method, template, _action in HTTP_MATRIX:
         path = template.format(
             subject=uuid4(), project=uuid4(), project_id=uuid4(), task_id=uuid4(),
-            correction_id=uuid4(), request_id=uuid4(), record_id=uuid4(), code="annual",
+            correction_id=uuid4(), request_id=uuid4(), record_id=uuid4(),
+            conversation_id=uuid4(), code="annual",
         )
         response = await platform.client.request(method, path)
         if (response.status_code, response.json()["error"]["code"]) != (

@@ -109,6 +109,13 @@ class RankedCandidate:
     rank: int
     vector_distance: float | None
     text_rank: float | None
+    #: Whether the document is the company's knowledge base rather than somebody's own
+    #: upload (ticket 34's addition, read from `documents.is_company_kb`). The answer
+    #: path needs it: §5.2/Q29 requires a citation from a personal document to carry the
+    #: 「以下内容来自个人文档（非公司知识库）」 banner, and the flag is the only thing that
+    #: decides it. Defaulted so the fusion's own unit tests, which build a candidate from
+    #: a handful of fields and have no document, keep saying only what they mean.
+    is_company_kb: bool = False
 
     @property
     def quote(self) -> str:
@@ -215,11 +222,18 @@ class RankedHit:
 
 @dataclass(frozen=True, slots=True)
 class DocumentRef:
-    """The document a hit cites: enough for "file name + page", and no more."""
+    """The document a hit cites: enough for "file name + page", and no more.
+
+    `is_company_kb` is the one addition ticket 34 made, and it is a fact about the
+    document rather than about the ranking: the answer path needs it to mark a citation
+    that came from somebody's personal upload (Q29). It defaults to the company's,
+    because that is what every caller that builds a `DocumentRef` by hand is modelling.
+    """
 
     id: UUID
     title: str
     filename: str
+    is_company_kb: bool = True
 
 
 @dataclass(frozen=True, slots=True)

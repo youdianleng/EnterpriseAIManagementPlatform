@@ -1,0 +1,195 @@
+"""Answer request and response shapes, and the SSE contract ticket 37 builds against.
+
+**The stream is the answer, and it is not a `response_model`.** A streaming endpoint
+returns a generator of frames rather than one document, so the shapes below describe the
+*payloads* — what `ask_request` accepts and what each event carries — and the route
+assembles the frames. `docs/DESIGN.md` §5.2 is 「流式 SSE」 and the ticket's first checklist
+line is that the answer reaches the client incrementally, so a Pydantic response model
+here would be a model nothing could satisfy without buffering.
+
+**The event names and their payloads, in the order they arrive.** This is the wire
+contract, and it is written out here because ticket 37 implements the client against it:
+
+    event: start
+      data: {message_id, conversation_id, question, model, provider, language}
+
+    event: citations                     # before any text, so sources render first
+      data: {citations: [CitationRead, ...]}
+
+    event: delta                         # zero or more, one per increment
+      data: {text}
+
+    event: refusal                       # instead of citations/delta when D20 refuses
+      data: {message_id, conversation_id, content, message_key,
+             best_score, threshold, is_refusal: true, model_called: false}
+
+    event: error                         # instead of delta/done when the model failed
+      data: {message_id, conversation_id, code, message_key, retryable}
+
+    event: done                          # always the last event, on every branch
+      data: {message_id, conversation_id, citations, model, provider,
+             token_in, token_out, latency_ms, is_refusal}
+
+Every branch ends with `done` except `error`, which is terminal by itself: a client that
+has been told the model failed has nothing left to wait for, and a `done` after it would
+have to describe an answer that does not exist. `refusal` *is* followed by `done`, because
+a refusal is a completed answer — D20's, with its own citations list (empty) and its own
+`is_refusal: true`.
+
+**`citations` is sent before the text on purpose.** A UI that renders the sources as soon
+as they are known shows the reader where the answer will come from while the first tokens
+are still being generated, and a UI that waited for the text would have to parse the
+markers out of prose to build the list — which is exactly what `[N]` markers exist to
+avoid.
+"""
+
+import json
+from collections.abc import Sequence
+from datetime import datetime
+from uuid import UUID
+
+from pydantic import BaseModel, Field
+
+from app.domain.answer.models import AnswerEvent, Citation, EventKind
+
+#: The media type the route answers a stream with.
+SSE_MEDIA_TYPE = "text/event-stream"
+
+
+class AskRequest(BaseModel):
+    """One question, and optionally the conversation to continue.
+
+    `conversation_id` is optional because a first question has no conversation yet: the
+    server creates one, titles it from the question, and the `start` event carries its id
+    for every later turn. Requiring a client to create a conversation first would be an
+    endpoint the design does not describe (§3.6's `rag_conversations` is created by the
+    first message).
+    """
+
+    question: str = Field(min_length=1, max_length=2000)
+    conversation_id: UUID | None = None
+
+
+class CitationRead(BaseModel):
+    """One citation: the file name, the page, the original snippet, and the link.
+
+    `document_id` and `chunk_id` are what the client links *through*: the document id
+    opens the original (the download route is guarded by the same §4.2 rule the search
+    was), and the chunk id identifies the passage inside it. `page` is `null` for a format
+    that has no pages — a text file, a spreadsheet, Markdown — and the client omits it
+    rather than printing an invented one.
+    """
+
+    document_id: UUID
+    chunk_id: UUID
+    title: str
+    filename: str
+    #: `true` for the company knowledge base, `false` for somebody's personal upload.
+    #: §5.2/Q29 requires the answer to be marked when it quotes a personal document.
+    is_company_kb: bool
+    page: int | None
+    page_to: int | None
+    heading_path: str | None
+    #: `"parent"` or `"child"`: which text `quote` came from, so a client can say
+    #: "the enclosing section" rather than "the passage".
+    context_scope: str
+    #: What a citation shows: the passage, exactly as the corpus holds it, never translated.
+    quote: str
+    #: The child's own text, which is what the ranking matched — where a highlight in the
+    #: source should land.
+    content: str
+    rerank_score: float
+
+
+class MessageRead(BaseModel):
+    """One stored answer, with everything the ticket asks a message to record.
+
+    The accounting is on the response and not only in the database: an operator reading a
+    conversation through the API needs the model, the tokens and the latency without a SQL
+    client, and a UI that wants to show "answered by gpt-4o in 1.2 s" has the number.
+    """
+
+    id: UUID
+    question: str
+    content: str
+    citations: list[CitationRead]
+    model_used: str | None
+    provider_used: str | None
+    token_in: int
+    token_out: int
+    latency_ms: int
+    #: D20's answer, which is an answer: `true` here means the knowledge base held no
+    #: basis and no model was called.
+    is_refusal: bool
+    #: `ERR_ANS_001` when the model failed, else `null`. A client routes on this: a
+    #: refusal offers "ask something else", a failure offers "retry".
+    error_key: str | None
+    status: str
+    #: The permission predicate this answer was grounded under (§4.3's reviewability).
+    retrieval_filter: str | None
+    created_at: datetime
+
+
+class ConversationRead(BaseModel):
+    """A conversation and its messages, newest message last."""
+
+    id: UUID
+    title: str
+    created_at: datetime
+    last_message_at: datetime
+    expires_at: datetime
+    messages: list[MessageRead]
+
+
+def citation_read(citation: Citation) -> CitationRead:
+    return CitationRead(
+        document_id=citation.document_id,
+        chunk_id=citation.chunk_id,
+        title=citation.title,
+        filename=citation.filename,
+        is_company_kb=citation.is_company_kb,
+        page=citation.page,
+        page_to=citation.page_to,
+        heading_path=citation.heading_path,
+        context_scope=citation.context_scope,
+        quote=citation.quote,
+        content=citation.content,
+        rerank_score=citation.rerank_score,
+    )
+
+
+def citation_reads(citations: Sequence[Citation]) -> list[CitationRead]:
+    return [citation_read(citation) for citation in citations]
+
+
+def sse_frame(event: AnswerEvent) -> str:
+    """One `AnswerEvent` as an SSE frame: `event:` line, `data:` line, blank line.
+
+    A `delta` carries its increment in `event.text` rather than in `event.data` — that is
+    what lets the streaming loop write a frame without building a payload dict — so the
+    wire object is assembled here, in the one place that knows the wire format. Every other
+    kind already carries `data` and is passed through. (The first version of this function
+    sent `data: {}` for every delta: the text was on the event and the frame builder never
+    looked at it, which is the kind of defect a test that only counted frames would miss.)
+
+    `json.dumps` with `ensure_ascii=False`, because the corpus is Spanish and an answer is
+    prose: escaping every accent to `\\u00e1` would triple the bytes on the wire for no
+    benefit, and every SSE client reads UTF-8. Newlines inside a payload cannot break the
+    framing either — JSON escapes them — which is why the payload is JSON rather than a
+    bare sentence.
+    """
+    payload = {"text": event.text} if event.kind is EventKind.DELTA else event.data
+    return f"event: {event.kind.value}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+__all__ = [
+    "SSE_MEDIA_TYPE",
+    "AskRequest",
+    "CitationRead",
+    "ConversationRead",
+    "EventKind",
+    "MessageRead",
+    "citation_read",
+    "citation_reads",
+    "sse_frame",
+]
