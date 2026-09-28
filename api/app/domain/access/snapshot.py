@@ -123,21 +123,29 @@ class PrincipalBuilder:
         self, employee_id: UUID
     ) -> tuple[frozenset[UUID], UUID | None, bool, frozenset[UUID]]:
         """Departments (descendants included), primary department, managerial
-        flag, and the employees this person approves for."""
+        flag, and the employees who report to this person.
+
+        **The reports direction is one-way, and that is a security property rather
+        than a detail.** A person's `manager_employee_id` names their approver; the
+        reports set is built from the *other* side — the assignments that name this
+        person. Folding a caller's own approver in, which this method used to do,
+        put their manager into the set the kernel's `MANAGER_OF_SUBJECT` clause
+        tests: it let a manager read the hours, leave and overtime of their own
+        boss, and it put the boss into the daily digest's audience. `test_permission_
+        snapshot.py` pins both directions.
+        """
         rows = (
             await self._session.execute(
                 text(
                     """
                     WITH mine AS (
-                        SELECT a.department_id, a.is_primary, a.manager_employee_id,
-                               d.path
+                        SELECT a.department_id, a.is_primary, d.path
                         FROM employee_assignments a
                         JOIN departments d ON d.id = a.department_id
                         WHERE a.employee_id = :employee_id
                           AND a.end_date IS NULL
                     )
-                    SELECT m.department_id, m.is_primary, m.manager_employee_id,
-                           d.id AS descendant_id
+                    SELECT m.department_id, m.is_primary, d.id AS descendant_id
                     FROM mine m
                     LEFT JOIN departments d ON d.path <@ m.path
                     """
@@ -148,16 +156,13 @@ class PrincipalBuilder:
 
         departments: set[UUID] = set()
         primary: UUID | None = None
-        approvers: set[UUID] = set()
 
         for row in rows:
             departments.add(row[0])
-            if row[3] is not None:
-                departments.add(row[3])
+            if row[2] is not None:
+                departments.add(row[2])
             if row[1]:
                 primary = row[0]
-            if row[2] is not None:
-                approvers.add(row[2])
 
         # Managerial positions are a property of the position, not of the person.
         managerial = await self._session.scalar(
@@ -194,7 +199,7 @@ class PrincipalBuilder:
         ).scalars()
         reports_set = {row for row in reports}
 
-        return frozenset(departments), primary, is_manager, frozenset(approvers | reports_set)
+        return frozenset(departments), primary, is_manager, frozenset(reports_set)
 
     async def build(self, account: AccountFacts) -> Principal:
         departments, primary, is_manager, reports = await self.assignment_facts(
