@@ -165,17 +165,16 @@ on a screen that has nothing to draw.
 
 **Two of those drafts exist to be *answered*** (ticket 41): confirming one creates a real
 leave request and consumes the draft, so the confirmation check cannot share the drafts the
-form check draws. They are dated by searching for a past weekday the demo account has no live
-leave over, because the fixture's own previous run leaves a request behind;
-`EAM_DRAFT_DECISION_SEARCH_DAYS` (default 60) widens that search if a deployment has filled
-the window.
+form check draws. All four leave-shaped drafts are dated by **searching** for a past weekday
+the demo account has no live leave over, because the fixture's own earlier runs leave live
+requests behind — the confirmed one for the current week especially, which the next run's
+form draft would otherwise be refused by. `EAM_DRAFT_DECISION_SEARCH_DAYS` (default 60)
+widens that search if a deployment has filled the window.
 
-**The confirmation check leaves data behind, and a later `seed_agent_draft.py` needs it gone
-from the way.** Confirming writes a leave request that is then live for its dates, so re-running
-the *form* checks against a fixed week can be refused by the fixture's own earlier document —
-which is what the search above fixes. If the seed still refuses an overlap after a run of
-`visual-check.mjs`, the leftover is a demo leave request for the dates it names: withdraw it
-from the leave screen (or re-run `seed-screens.ps1`, which resets that account's year).
+**Re-running the fixture is safe; re-running it against a week that has been filled is not.**
+`seed_agent_draft.py` can run twice in a row against the same database. What it cannot do is
+draft a leave over a live request, so if the demo account has a leave covering every day of
+the week it would use, the fixture says which day it tried and stops.
 
 **Do not add `-q` to the pytest command.** `api/pyproject.toml` already sets
 `addopts = "-q"`, and a second one makes pytest quiet enough to drop its summary

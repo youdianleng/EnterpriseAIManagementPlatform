@@ -126,7 +126,9 @@ async def main() -> None:
         expired_day = await _free_weekday(
             session, principal.employee_id, start=working - timedelta(days=7)
         )
-        quiet = await _quiet_day(session, principal.employee_id, start=working)
+        quiet = await _quiet_day(
+            session, principal.employee_id, start=working - timedelta(days=1)
+        )
         project, task = await _project(session, principal)
         await _publish(session, principal)
         await _clear(session, user_id)
@@ -166,13 +168,13 @@ async def main() -> None:
             form = await _draft(session, principal, name, arguments)
             if form is None:
                 raise SystemExit(
-                    f"{name} was refused for {arguments.get('start_date')}.."
-                    f"{arguments.get('end_date')}. Two causes, and they look alike: "
-                    "seed_timesheet_demo.py has not run (the schedule and the project), or a "
-                    "live leave request of this account covers that week — including one a "
-                    "previous run of visual-check.mjs created by confirming a draft. Withdraw "
-                    "it from the leave screen, or re-run scripts/demo/seed-screens.ps1, which "
-                    "resets this account's year."
+                    f"{name} was refused (fields: {arguments}). The causes a fixture meets are: "
+                    "seed_timesheet_demo.py has not run (the schedule and the project); a live "
+                    "leave request of this account covers the leave draft's week — including "
+                    "one a previous run of visual-check.mjs created by confirming a draft; or "
+                    "the day chosen for a punch correction already holds punches. Withdraw the "
+                    "leave from the leave screen, or re-run scripts/demo/seed-screens.ps1, "
+                    "which resets this account's year."
                 )
             service = service_for(
                 session, ttl_hours=get_settings().agent_draft_ttl_hours
@@ -351,21 +353,47 @@ async def _draft(session, principal, name: str, arguments: dict):  # noqa: ANN00
 
 
 async def _working_day(session, employee_id, week: date) -> date:  # noqa: ANN001
-    """A day this account is expected to work in the given week.
+    """A day this account is expected to work in the given week, **with no live leave over it**.
 
     Asked of the schedule module rather than assumed: the leave tool prices a range in
     *working* days, and a fixture that drafted a Saturday would be refused for a reason that
     looks like a product defect.
+
+    The second half — the leave question — was added after the visual check's own
+    confirmation caught this fixture out: confirming one of the decision drafts writes a real
+    leave request for the current week, and the *next* run's leave draft was refused by the
+    document the previous run had created. The schedule answers "is this a day somebody
+    works"; the database answers "is this a day this person is not already away", and both
+    have to be true before a leave draft over it means anything.
     """
     expectations = ScheduleService(PostgresScheduleRepository(session), session)
     for offset in range(7):
         day = week + timedelta(days=offset)
         expected = await expectations.day_expectations(employee_id, day, day)
-        if expected.get(day) is not None and expected[day].expected_minutes:
+        if expected.get(day) is None or not expected[day].expected_minutes:
+            continue
+        overlapping = await session.scalar(
+            text(
+                """
+                SELECT count(*)
+                  FROM leave_requests
+                 WHERE employee_id = :employee_id
+                   AND withdrawn_at IS NULL
+                   AND start_date <= :end_date
+                   AND end_date >= :start_date
+                   AND (approval_request_id IS NULL
+                        OR approval_request_id NOT IN
+                           (SELECT id FROM approval_requests WHERE status = 'rejected'))
+                """
+            ),
+            {"employee_id": employee_id, "start_date": day, "end_date": day + timedelta(days=1)},
+        )
+        if not overlapping:
             return day
     raise SystemExit(
-        "no working day in that week: run seed_timesheet_demo.py first, which creates the "
-        "company schedule these drafts are checked against"
+        "no working day in that week is free of this account's live leave: run "
+        "seed_timesheet_demo.py first (it creates the company schedule these drafts are "
+        "checked against), and withdraw whatever this fixture's earlier runs confirmed"
     )
 
 
