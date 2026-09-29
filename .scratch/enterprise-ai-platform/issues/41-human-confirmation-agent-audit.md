@@ -99,7 +99,8 @@
   `message_key_of()`（领域错误码 → 目录键）。
 - `app/api/v1/agent.py` —— 两条路由 `POST /api/v1/agent/actions/{id}/confirm` 与 `.../reject`，
   守卫 `session.read_own`（和 37 号工单的四条会话路由同一个动作、同一个理由）。
-- `tests/test_agent_confirmation.py` —— 25 条。
+- `tests/test_agent_confirmation.py` —— 24 个测试函数（其中一条参数化在三个 `ERR_AGT_*` 上，
+  所以 pytest 数 25 个用例）。
 - `web`：`draft-form.tsx` 改成有确认/拒绝两条路（各自一个 `<dialog>`）、`lib/api/answers.ts` 的
   `confirmDraft`/`rejectDraft`、`qa-store.ts` 的 `decideDraft`（调用 + **回读会话**）、
   `lib/i18n` 的 `qa.draft.*` 新增约 25 条双语键。
@@ -280,10 +281,17 @@
 
 ## 验证
 
-- `uvx ruff check app tests` 干净（`All checks passed!`）。
-- `cd web && npx tsc --noEmit` 干净；`npx next build` 成功（`Compiled successfully`，`/[locale]/qa` 54 kB）。
+- `uvx ruff check app tests` 干净（`All checks passed!`）——**这是本工单树冻结时的结果**。
+  之后 42 号工单的作者开始在同一棵树上改 `app/domain/answer/`、`app/ai/observability/`、
+  `app/api/v1/answer.py` 与 `app/config.py`，于是**同一命令**现在会报那几张文件的错
+  （`app/api/v1/answer.py:122 F401`、`app/domain/answer/chat.py:888 E501`、
+  `app/ai/observability/__init__.py:38 I001` 等）。本工单自己的文件仍然是干净的：
+  `uvx ruff check app/domain/agent app/api/v1/agent.py tests/test_agent_confirmation.py
+  tests/tools/seed_agent_draft.py` → `All checks passed!`。
+- `cd web && npx tsc --noEmit` 干净（exit 0）；`npx next build` 成功
+  （`Compiled successfully`，`/[locale]/qa` 54 kB）。
 - 目标运行（scratch 库 `eam_test_t41`、Redis 9 号库）：
-  - `pytest tests/test_agent_confirmation.py` → **25 passed**
+  - `pytest tests/test_agent_confirmation.py` → **25 passed**（24 个测试函数，一条参数化三次）
   - `pytest tests/test_agent_confirmation.py tests/test_agent_draft_tools.py tests/test_agent_graph.py
     tests/test_permission_matrix.py` → **113 passed**
   - `pytest tests/test_permission_matrix.py tests/test_leave.py tests/test_attendance_corrections.py
@@ -292,8 +300,12 @@
 - **全量运行**（与 40 号工单同一条命令）：
   `docker compose exec -T -e TEST_DATABASE_NAME=eam_test_t41 -e REDIS_URL=redis://redis:6379/9 api sh -lc
   'cd /app && env -u DOCUMENT_PARSE_RUNNER_ENABLED python -m pytest -p no:warnings'`
-  → **1486 passed**（0:27:24）。基线 1459，差 27：25 条确认测试，加上 HTTP 矩阵那两行带来的净增
-  （矩阵测试按角色参数化，行数本身不改变条数；`assert checked == 83` 与 payload 表在同一条测试里）。
+  → **1486 passed**（0:27:24）。基线 1459，差 27 = 本工单新增的 25 个用例 + 另外两条。
+  **这也是本工单树冻结时的数字**：之后 42 号工单的作者开始改 `app/api/v1/answer.py` 与
+  `app/domain/answer/`，`POST /api/v1/answers` 现在返回 500（`ERR_INTERNAL_001`），
+  于是 `test_permission_matrix.py` 的 HTTP 层会因为没有答案路由而红——
+  与本工单无关（本工单只往 `POST /agent/actions/…` 加了两条路由，且那次全量运行里
+  矩阵是绿的）。我把它留在这里而不是去改别人的代码：那是 42 号工单的进行中工作。
 - 浏览器：`EAM_USERNAME=empleado EAM_PASSWORD=… node scripts/visual-check.mjs` → **ALL CHECKS PASSED**，
   669 条断言，其中本工单新增/改动的 **约 40 条**（三个草稿的"确认已提供 + 两个 dialog + 关闭后仍未回答"、
   决策链路的确认/拒绝/措辞/窄屏、以及标题与只读态）。**这是本工单代码状态的最终判定**——
