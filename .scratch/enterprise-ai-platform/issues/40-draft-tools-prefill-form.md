@@ -310,6 +310,10 @@ SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename
   control heights 39, 39, 39, 39 px`，检查断言的是 ≥32px 不塌陷）。39px 是既有 `TextField` 的高度，
   整站其他表单（打卡、补卡、请假）用的是同一个组件；本工单没有改它的尺寸（那会牵动所有屏幕），
   但这条清单项在本屏**没有**满足，记在这里。
+  **后续（同一提交序列内）：** 这条已由父代理在共享组件上修掉——
+  `web/lib/ui/field.tsx` 的 `CONTROL_CLASSES` 增加 `min-h-11`（44px），并写明理由：规则属于控件而不是
+  某一屏，改在一处才不会让下一张表单重新引入。`npm run visual` 在改后仍然 ALL CHECKS PASSED。
+  本工单的实现说明保留原始报告，因为那是当时的真实状态。
 - 语义化 HTML / 单一 h1 / 键盘可达 / focus ring：检查脚本的通用部分（每档每语言）逐页跑过，**通过**。
 
 ## 客户端需要的形状（给 41 号工单与前端）

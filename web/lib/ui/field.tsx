@@ -19,8 +19,18 @@ type CommonProps = {
   disabled?: boolean;
 };
 
+/**
+ * The shared control surface: border, padding, focus ring and the disabled/invalid states.
+ *
+ * `min-h-11` is the design system's 44px touch target (§8.2: 移动端触控目标 ≥ 44px), and it
+ * lives here rather than on each caller because the rule is about the control, not about the
+ * screen: `px-3 py-2` alone measures 39px with this type scale, which every form in the
+ * product inherited. Ticket 40's draft card is where it was noticed -- a form the employee
+ * is asked to edit with their thumb is exactly where a 39px control is wrong -- and fixing it
+ * on the shared class is what keeps the next form from re-introducing it.
+ */
 const CONTROL_CLASSES =
-  "w-full rounded border border-border bg-surface px-3 py-2 text-fg placeholder:text-fg-subtle " +
+  "w-full min-h-11 rounded border border-border bg-surface px-3 py-2 text-fg placeholder:text-fg-subtle " +
   "focus-visible:border-primary disabled:cursor-not-allowed disabled:bg-neutral-bg aria-[invalid=true]:border-danger";
 
 export type TextFieldProps = CommonProps & {
