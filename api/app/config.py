@@ -169,17 +169,62 @@ class Settings(BaseSettings):
     # deployment that names a provider this repository does not have is refused where
     # the adapter is built rather than degraded into an ungrounded answer.
     chat_provider: str | None = None
+    #: **The ordered chain** (§5.3's `CHAT_CHAIN`, ticket 42), as a comma-separated list:
+    #: `CHAT_PROVIDERS=openai,deepseek`. **Unset means one provider** — the one
+    #: `chat_provider_name` derives — which is deliberate: a chain nobody configured must not
+    #: grow a second provider behind an operator's back, and a deployment that wants §5.3's
+    #: full list says so. The first entry is the primary and the rest are tried in order, on
+    #: a technical failure only (`domain/answer/chat.py` owns that rule).
+    #:
+    #: `fake` is accepted here and means what it means everywhere else: an adapter for
+    #: development and tests, never selected silently outside them.
+    chat_providers: str | None = None
     #: The generation model, and unlike the embedding model this one *is* a setting:
     #: §5.3's `CHAT_CHAIN` lists several interchangeable providers, so the model name is a
     #: deployment's choice rather than a schema decision — `rag_messages.model_used`
     #: records which one answered, which is what keeps that choice auditable. The
     #: embedding model is not a setting for the opposite reason: vectors from two models
     #: are not comparable and the rows would go stale.
+    #:
+    #: This is the model for the *default* provider. A chain entry's model can be named
+    #: separately (`DEEPSEEK_CHAT_MODEL`), because the two providers do not share model names
+    #: and one variable cannot honestly mean `gpt-4o` and `deepseek-chat` at once.
     chat_model: str = "gpt-4o"
     #: Seconds before a generation call is abandoned. Its expiry is the ticket's
     #: 「模型调用失败或超时」, and the answer stream closes with `ERR_ANS_001` rather than
-    #: with a half-written answer presented as complete.
+    #: with a half-written answer presented as complete. **One budget for the whole chain**:
+    #: see `chat.build_chat_chain`.
     chat_timeout_seconds: float = 60.0
+
+    # --- the rest of the chain (ticket 42) ----------------------------------
+    # One key and one model per provider, so a deployment can run OpenAI primary with
+    # DeepSeek as its fallback without either variable meaning two things. Names follow the
+    # providers `domain/answer/chat.py::PROVIDERS` catalogs; a provider with no key is
+    # *present and failing* rather than absent, which is what makes the fallback record say
+    # why it moved on.
+    deepseek_api_key: str | None = None
+    #: Where DeepSeek is posted. A setting for the reason `openai_base_url` is one: an
+    #: installation may route through a gateway or a regional endpoint.
+    deepseek_base_url: str = "https://api.deepseek.com"
+    #: DeepSeek's model, separate from `chat_model` because the names are not interchangeable.
+    deepseek_chat_model: str = "deepseek-chat"
+    anthropic_api_key: str | None = None
+    anthropic_base_url: str = "https://api.anthropic.com"
+    anthropic_chat_model: str = "claude-3-5-sonnet-latest"
+    #: The LangSmith (option (A), §10.1) sink. **Unset means no trace leaves at all**, which
+    #: is the right default: the filter exists to make an export safe, not to make one
+    #: happen, and a deployment that has not chosen a backend should not acquire one.
+    trace_sink: str | None = None
+    #: The run id every trace of this process carries. Named so an operator can find the
+    #: traces of one deployment; deliberately not the user id, which is not ours to send.
+    trace_project: str = "eam-agent"
+
+    @property
+    def chat_provider_names(self) -> tuple[str, ...]:
+        """The configured chain. See `chat_providers` and `parse_provider_chain`."""
+        from app.domain.answer.chat import parse_provider_chain
+
+        return parse_provider_chain(self.chat_providers, fallback=self.chat_provider_name)
 
     @property
     def chat_provider_name(self) -> str:

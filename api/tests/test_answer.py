@@ -115,17 +115,22 @@ class FailingChatModel:
     It yields nothing and raises before yielding, which is what a transport does when the
     socket is refused: the driver must then record `ERR_ANS_001` and stream `error`, and
     must *not* present the empty text as an answer.
+
+    `failure` is the technical kind (ticket 42), and it defaults to `timeout` because that is
+    what the detail above describes: a chain reads this field and nothing else to decide
+    whether to move on.
     """
 
     detail: str = "chat HTTP 401: the API key is missing, revoked or not allowed"
     calls: int = 0
+    failure: str = "timeout"
 
     name = "unreachable-model-v1"
     provider = "openai"
 
     async def stream(self, messages: list[Mapping[str, str]]) -> AsyncIterator[str]:
         self.calls += 1
-        raise AnswerModelUnavailable(self.detail)
+        raise AnswerModelUnavailable(self.detail, failure=self.failure)
         yield ""  # pragma: no cover - unreachable, and present so this stays a generator
 
 
@@ -893,6 +898,230 @@ async def test_the_model_failure_catalogue_code_has_bilingual_copy() -> None:
     for locale, catalogue in MESSAGES.items():
         assert definition.message_key in catalogue, f"missing from {locale}"
     assert ERRORS[ErrorCode.ANSWER_MODEL_UNAVAILABLE].message_key == definition.message_key
+
+
+# --- the provider chain, as the driver and the row see it (ticket 42) ---------
+
+
+def _chain(*adapters) -> object:  # noqa: ANN001, ANN201
+    """A `FallbackChatModel` over the given adapters. The chain, without settings."""
+    from app.domain.answer.chat import stream_with_fallback
+
+    return stream_with_fallback(list(adapters))
+
+
+async def test_a_fallback_records_the_provider_that_actually_answered(
+    platform: Platform, cast
+) -> None:
+    """**「每次请求记录实际使用的供应商与模型，可在会话记录中查到」.**
+
+    The primary fails with a timeout and the secondary answers, and what matters is that
+    *every* surface says the secondary: the stored row's `provider_used`/`model_used`, the
+    stream's `done` frame, and the read-back. The mutation this pins: write the primary's name
+    after a fallback — the obvious "the configured model is the model" implementation — and
+    the three assertions below fail together while the answer itself still looks fine.
+    """
+    corpus = await index(platform, cast, *DOCUMENTS)
+    primary = FailingChatModel(detail="chat HTTP 504: the provider timed out")
+    secondary = StreamedChatModel()
+    answers = build(platform, corpus.admin, model=_chain(primary, secondary))
+    try:
+        events = await answers.events(
+            MARRIAGE_LEAVE, await principal_of(platform, corpus.admin)
+        )
+        message_id = events[0].data["message_id"]
+    finally:
+        await answers.close()
+
+    assert primary.calls == 1, "the primary was not tried"
+    done = events[-1]
+    assert done.kind is EventKind.DONE
+    assert done.data["provider"] == "fake", (
+        "the stream reported the provider that was tried first, not the one that answered"
+    )
+    assert done.data["model"] == "passage-quoting-v1"
+
+    row = (
+        await platform.sql(
+            """
+            SELECT provider_used, model_used, content, error_key, status
+              FROM rag_messages WHERE id = :id
+            """,
+            {"id": message_id},
+        )
+    )[0]
+    assert row[0] == "fake" and row[1] == "passage-quoting-v1", (
+        f"the row recorded {row[0]}/{row[1]}, not the provider that answered"
+    )
+    assert row[2], "the answer text was lost"
+    assert row[3] is None and row[4] == "complete"
+
+
+async def test_a_fallback_writes_a_structured_log_and_an_audit_entry_without_text(
+    platform: Platform, cast
+) -> None:
+    """**「降级事件写入结构化日志与审计（不含对话正文）」.**
+
+    Both records, asserted on what they carry and on what they must not: provider and model
+    names, the technical kinds, a count — and no question, no answer, no passage. The audit
+    entry is read from `audit_log` itself (the trail is evidence, so the row is the assertion),
+    and its `initiated_by` is `system` because no person acted.
+    """
+    corpus = await index(platform, cast, *DOCUMENTS)
+    primary = FailingChatModel(
+        detail="chat HTTP 429: the account is rate limited or out of quota",
+        failure="rate_limit",
+    )
+    answers = build(platform, corpus.admin, model=_chain(primary, StreamedChatModel()))
+    try:
+        events = await answers.events(
+            MARRIAGE_LEAVE, await principal_of(platform, corpus.admin)
+        )
+        message_id = events[0].data["message_id"]
+    finally:
+        await answers.close()
+
+    entries = await platform.sql(
+        """
+        SELECT entity_id, before, after, reason, initiated_by, actor_user_id
+          FROM audit_log
+         WHERE action = 'answer.provider_fallback'
+        """
+    )
+    assert len(entries) == 1, f"expected exactly one fallback entry, got {len(entries)}"
+    entity_id, before, after, reason, initiated_by, _actor = entries[0]
+    assert initiated_by == "system", "a provider falling over is not a person acting"
+    assert str(entity_id) == events[0].data["conversation_id"], (
+        "the entry is keyed on the conversation, so 'what happened to this thread' is one "
+        "equality filter"
+    )
+    assert before == {"provider": "openai", "model": "unreachable-model-v1"}
+    assert after["provider_used"] == "fake" and after["model_used"] == "passage-quoting-v1"
+    assert after["failures"] == ["rate_limit"]
+    assert after["message_id"] == str(message_id)
+    assert after["attempts"] == 2
+    # The entry carries names and kinds; the question and the answer are not in it.
+    for payload in (before, after, reason or ""):
+        assert MARRIAGE_LEAVE not in json.dumps(payload, ensure_ascii=False)
+    assert "passage" not in (reason or "")
+
+    # And the question's own entry still exists, with the accounting now honest.
+    asked = (
+        await platform.sql(
+            """
+            SELECT after FROM audit_log WHERE action = 'conversation.asked'
+            """
+        )
+    )[0][0]
+    assert asked["provider"] == "fake" and asked["model"] == "passage-quoting-v1"
+    assert asked["attempts"] == 2, (
+        "the trail cannot answer how many attempts a question took"
+    )
+
+
+async def test_every_provider_failing_is_an_explicit_error_and_stores_no_answer(
+    platform: Platform, cast
+) -> None:
+    """**「模拟全部供应商故障，验证给出明确错误而非静默空回答」**, end to end.
+
+    `ERR_ANS_001` on the stream, `retryable`, and a row that says `failed` with **no content**
+    and no provider — so nothing was stored as a successful answer. The mutation this pins:
+    return an empty answer instead of raising, and both the `error` frame and the `failed`
+    status vanish while the request still looks like a 200.
+    """
+    corpus = await index(platform, cast, *DOCUMENTS)
+    first = FailingChatModel(detail="chat HTTP 504: timed out", failure="timeout")
+    second = FailingChatModel(detail="chat HTTP 429: rate limited", failure="rate_limit")
+    second.name = "deepseek-chat"
+    second.provider = "deepseek"
+    answers = build(platform, corpus.admin, model=_chain(first, second))
+    try:
+        events = await answers.events(
+            MARRIAGE_LEAVE, await principal_of(platform, corpus.admin)
+        )
+        message_id = events[0].data["message_id"]
+    finally:
+        await answers.close()
+
+    kinds = [event.kind for event in events]
+    assert EventKind.ERROR in kinds
+    assert EventKind.DONE not in kinds, "an all-provider failure reported success"
+    assert first.calls == 1 and second.calls == 1, "the chain did not try both providers"
+
+    error = next(event for event in events if event.kind is EventKind.ERROR)
+    assert error.data["code"] == ErrorCode.ANSWER_MODEL_UNAVAILABLE.value
+    assert error.data["retryable"] is True
+
+    row = (
+        await platform.sql(
+            """
+            SELECT error_key, status, content, model_used, provider_used, token_out
+              FROM rag_messages WHERE id = :id
+            """,
+            {"id": message_id},
+        )
+    )[0]
+    assert row[0] == ErrorCode.ANSWER_MODEL_UNAVAILABLE.value
+    assert row[1] == "failed"
+    assert row[2] == "", "an empty answer was stored as if it were one"
+    assert row[3] is None and row[4] is None and row[5] == 0
+    # No fallback entry: nothing answered, so there was no degradation to record — only the
+    # failure, which `conversation.asked` already carries as `error_key`.
+    assert (
+        await platform.scalar(
+            "SELECT count(*) FROM audit_log WHERE action = 'answer.provider_fallback'"
+        )
+        == 0
+    )
+
+
+def row_value(model: object, attribute: str) -> str:  # noqa: ANN001
+    """What a test double was configured with, for the assertions above."""
+    return str(getattr(model, attribute))
+
+
+async def test_the_route_assembles_the_chain_from_configuration(
+    platform: Platform, cast, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The chain a *request* builds comes from `CHAT_PROVIDERS`, and one name is the default.
+
+    The route's `_service` is the only place settings become adapters, so this asserts the two
+    properties that matter there: the names come from `chat_provider_names`, and an unset
+    `CHAT_PROVIDERS` yields the single provider the environment derives — which is what keeps
+    `docker compose up` and every existing deployment behaving exactly as before.
+    """
+    from app.api.v1 import answer as answer_api
+    from app.config import get_settings
+    from app.domain.answer.chat import FallbackChatModel
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "chat_providers", None)
+    assert settings.chat_provider_names == ("fake",)
+
+    monkeypatch.setattr(settings, "chat_providers", "openai,deepseek")
+    assert settings.chat_provider_names == ("openai", "deepseek")
+    keys = answer_api._provider_keys(settings, ("openai", "deepseek"))  # noqa: SLF001
+    assert set(keys) == {"openai", "deepseek"}
+    # The per-provider models and URLs are the catalogue's, not one global value repeated.
+    models = answer_api._provider_models(settings, ("openai", "deepseek"))  # noqa: SLF001
+    assert models["deepseek"] == "deepseek-chat"
+    urls = answer_api._provider_base_urls(settings, ("openai", "deepseek"))  # noqa: SLF001
+    assert urls["deepseek"] == "https://api.deepseek.com"
+    # `fake` has no catalogue entry and must answer `None` rather than raise: it is an
+    # in-process adapter and every accessor here has to cope with it.
+    assert answer_api._provider_models(settings, ("fake",))["fake"] is None  # noqa: SLF001
+    assert answer_api._provider_base_urls(settings, ("fake",))["fake"] is None  # noqa: SLF001
+    assert answer_api._provider_keys(settings, ("fake",))["fake"] is None  # noqa: SLF001
+
+    # And the assembled object is a chain, not a bare adapter — with the fake, because that is
+    # what this environment derives and a real adapter would need a key.
+    monkeypatch.setattr(settings, "chat_providers", "fake")
+    corpus = await index(platform, cast, *DOCUMENTS)
+    async with platform.factory() as session:
+        service = answer_api._service(session, await principal_of(platform, corpus.admin))  # noqa: SLF001
+        assert isinstance(service.model, FallbackChatModel)
+        assert service.model.provider_count == 1
+        assert service.model.provider == "fake"
 
 
 # --- the transport -----------------------------------------------------------

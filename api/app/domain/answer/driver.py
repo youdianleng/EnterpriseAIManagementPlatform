@@ -71,6 +71,7 @@ Six decisions a reader should have in mind, because each of them is a rule:
 
 import time
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from uuid import UUID
 
 from app.audit import AuditAction, record
@@ -316,17 +317,30 @@ class AnswerService:
             # mid-sentence is not an answer, and the ticket's rule is that a failure is
             # explicit rather than a degraded one. The row records the code so an operator
             # can see the attempt, and the client gets the retry entry point.
+            #
+            # Ticket 42: the *last* attempt is what a reader needs. Before the chain existed
+            # there was one provider and its name was the model's; with one, `provider` is
+            # the adapter that failed last, which is the one whose error this is.
             logger.warning(
                 "answer_model_unavailable",
                 message_id=str(message_id),
-                model=self._model.name,
-                provider=self._model.provider,
+                model=_attempted(self._model).model,
+                provider=_attempted(self._model).provider,
                 detail=error.detail,
             )
         # Only the success path counts its latency: a timed-out call has no meaningful
         # generation time, and recording it would make a 60-second timeout look like a
         # 60-second answer.
         latency_ms = int((time.perf_counter() - started) * 1000) if failure is None else 0
+
+        # **Which provider actually answered** (ticket 42). Read from the attempt that ran
+        # rather than from `self._model.provider`, because a chain's own property reports the
+        # *primary* before it has been called — the value the `start` event above carries —
+        # and the row must say who answered. For a single adapter the two are the same value,
+        # which is why nothing else about this method changes.
+        answered = _attempted(self._model)
+        if failure is None:
+            await self._record_fallbacks(message_id, conversation, answered)
 
         # --- 5: close the row ----------------------------------------------
         outcome_value = AskOutcome(
@@ -335,8 +349,8 @@ class AnswerService:
             citations=() if failure is not None else citations,
             refusal=False,
             language=language,
-            model=None if failure is not None else self._model.name,
-            provider=None if failure is not None else self._model.provider,
+            model=None if failure is not None else answered.model,
+            provider=None if failure is not None else answered.provider,
             token_in=0 if failure is not None else count_tokens(_prompt_text(messages)),
             token_out=0 if failure is not None else count_tokens("".join(text)),
             latency_ms=latency_ms,
@@ -372,8 +386,11 @@ class AnswerService:
                 # a stream late — or that reads the message back later — finds the
                 # marker in the same place as everything else it renders.
                 "source_notice": notice.as_json() if notice is not None else None,
-                "model": self._model.name,
-                "provider": self._model.provider,
+                # The provider that *answered*, not the one that was tried first: a client
+                # showing "answered by X" has to show the same X the row stored, or the
+                # stream and the transcript disagree (ticket 42).
+                "model": answered.model,
+                "provider": answered.provider,
                 "token_in": outcome_value.token_in,
                 "token_out": outcome_value.token_out,
                 "latency_ms": latency_ms,
@@ -523,6 +540,14 @@ class AnswerService:
         lives in `rag_messages` under D18's retention, and copying it here would make the
         four-year trail a four-year transcript, which is a different design decision and
         not one this ticket may take.
+
+        **Ticket 42's fallback entry is written beside it, from the same facts.** One
+        `conversation.asked` entry per question, with `provider`/`model` already carrying who
+        answered; and when the chain moved on, one `answer.provider_fallback` entry naming
+        the providers and the technical kinds, because "which provider served this and how
+        often does it fail over" is a question about the *act*, and the row alone cannot
+        answer how many attempts it took. Neither carries text: the fields are provider
+        names, model names, run-local counts and a `TECHNICAL_FAILURES` kind.
         """
         if self._session is None:  # pragma: no cover - the route always passes one
             return
@@ -539,6 +564,7 @@ class AnswerService:
                 ),
                 "model": outcome.model,
                 "provider": outcome.provider,
+                "attempts": len(_attempts(self._model)) or 1,
                 "grounding_documents": sorted(
                     {str(hit.document_id) for hit in debug.hits}
                 ),
@@ -557,8 +583,115 @@ class AnswerService:
             ),
         )
 
+    async def _record_fallbacks(
+        self, message_id: UUID, conversation: UUID, answered: "_Attempt"
+    ) -> None:
+        """Log and audit a degradation, once, when the chain moved on.
+
+        **Two records, and neither carries conversation text.** The structured log line is
+        the operator's ("the primary failed at 09:14 with a timeout"); the audit entry is the
+        trail's, keyed on the conversation, so "how often does this installation fall back"
+        is a query against `audit_log` rather than a search through fourteen days of logs.
+        DESIGN D24's own rules apply to the entry: an action from the catalogue, a before and
+        after that survive JSONB, `initiated_by="system"` because no person acted.
+
+        The `entity_id` is the conversation, not the message: §3.6 keys a conversation's
+        trail on the conversation, and a reader asking "what happened to this thread" is the
+        reader this entry is for.
+        """
+        failed = [attempt for attempt in _attempts(self._model) if attempt.outcome != "ok"]
+        if not failed:
+            return
+
+        logger.warning(
+            "chat_provider_fallback",
+            message_id=str(message_id),
+            primary=failed[0].provider,
+            failures=[attempt.failure for attempt in failed],
+            providers_tried=[attempt.provider for attempt in failed],
+            provider_used=answered.provider,
+            model_used=answered.model,
+            # A count, never a question: the same discipline `records.py` applies to a trace.
+            attempts=len(_attempts(self._model)),
+        )
+        if self._session is None:  # pragma: no cover - the route always passes one
+            return
+        await record(
+            self._session,
+            action=AuditAction.ANSWER_PROVIDER_FALLBACK,
+            entity_type="rag_conversation",
+            entity_id=conversation,
+            before={"provider": failed[0].provider, "model": failed[0].model},
+            after={
+                "message_id": str(message_id),
+                "provider_used": answered.provider,
+                "model_used": answered.model,
+                "failures": [attempt.failure for attempt in failed],
+                "providers_tried": [attempt.provider for attempt in failed],
+                "attempts": len(_attempts(self._model)),
+            },
+            reason=(
+                "the primary provider failed technically ("
+                + ", ".join(attempt.failure for attempt in failed)
+                + ") and the configured chain moved on (§5.3/D17); no conversation text is "
+                "recorded here"
+            ),
+            initiated_by="system",
+        )
+
     async def _commit(self) -> None:
         await self._repository.commit()
+
+
+# --- reading the provider accounting back -------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _Attempt:
+    """One provider's turn: names and an outcome, never text. See `chat.ChatAttempt`.
+
+    A private mirror rather than an import of `chat.ChatAttempt`, and for a reason worth
+    stating: the driver's dependency is the `ChatModel` *protocol*, and a driver that
+    imported the chain's dataclass would be a driver that could not be given a second
+    implementation of the protocol. The protocol itself carries no `attempts` attribute — a
+    single adapter has nothing to report — so this is the shape a model *may* expose.
+    """
+
+    provider: str = ""
+    model: str = ""
+    outcome: str = "ok"
+    failure: str = ""
+
+
+def _attempts(model: object) -> tuple[_Attempt, ...]:
+    """What the model recorded about its own calls. Empty for a model that records nothing."""
+    raw = getattr(model, "attempts", None)
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    return tuple(
+        item if isinstance(item, _Attempt) else _Attempt(**_fields_of(item))
+        for item in raw
+    )
+
+
+def _fields_of(item: object) -> dict[str, str]:
+    """The four fields this module reads off an attempt, whatever class produced it."""
+    return {
+        name: str(getattr(item, name, ""))
+        for name in ("provider", "model", "outcome", "failure")
+    }
+
+
+def _attempted(model: object) -> _Attempt:
+    """The provider that answered, or the last one tried. **What the row must record.**
+
+    A success is the last attempt when the chain moved on (`provider_used` is the fallback,
+    not the primary) and the only attempt otherwise. A failure is the last provider tried,
+    because that is the error the client is being told about; `provider_used` and
+    `model_used` are `None` on that row regardless, so nothing claims it answered.
+    """
+    attempts = _attempts(model)
+    return attempts[-1] if attempts else _Attempt(provider=model.provider, model=model.name)
 
 
 def _prompt_text(messages: list[dict]) -> str:

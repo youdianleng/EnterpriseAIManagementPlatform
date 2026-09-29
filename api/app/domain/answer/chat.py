@@ -38,13 +38,35 @@ client.
 that does I/O must be able to `await` inside the loop, and the adapter that does not wants
 to be able to yield without pretending. An async generator is the one shape both can
 implement.
+
+**Why this module also owns the provider chain (ticket 42).** §5.3's `CHAT_CHAIN` is
+`[openai:gpt-4o, deepseek:deepseek-chat, anthropic:claude-*]`, and the chain is a property of
+*the seam* rather than of any adapter: the rule that decides whether to move on (a technical
+failure) and the record of what actually answered (which is what makes
+`rag_messages.provider_used` honest) are the same rule and the same record whichever adapter
+ran. So `stream_with_fallback` lives here, beside the adapters it composes, and
+`domain/answer/driver.py` reads the result from the composed object rather than knowing how
+many providers there were.
+
+**`langchain-openai` was available and is deliberately not used.** The ticket allows either,
+so the choice is recorded: extending this urllib adapter with a per-provider base URL and
+model keeps one HTTP path in the repository — the one `ai/__init__.py` already maps
+`ai/providers/` onto — instead of adding a second, larger dependency's request/response
+machinery (its own retries, its own streaming decoder, its own callback layer) beside an
+adapter that is already tested against the provider's real SSE frames. DeepSeek speaks the
+OpenAI dialect, so it is `OpenAIProvider` with a different base URL and key — one adapter,
+two configurations, which is the honest model of what the two providers are. Anthropic is a
+different dialect and therefore has its own adapter below (`AnthropicChatModel`), because
+the alternative — "configured but unimplemented" — is a chain entry that can never answer.
 """
 
 import asyncio
 import json
 import urllib.error
 import urllib.request
-from collections.abc import AsyncIterator, Iterable, Mapping
+from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Protocol
 
 from app.core.errors import ErrorCode
@@ -74,6 +96,36 @@ NO_PASSAGES = (
 )
 
 
+#: **The technical failures, and the whole of what may cause a fallback** (§5.3/D17).
+#:
+#: The ticket's four — 「超时、限流、服务端错误、连接失败」 — plus the three an operator sees and
+#: acts on, and each is a fact about the *call* rather than about the answer: a provider that
+#: refused the key, a model this key may not use, an endpoint that is not there. What is
+#: deliberately **absent** is any name for "the answer was poor", "the answer was empty" or
+#: "the answer was short": there is no value in this tuple a chain could move on because of
+#: a judgement about text, which is what makes 「绝不因为"回答质量下降"而自动切换」 a property of
+#: the vocabulary rather than a rule somebody has to remember.
+#:
+#: A failure kind is a `str` and there is no enum: the value travels in a record and in a log
+#: line, and an enum would make `records.py`'s `str(getattr(value, "value", value))` the
+#: arbiter of what a trace says.
+TECHNICAL_FAILURES: tuple[str, ...] = (
+    "timeout",
+    "rate_limit",
+    "server_error",
+    "connection_error",
+    "authentication",
+    "permission",
+    "not_found",
+    "protocol_error",
+)
+
+#: The `https://host/v1` root of a base URL, which is what a provider catalogue stores.
+#: `api.openai.com` and `api.deepseek.com` are one spelling apart and a catalogue that had to
+#: repeat `/v1` in every default would be a catalogue somebody eventually gets wrong once.
+DEFAULT_API_VERSION = "v1"
+
+
 class AnswerModelUnavailable(Exception):
     """The answer could not be generated, for a reason an operator can act on.
 
@@ -82,14 +134,31 @@ class AnswerModelUnavailable(Exception):
     event and to an audit-shaped record one level up. The `detail` is the provider's own
     message plus what it means, and it is deliberately *not* shown to the client — a
     provider's 401 body can name the key.
+
+    **`failure` is the technical kind** (ticket 42), and it is what makes degradation a
+    decision rather than a catch-all: §5.3 lets a chain move on for a timeout, a 429, a 5xx
+    or a connection error, and `stream_with_fallback` reads this field and **nothing else**
+    to decide. A failure that is not in `TECHNICAL_FAILURES` would be a judgement about the
+    answer, and no adapter in this repository raises this exception for one.
     """
 
     def __init__(
-        self, detail: str, *, code: ErrorCode = ErrorCode.ANSWER_MODEL_UNAVAILABLE
+        self,
+        detail: str,
+        *,
+        code: ErrorCode = ErrorCode.ANSWER_MODEL_UNAVAILABLE,
+        failure: str = "",
     ) -> None:
         super().__init__(detail)
         self.detail = detail
         self.code = code
+        self.failure = failure
+        if failure and failure not in TECHNICAL_FAILURES:
+            raise ValueError(
+                f"{failure!r} is not a technical failure ({TECHNICAL_FAILURES}); a chain "
+                "may only move on when the call failed, never when an answer looked weak"
+            )
+
 
 
 class ChatModel(Protocol):
@@ -203,15 +272,27 @@ class OpenAIChatModel:
         model: str,
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = REQUEST_TIMEOUT_SECONDS,
+        provider: str = "openai",
+        key_setting: str = "OPENAI_API_KEY",
     ) -> None:
         if not api_key:
+            # A missing key is `authentication`, not a configuration error raised at import:
+            # it is the case §5.3 lets a chain move on from, and it is *the* reason a chain
+            # has a second entry at all. A single-adapter deployment still fails with
+            # `ERR_ANS_001` naming the key — the exception travels the same path it always
+            # did — but now the failure says *which kind* it is.
             raise AnswerModelUnavailable(
-                "no OPENAI_API_KEY: the real chat model cannot be built without one"
+                f"no {key_setting}: the real chat model cannot be built without one",
+                failure="authentication",
             )
         self._api_key = api_key
         self._model = model
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
+        #: Which provider this configuration *is*. `deepseek` speaks this dialect, so one
+        #: adapter carries two configurations and this field is what keeps
+        #: `rag_messages.provider_used` saying which of them answered.
+        self._provider = provider
 
     @property
     def name(self) -> str:
@@ -219,7 +300,7 @@ class OpenAIChatModel:
 
     @property
     def provider(self) -> str:
-        return "openai"
+        return self._provider
 
     async def stream(self, messages: list[Mapping[str, str]]) -> AsyncIterator[str]:
         queue: asyncio.Queue[str | None | AnswerModelUnavailable] = asyncio.Queue()
@@ -289,10 +370,17 @@ class OpenAIChatModel:
                     if increment:
                         yield increment
         except urllib.error.HTTPError as error:
-            raise AnswerModelUnavailable(self._http_detail(error)) from error
-        except (urllib.error.URLError, TimeoutError, OSError) as error:
             raise AnswerModelUnavailable(
-                f"the chat endpoint could not be reached: {error}"
+                self._http_detail(error), failure=failure_kind_for(error.code)
+            ) from error
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            # `TimeoutError` and a refused socket are different operator problems and the
+            # same *decision* — move on — so they are different kinds of one failure rather
+            # than two exception types. A `URLError` wrapping a timeout is the form the
+            # socket actually raises, which is why the inner reason is read as well.
+            raise AnswerModelUnavailable(
+                f"the chat endpoint could not be reached: {error}",
+                failure=failure_kind_for_os_error(error),
             ) from error
 
     def _http_detail(self, error: urllib.error.HTTPError) -> str:
@@ -301,24 +389,231 @@ class OpenAIChatModel:
         The same five-way reading `embeddings._http_detail` makes, for the same reason: an
         operator should not have to know OpenAI's status codes to learn that a key has to
         be set, and 429 and timeout are the two §5.3 explicitly allows a chain to degrade
-        on.
+        on. The message is the provider's; the meaning is `_http_hint`'s, which the Claude
+        adapter reads too — one reading of a status code rather than two that drift.
         """
         try:
             payload = json.loads(error.read().decode("utf-8"))
             message = payload.get("error", {}).get("message", "")
         except Exception:  # noqa: BLE001 - a body that is not JSON tells us nothing
             message = ""
-        if error.code in (401, 403):
-            hint = "the API key is missing, revoked or not allowed for this model"
-        elif error.code == 404:
-            hint = f"the model {self._model!r} is not available to this key"
-        elif error.code == 429:
-            hint = "the account is rate limited or out of quota"
-        elif error.code >= 500:
-            hint = "the provider is failing; this is the case §5.3 lets a chain degrade on"
-        else:
-            hint = "the provider refused the request"
+        hint = _http_hint(error.code, self._model)
         return f"chat HTTP {error.code}: {hint}" + (f" ({message})" if message else "")
+
+
+def failure_kind_for(status: int) -> str:
+    """Which technical failure an HTTP status is. See `TECHNICAL_FAILURES`.
+
+    The four the ticket names are all here and each maps to one name: 408 and 504 are
+    timeouts, 429 is a rate limit, 5xx is a server error, and a 401/403/404 is the operator's
+    to fix. Every branch is *technical* — there is deliberately no branch for a 200 whose
+    body looked wrong, because a 200 whose body looked wrong is a protocol failure and is
+    raised as one by the parser rather than classified here.
+    """
+    if status in (401, 403):
+        return "authentication" if status == 401 else "permission"
+    if status == 404:
+        return "not_found"
+    if status == 408 or status == 504:
+        return "timeout"
+    if status == 429:
+        return "rate_limit"
+    if status >= 500:
+        return "server_error"
+    return "protocol_error"
+
+
+def failure_kind_for_os_error(error: BaseException) -> str:
+    """Whether a socket failure was the clock or the wire.
+
+    `urllib` wraps a socket timeout in `URLError(reason=TimeoutError(...))`, so reading only
+    the outer type would call every timeout a connection error — and a timeout and a refused
+    connection are the two failures an operator debugs differently (a slow provider versus a
+    wrong base URL). Both degrade, which is why they are one exception with two kinds.
+    """
+    reason = getattr(error, "reason", None)
+    if isinstance(error, TimeoutError) or isinstance(reason, TimeoutError):
+        return "timeout"
+    if "timed out" in str(error).lower():
+        return "timeout"
+    return "connection_error"
+
+
+class AnthropicChatModel:
+    """`POST /v1/messages` with `stream: true`. Anthropic's dialect, and its own adapter.
+
+    **Why this is not the OpenAI adapter with a flag.** The two APIs differ in the four things
+    an adapter is: the path, the authentication header, which body key carries the system
+    prompt, and which field of which frame carries the increment. A single class with a
+    `dialect` parameter would be a class whose every method begins with a branch, and the
+    branch that is wrong is the branch nobody exercises — which is exactly how a "supported"
+    provider turns out not to be. §5.3 lists `anthropic:claude-*` as the third entry of
+    `CHAT_CHAIN`, so this is the entry that closes the chain rather than a hypothetical.
+
+    **The shape of the request is Anthropic's.** `system` is a top-level string rather than a
+    message with `role: system` (Anthropic rejects that role), the messages are only `user`
+    and `assistant`, `max_tokens` is required, and the response is an SSE stream of
+    `content_block_delta` events whose `delta.text` is the increment. The event names are read
+    and anything else is skipped, the same policy `_delta_of` follows: a provider that changes
+    its framing should produce an empty stream that the driver reports rather than text
+    assembled from frames this parser guessed at.
+    """
+
+    #: Large enough that a grounded answer is never cut off, and required by the API. It is a
+    #: constant rather than a setting because a model that needs a longer answer is a prompt
+    #: that needs shortening — §5.2 asks for a cited answer, not an essay.
+    MAX_TOKENS = 2048
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        model: str,
+        base_url: str = "https://api.anthropic.com",
+        timeout: float = REQUEST_TIMEOUT_SECONDS,
+        api_version: str = "2023-06-01",
+    ) -> None:
+        if not api_key:
+            raise AnswerModelUnavailable(
+                "no ANTHROPIC_API_KEY: the Claude adapter cannot be built without one",
+                failure="authentication",
+            )
+        self._api_key = api_key
+        self._model = model
+        self._base_url = base_url.rstrip("/")
+        self._timeout = timeout
+        self._api_version = api_version
+
+    @property
+    def name(self) -> str:
+        return self._model
+
+    @property
+    def provider(self) -> str:
+        return "anthropic"
+
+    async def stream(self, messages: list[Mapping[str, str]]) -> AsyncIterator[str]:
+        queue: asyncio.Queue[str | None | AnswerModelUnavailable] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def pump() -> None:
+            try:
+                for increment in self._frames(messages):
+                    loop.call_soon_threadsafe(queue.put_nowait, increment)
+            except AnswerModelUnavailable as error:
+                loop.call_soon_threadsafe(queue.put_nowait, error)
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        worker = loop.run_in_executor(None, pump)
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                if isinstance(item, AnswerModelUnavailable):
+                    raise item
+                yield item
+        finally:
+            await worker
+
+    def _frames(self, messages: list[Mapping[str, str]]) -> Iterable[str]:
+        system, turns = _anthropic_turns(messages)
+        body = json.dumps(
+            {
+                "model": self._model,
+                "system": system,
+                "messages": turns,
+                "max_tokens": self.MAX_TOKENS,
+                "stream": True,
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self._base_url}/v1/messages",
+            data=body,
+            headers={
+                "x-api-key": self._api_key,
+                "anthropic-version": self._api_version,
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self._timeout) as response:
+                for raw in response:
+                    line = raw.decode("utf-8").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    increment = _anthropic_delta(line[len("data:") :].strip())
+                    if increment:
+                        yield increment
+        except urllib.error.HTTPError as error:
+            raise AnswerModelUnavailable(
+                f"claude HTTP {error.code}: {_http_hint(error.code, self._model)}",
+                failure=failure_kind_for(error.code),
+            ) from error
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            raise AnswerModelUnavailable(
+                f"the claude endpoint could not be reached: {error}",
+                failure=failure_kind_for_os_error(error),
+            ) from error
+
+
+def _anthropic_turns(
+    messages: list[Mapping[str, str]],
+) -> tuple[str, list[dict[str, str]]]:
+    """The prompt as Anthropic wants it: a system string and user/assistant turns.
+
+    The system prompt is `prompts.py`'s own, which is the same text the OpenAI adapter sends
+    as a `system` message — so the two providers are asked the *same question*, which is what
+    makes a fallback a fallback rather than a second product.
+    """
+    system_parts: list[str] = []
+    turns: list[dict[str, str]] = []
+    for message in messages:
+        role = str(message.get("role", "user"))
+        content = str(message.get("content", ""))
+        if role == "system":
+            system_parts.append(content)
+        else:
+            turns.append({"role": role if role in ("user", "assistant") else "user",
+                          "content": content})
+    return "\n\n".join(system_parts), turns
+
+
+def _anthropic_delta(payload: str) -> str:
+    """One Anthropic frame's text increment, or the empty string.
+
+    Only `content_block_delta` carries text; `message_start`, `ping`, `content_block_stop`
+    and `message_delta` are ordinary frames and must yield nothing rather than raise.
+    """
+    try:
+        decoded = json.loads(payload)
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(decoded, dict):
+        return ""
+    if decoded.get("type") != "content_block_delta":
+        return ""
+    delta = decoded.get("delta")
+    if not isinstance(delta, dict):
+        return ""
+    text = delta.get("text")
+    return text if isinstance(text, str) else ""
+
+
+def _http_hint(status: int, model: str) -> str:
+    """What a status means for the operator. One reading, two adapters, one sentence each."""
+    if status in (401, 403):
+        return "the API key is missing, revoked or not allowed for this model"
+    if status == 404:
+        return f"the model {model!r} is not available to this key"
+    if status == 429:
+        return "the account is rate limited or out of quota"
+    if status >= 500:
+        return "the provider is failing; this is the case §5.3 lets a chain degrade on"
+    return "the provider refused the request"
 
 
 def _delta_of(payload: str) -> str:
@@ -443,6 +738,473 @@ def _after(content: str, marker: str) -> str:
     return content[index + len(marker) :].strip()
 
 
+# --- provider configuration and the chain (ticket 42) ------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class KeylessChatModel:
+    """The same dialect as `OpenAIChatModel`, with no `Authorization` header.
+
+    A local runtime — Ollama, llama.cpp, vLLM — answers `/chat/completions` exactly as OpenAI
+    does and does not check a key. Sending `Authorization: Bearer ` with an empty token is
+    not "harmless": a gateway in front of the runtime may reject it, and a header that exists
+    only to be empty is a header somebody later fills in with the wrong value. So the header
+    is *absent*, which is the whole difference and the reason this is a class rather than a
+    flag on the OpenAI adapter's body.
+    """
+
+    provider: str
+    model: str
+    base_url: str
+    timeout: float = REQUEST_TIMEOUT_SECONDS
+
+    @property
+    def name(self) -> str:
+        return self.model
+
+    async def stream(self, messages: list[Mapping[str, str]]) -> AsyncIterator[str]:
+        queue: asyncio.Queue[str | None | AnswerModelUnavailable] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def pump() -> None:
+            try:
+                for increment in self._frames(messages):
+                    loop.call_soon_threadsafe(queue.put_nowait, increment)
+            except AnswerModelUnavailable as error:
+                loop.call_soon_threadsafe(queue.put_nowait, error)
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        worker = loop.run_in_executor(None, pump)
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                if isinstance(item, AnswerModelUnavailable):
+                    raise item
+                yield item
+        finally:
+            await worker
+
+    def _frames(self, messages: list[Mapping[str, str]]) -> Iterable[str]:
+        body = json.dumps(
+            {"model": self._model_or_default(), "messages": list(messages), "stream": True}
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.base_url.rstrip('/')}/chat/completions",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                for raw in response:
+                    line = raw.decode("utf-8").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    payload = line[len("data:") :].strip()
+                    if payload == "[DONE]":
+                        return
+                    increment = _delta_of(payload)
+                    if increment:
+                        yield increment
+        except urllib.error.HTTPError as error:
+            raise AnswerModelUnavailable(
+                f"{self.provider} HTTP {error.code}: {_http_hint(error.code, self.model)}",
+                failure=failure_kind_for(error.code),
+            ) from error
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            raise AnswerModelUnavailable(
+                f"the {self.provider} endpoint could not be reached: {error}",
+                failure=failure_kind_for_os_error(error),
+            ) from error
+
+    def _model_or_default(self) -> str:
+        return self.model or "llama3.1"
+
+
+@dataclass(frozen=True, slots=True)
+class UnavailableChatModel:
+    """A configured provider this process holds no key for. **Present and failing.**
+
+    A chain that *skipped* an unbuildable provider at construction would report
+    `provider_used=deepseek` with nothing to say about why OpenAI was not tried — which is
+    exactly the invisible degradation `rag_messages.provider_used` exists to make visible.
+    So an adapter that cannot be built is replaced by this one, which reports the same
+    `authentication` failure the constructor would have raised, at the moment the request
+    tries it. The row then says "openai failed with authentication, deepseek answered", and
+    an operator knows which variable to set.
+
+    It streams nothing and raises before its first increment, which is the shape a
+    connection failure has and the reason the chain's `yielded` guard is not involved.
+    """
+
+    provider: str
+    model: str
+    detail: str
+
+    @property
+    def name(self) -> str:
+        return self.model
+
+    async def stream(self, messages: list[Mapping[str, str]]) -> AsyncIterator[str]:
+        raise AnswerModelUnavailable(self.detail, failure="authentication")
+        yield ""  # pragma: no cover - unreachable, and present so this stays a generator
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderConfig:
+    """One entry of the chain: which provider, which model, and where to post.
+
+    A dataclass rather than four parameters because the four travel together and because
+    `build_chat_model`'s signature would otherwise grow a `provider` argument that is *also*
+    the thing the other three describe. The defaults are §5.3's own list, one entry per
+    provider, so a deployment that sets nothing gets the provider this repository defaults
+    to (see `config.Settings.chat_provider_name`) and a deployment that sets `CHAT_PROVIDERS`
+    gets exactly the values it named.
+    """
+
+    provider: str
+    #: The model. `None` means the catalogue's default for this provider, which is the value
+    #: §5.3 lists — a deployment that wants a different one names it, and the name is what
+    #: `rag_messages.model_used` then records.
+    model: str | None = None
+    base_url: str | None = None
+    #: The setting a missing key should be reported as, so the message names the variable an
+    #: operator has to set rather than the one this file happens to read.
+    key_setting: str | None = None
+    #: Whether this provider **needs no key at all**. A keyless provider is usually a local
+    #: runtime (Ollama, llama.cpp, vLLM) and a key-requiring one is a SaaS; the distinction is
+    #: here rather than in a second catalogue because it is one fact about the entry and it is
+    #: what decides whether a missing key is a failure or the ordinary configuration.
+    anonymous: bool = False
+
+
+#: **§5.3's `CHAT_CHAIN`, as a catalogue.** `openai` and `deepseek` are one dialect
+#: (`OpenAIProvider`'s) with two configurations; `anthropic` is the other dialect. The
+#: catalogue is a mapping rather than three branches so that `parse_provider_chain` can
+#: name the providers it knows without a second list, and so that a typo in `CHAT_PROVIDERS`
+#: is refused by name.
+PROVIDERS: Mapping[str, ProviderConfig] = MappingProxyType(
+    {
+        "openai": ProviderConfig(
+            provider="openai",
+            model="gpt-4o",
+            base_url="https://api.openai.com",
+            key_setting="OPENAI_API_KEY",
+        ),
+        "deepseek": ProviderConfig(
+            provider="deepseek",
+            model="deepseek-chat",
+            base_url="https://api.deepseek.com",
+            key_setting="DEEPSEEK_API_KEY",
+        ),
+        "anthropic": ProviderConfig(
+            provider="anthropic",
+            model="claude-3-5-sonnet-latest",
+            base_url="https://api.anthropic.com",
+            key_setting="ANTHROPIC_API_KEY",
+        ),
+        # **The local, keyless entry**, and the reason it is in the catalogue rather than a
+        # class of its own: `docker compose up` must work with no API key at all — that is the
+        # verification standard this repository holds every ticket to — and §5.3's three
+        # providers are all SaaS. Ollama speaks the OpenAI dialect, so it is the *same*
+        # adapter with the `Authorization` header omitted, which is the only difference a
+        # keyless endpoint has. Its base URL is `host.docker.internal`, the address a
+        # container uses to reach a runtime on the host, because that is where somebody
+        # running a local model has it.
+        "ollama": ProviderConfig(
+            provider="ollama",
+            model="llama3.1",
+            base_url="http://host.docker.internal:11434/v1",
+            key_setting="OLLAMA_API_KEY",
+            anonymous=True,
+        ),
+    }
+)
+
+
+def parse_provider_chain(configured: str | None, *, fallback: str) -> tuple[str, ...]:
+    """`CHAT_PROVIDERS=openai,deepseek` → `("openai", "deepseek")`.
+
+    **The chain is configuration, and this is the whole of the parsing.** Unset means one
+    provider — the one `chat_provider_name` derives for the environment — which is what keeps
+    `docker compose up` and every existing deployment behaving exactly as they did: a chain
+    nobody configured is a chain of one, not a surprise second provider.
+
+    **A name that is not in `PROVIDERS` is refused rather than dropped**, because a chain that
+    silently lost an entry is a deployment that believes it has a fallback and does not. But
+    **the fallback itself is always acceptable**, and that is not a loophole: `fallback` is
+    the name this environment *derived for itself* — `fake` in development and test,
+    `openai` elsewhere — so refusing it would mean a deployment could not name the adapter it
+    is already running. `fake` is the case that makes this concrete: it is the in-process
+    adapter and deliberately has no `PROVIDERS` entry (no endpoint, no model, no key), so the
+    accepted set is the catalogue *plus* the derived name.
+    """
+    if configured is None or not configured.strip():
+        return (fallback,)
+    names = tuple(part.strip().lower() for part in configured.split(",") if part.strip())
+    if not names:
+        return (fallback,)
+    allowed = set(PROVIDERS) | {fallback}
+    unknown = [name for name in names if name not in allowed]
+    if unknown:
+        raise AnswerModelUnavailable(
+            f"CHAT_PROVIDERS names {unknown}, which this deployment has no adapter for; "
+            f"the adapters are {sorted(allowed)}"
+        )
+    # Ordered, and duplicates are kept: an operator who wrote `openai,openai` gets two
+    # attempts at OpenAI, which is a legitimate retry and not a mistake this layer should
+    # silently rewrite.
+    return names
+
+
+def build_chat_chain(
+    names: Sequence[str],
+    *,
+    keys: Mapping[str, str | None],
+    models: Mapping[str, str | None] | None = None,
+    base_urls: Mapping[str, str | None] | None = None,
+    timeout: float = REQUEST_TIMEOUT_SECONDS,
+) -> ChatModel:
+    """The ranked adapters, wrapped in the one object the driver streams through.
+
+    `names` is the configured order and `names[0]` is the primary. The adapters are built
+    here, all of them, so a provider whose key is missing is *present and failing* rather
+    than absent: the chain then records "openai tried, `authentication`" and moves on, which
+    is the honest record of what happened. Skipping an unbuildable provider at construction
+    would make `provider_used` say `deepseek` with no trace of why.
+
+    The timeout is one number for the whole chain rather than one per provider, because it is
+    a property of the *request* this process is serving (§9's first-token budget): two
+    providers each allowed sixty seconds is a two-minute wait for a client who was promised
+    two and a half seconds to the first token.
+    """
+    if not names:
+        raise AnswerModelUnavailable(
+            "the chat chain is empty; a chain with no provider is the 'none' this module "
+            "refuses, because an answer with no model would have to come from the model's "
+            "own knowledge (D20)"
+        )
+    models = models or {}
+    base_urls = base_urls or {}
+    adapters: list[ChatModel] = []
+    for name in names:
+        model = models.get(name) or _default_model(name)
+        key = keys.get(name)
+        config = PROVIDERS.get(name)
+        if name != "fake" and not key and not (config and config.anonymous):
+            # See `UnavailableChatModel`: a keyless SaaS provider is a chain entry that
+            # fails, not an entry that is not there. A provider the catalogue marks
+            # `anonymous` (a local runtime) has no key by design and is built below.
+            setting = (
+                config.key_setting if config and config.key_setting
+                else f"{name.upper()}_API_KEY"
+            )
+            adapters.append(
+                UnavailableChatModel(
+                    provider=name,
+                    model=model,
+                    detail=(
+                        f"no {setting}: the {name} adapter has no key in this deployment, "
+                        f"so this is the attempt the chain moves on from"
+                    ),
+                )
+            )
+            continue
+        if config is not None and config.anonymous:
+            # No `Authorization` header at all: `KeylessChatModel`.
+            adapters.append(
+                KeylessChatModel(
+                    provider=name,
+                    model=model,
+                    base_url=base_urls.get(name) or _default_base_url(name),
+                    timeout=timeout,
+                )
+            )
+            continue
+        adapters.append(
+            build_chat_model(
+                name,
+                api_key=key,
+                # `fake` takes no base URL, no model name and no timeout, and is the one
+                # adapter whose presence in a chain is explicit rather than configured:
+                # `parse_provider_chain` never invents it.
+                model=model,
+                base_url=base_urls.get(name) or _default_base_url(name),
+                timeout=timeout,
+            )
+        )
+    return stream_with_fallback(adapters)
+
+
+def _default_model(name: str) -> str:
+    config = PROVIDERS.get(name)
+    return (config.model if config else None) or ""
+
+
+def _default_base_url(name: str) -> str:
+    config = PROVIDERS.get(name)
+    return (config.base_url if config else None) or DEFAULT_BASE_URL
+
+
+@dataclass(frozen=True, slots=True)
+class ChatAttempt:
+    """One provider's turn at the request. The record that makes the accounting honest.
+
+    `outcome` is `"ok"` or `"failed"` and `failure` is the technical kind for a failure —
+    a member of `TECHNICAL_FAILURES`, never a judgement about the answer. Nothing else about
+    the attempt is kept: not the prompt, not the text, which is what lets this object be
+    logged and audited (see `driver.py`).
+    """
+
+    provider: str
+    model: str
+    outcome: str
+    failure: str = ""
+
+
+@dataclass(slots=True)
+class FallbackChatModel:
+    """A ranked list of adapters, presenting the `ChatModel` interface as their sum.
+
+    **The degradation rule lives here and nowhere else.** A provider is abandoned exactly
+    when `stream` raised `AnswerModelUnavailable`, which the `ChatModel` protocol's adapters
+    raise only for a technical failure — and every one of those carries a
+    `TECHNICAL_FAILURES` kind, which this class asserts. There is no branch on the text: an
+    adapter that yielded a poor answer has *returned*, and a returned stream is the answer.
+
+    **A stream that fails halfway is abandoned and its partial text is discarded**, and that
+    is deliberate: the driver has already written those increments to a client, so the chain
+    cannot un-write them — but it can refuse to append a second provider's text to a first
+    provider's half-sentence, which would be a fabricated answer. So once a provider has
+    yielded anything, its failure is re-raised; degradation only happens *before* the first
+    increment. `tests/test_provider_chain.py` pins both halves.
+
+    **`provider` and `name` report what answered.** Before any call they name the primary, so
+    the `start` event a client receives says which provider is being tried first; after a
+    stream ends they name the adapter that produced it, so the row the driver stores says
+    which one actually did. That is the whole of 「每次请求记录实际使用的供应商与模型」.
+    """
+
+    adapters: tuple[ChatModel, ...]
+    #: Every attempt this request made, in order. Read by the driver for the fallback log
+    #: line and the audit entry; never carries text.
+    attempts: list[ChatAttempt] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.adapters:
+            raise ValueError(
+                "a fallback chain needs at least one adapter; an empty one would answer "
+                "with nothing"
+            )
+
+    @property
+    def name(self) -> str:
+        if self.attempts and self.attempts[-1].outcome == "ok":
+            return self.attempts[-1].model
+        return self.adapters[0].name
+
+    @property
+    def provider(self) -> str:
+        if self.attempts and self.attempts[-1].outcome == "ok":
+            return self.attempts[-1].provider
+        return self.adapters[0].provider
+
+    @property
+    def provider_count(self) -> int:
+        """How many providers were configured — a count, which is all a trace may say."""
+        return len(self.adapters)
+
+    def fallbacks(self) -> tuple[ChatAttempt, ...]:
+        """The attempts that failed before the one that answered. Empty when the primary did."""
+        return tuple(attempt for attempt in self.attempts if attempt.outcome != "ok")
+
+    async def stream(self, messages: list[Mapping[str, str]]) -> AsyncIterator[str]:
+        """Stream from the first provider that answers, in configuration order.
+
+        The `raise` at the end is the all-providers-fail case, and it is the *last*
+        provider's own exception with the chain's sentence in front of it: the driver maps it
+        to `ERR_ANS_001`, the same explicit error one provider produced before this ticket,
+        so 「明确错误而非静默空回答」 is the existing path rather than a second one.
+        """
+        failures: list[ChatAttempt] = []
+        for adapter in self.adapters:
+            yielded = False
+            try:
+                async for increment in adapter.stream(messages):
+                    yielded = True
+                    yield increment
+            except AnswerModelUnavailable as error:
+                kind = error.failure or "protocol_error"
+                self._refuse_unknown_kind(kind, adapter)
+                self.attempts.append(
+                    ChatAttempt(
+                        provider=adapter.provider,
+                        model=adapter.name,
+                        outcome="failed",
+                        failure=kind,
+                    )
+                )
+                if yielded:
+                    # Half an answer is already on the wire; a second provider's text
+                    # appended to it would be an answer nobody wrote.
+                    raise
+                failures.append(self.attempts[-1])
+                continue
+            self.attempts.append(
+                ChatAttempt(provider=adapter.provider, model=adapter.name, outcome="ok")
+            )
+            return
+
+        raise AnswerModelUnavailable(
+            self._all_failed_detail(failures),
+            failure=failures[-1].failure if failures else "protocol_error",
+        )
+
+    def _all_failed_detail(self, failures: Sequence[ChatAttempt]) -> str:
+        """Every provider named, in order, with its failure kind. **No provider text.**"""
+        chain = ", ".join(
+            f"{attempt.provider}({attempt.failure or 'failed'})" for attempt in failures
+        )
+        return (
+            f"all {len(self.adapters)} configured chat providers failed — {chain}. "
+            f"{_last_detail(self.adapters)}"
+        )
+
+    def _refuse_unknown_kind(self, kind: str, adapter: ChatModel) -> None:
+        """An adapter may only fail *technically*. See `TECHNICAL_FAILURES`.
+
+        The check is here rather than only in `AnswerModelUnavailable.__init__` because a
+        third-party or test adapter could raise a subclass that bypasses it — and a chain
+        that degraded on an unclassified failure is a chain that could degrade on a poor
+        answer, which is the one thing §5.3 forbids.
+        """
+        if kind not in TECHNICAL_FAILURES:
+            raise AnswerModelUnavailable(
+                f"{adapter.provider} reported {kind!r}, which is not one of the technical "
+                f"failures a chain may degrade on ({TECHNICAL_FAILURES})"
+            )
+
+
+def stream_with_fallback(adapters: Sequence[ChatModel]) -> FallbackChatModel:
+    """The chain, built from adapters. Named so a test can compose its own without settings."""
+    return FallbackChatModel(adapters=tuple(adapters))
+
+
+def _last_detail(adapters: Sequence[ChatModel]) -> str:
+    """A stable sentence for the log: the last adapter's name, not its exception text.
+
+    The provider's own message is on the exception the caller catches; repeating it in the
+    chain's sentence would put a string that can name a key into a second place.
+    """
+    return f"the last provider tried was {adapters[-1].provider}"
+
+
 def build_chat_model(
     provider: str,
     *,
@@ -460,26 +1222,80 @@ def build_chat_model(
     *answer* with no model has nothing to fall back to, and D20 forbids the one fallback
     that would look like one. So an unknown provider is refused here rather than
     degraded.
+
+    Since ticket 42 this builds **one** adapter and `build_chat_chain` composes several: the
+    single-provider case is unchanged, which is what keeps an existing deployment's behaviour
+    identical when it sets no `CHAT_PROVIDERS`.
     """
     if provider == "fake":
         return StreamedChatModel()
     if provider == "openai":
-        return OpenAIChatModel(api_key or "", model=model, base_url=base_url, timeout=timeout)
+        return OpenAIChatModel(
+            api_key or "",
+            model=model,
+            base_url=base_url,
+            timeout=timeout,
+            provider="openai",
+            key_setting="OPENAI_API_KEY",
+        )
+    if provider == "deepseek":
+        # The same adapter, because DeepSeek speaks the OpenAI dialect: `/chat/completions`,
+        # `Authorization: Bearer`, `choices[0].delta.content`, `data: [DONE]`. One
+        # implementation with two configurations is the honest model of that, and it is why
+        # this branch names no new class.
+        return OpenAIChatModel(
+            api_key or "",
+            model=model,
+            base_url=base_url,
+            timeout=timeout,
+            provider="deepseek",
+            key_setting="DEEPSEEK_API_KEY",
+        )
+    if provider == "anthropic":
+        # A different dialect, so a different adapter: `/v1/messages`, `x-api-key`,
+        # a top-level `system`, and `content_block_delta`. See `AnthropicChatModel`.
+        return AnthropicChatModel(
+            api_key or "", model=model, base_url=base_url, timeout=timeout
+        )
+    if provider == "ollama":
+        # The OpenAI dialect with no key: a local runtime. See `KeylessChatModel`.
+        if not api_key:
+            return KeylessChatModel(
+                provider="ollama", model=model, base_url=base_url, timeout=timeout
+            )
+        raise AnswerModelUnavailable(
+            "the ollama adapter is keyless by design and OLLAMA_API_KEY was set; a local "
+            "runtime that suddenly needs a key is a different deployment, not this one"
+        )
     raise AnswerModelUnavailable(
-        f"unknown chat provider {provider!r}; expected one of fake, openai. There is no "
-        "'none': an answer with no model would have to be written from the model's own "
-        "knowledge, which is the fallback D20 forbids"
+        f"unknown chat provider {provider!r}; expected one of fake, openai, deepseek, "
+        "anthropic, ollama. There is no 'none': an answer with no model would have to be "
+        "written from the model's own knowledge, which is the fallback D20 forbids"
     )
 
 
 __all__ = [
+    "DEFAULT_API_VERSION",
     "DEFAULT_BASE_URL",
     "FAKE_MODEL",
     "NO_PASSAGES",
+    "PROVIDERS",
     "REQUEST_TIMEOUT_SECONDS",
+    "TECHNICAL_FAILURES",
+    "AnthropicChatModel",
     "AnswerModelUnavailable",
+    "ChatAttempt",
     "ChatModel",
+    "FallbackChatModel",
+    "KeylessChatModel",
     "OpenAIChatModel",
+    "ProviderConfig",
     "StreamedChatModel",
+    "UnavailableChatModel",
+    "build_chat_chain",
     "build_chat_model",
+    "failure_kind_for",
+    "failure_kind_for_os_error",
+    "parse_provider_chain",
+    "stream_with_fallback",
 ]

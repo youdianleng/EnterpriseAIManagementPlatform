@@ -220,6 +220,17 @@ class AuditAction(StrEnum):
     OVERTIME_RECORD_CONFIRMED = "overtime_record.confirmed"  # 26
     AGENT_ACTION_PROPOSED = "agent.action_proposed"  # 40
     AGENT_ACTION_CONFIRMED = "agent.action_confirmed"  # 41
+    #: **A degradation of the chat chain** (ticket 42, §5.3/D17). Its own action rather than
+    #: a field on `conversation.asked`, because it is a fact about *this installation's
+    #: providers* rather than about the question: the row already says which provider answered,
+    #: and the trail needs the other half — how many attempts it took, which providers failed
+    #: and with what technical kind. `initiated_by="system"` for `document.parsed`'s reason:
+    #: no person acted, and attributing it to the asker would be a lie the trail tells.
+    #:
+    #: **No conversation text**, and the entry's shape is what makes that checkable: the
+    #: fields are provider names, model names, a run-local count and a member of
+    #: `chat.TECHNICAL_FAILURES`. The prompt and the passages stay in the request.
+    ANSWER_PROVIDER_FALLBACK = "answer.provider_fallback"  # 42
     #: One record per export, carrying the period and what the file stated. Finance
     #: re-runs a month as a matter of course, so the trail is what makes "who exported
     #: which period, when, and how many rows did it say" answerable; the file itself is

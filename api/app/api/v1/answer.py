@@ -82,7 +82,6 @@ from app.domain.access import Action, Principal
 from app.domain.access.kernel import ResourceKind
 from app.domain.agent.models import AgentAction
 from app.domain.agent.service import service_for
-from app.domain.answer.chat import build_chat_model
 from app.domain.answer.driver import AnswerService
 from app.domain.answer.repository import ConversationRead as StoredConversation
 from app.domain.answer.repository import ConversationSummary as StoredSummary
@@ -107,18 +106,25 @@ read_own_conversation = require(Action.SESSION_READ_OWN, ResourceKind.ACCOUNT)
 
 
 def _service(session: AsyncSession, principal: Principal) -> AnswerService:
-    """The answer module, wired to retrieval, the chat adapter and the repository.
+    """The answer module, wired to retrieval, the chat chain and the repository.
 
     Built here rather than inside the service for the reason `retrieval.py::_service`
-    gives: the adapter comes from settings and is the seam a test replaces to record
+    gives: the adapters come from settings and are the seam a test replaces to record
     whether the model was called. Everything else — the filter, the prompt, the
     persistence — is the module's.
+
+    **The chain is assembled here and it is configuration** (ticket 42):
+    `chat_provider_names` is `CHAT_PROVIDERS` parsed, or the single provider the environment
+    derives, and `build_chat_chain` composes the adapters it names in that order. A
+    deployment that sets nothing gets exactly the one adapter it had before this ticket.
     """
     from app.config import get_settings
+    from app.domain.answer.chat import build_chat_chain
     from app.domain.document.embeddings import build_embedder
     from app.domain.retrieval.rerank import build_reranker
 
     settings = get_settings()
+    names = settings.chat_provider_names
     return AnswerService(
         PostgresAnswerRepository(session),
         RetrievalService(
@@ -133,15 +139,100 @@ def _service(session: AsyncSession, principal: Principal) -> AnswerService:
             leg_limit=settings.retrieval_leg_limit,
             reranker=build_reranker(settings.retrieval_reranker),
         ),
-        build_chat_model(
-            settings.chat_provider_name,
-            api_key=settings.openai_api_key,
-            model=settings.chat_model,
-            base_url=settings.openai_base_url,
+        build_chat_chain(
+            names,
+            keys=_provider_keys(settings, names),
+            models=_provider_models(settings, names),
+            base_urls=_provider_base_urls(settings, names),
             timeout=settings.chat_timeout_seconds,
         ),
         session=session,
     )
+
+
+def _provider_keys(settings, names: tuple[str, ...]) -> dict[str, str | None]:  # noqa: ANN001
+    """Each provider's key, from its own setting. A missing one is left missing.
+
+    `config.Settings` holds one field per provider (`openai_api_key`, `deepseek_api_key`,
+    `anthropic_api_key`) rather than one field every provider reads, because a chain is only
+    useful when its entries are configured separately — the point of a second provider is
+    that it is *not* the first one's account. A field that does not exist for a name is
+    `None`, which `build_chat_model` turns into the typed `authentication` failure the chain
+    moves on from. `fake` needs no key at all.
+    """
+    return {
+        name: _key_of(settings, name)
+        for name in names
+    }
+
+
+def _key_of(settings, name: str) -> str | None:  # noqa: ANN001
+    """One provider's key: its own setting, and `OPENAI_API_KEY` for OpenAI.
+
+    `OPENAI_API_KEY` is read for `openai` because it is the setting that existed before this
+    ticket and it is also the embedding provider's key; every other provider has its own, and
+    a provider with none is left without one on purpose.
+    """
+    if name == "openai":
+        return settings.openai_api_key
+    return getattr(settings, f"{name}_api_key", None) or None
+
+
+def _provider_models(settings, names: tuple[str, ...]) -> dict[str, str | None]:  # noqa: ANN001
+    """The model per provider: the provider's own setting, or `chat_model` for the default one.
+
+    `CHAT_MODEL` is the *default provider's* model — it existed before the chain and a
+    deployment that set it meant "the model this installation generates with". A second
+    provider does not inherit it, because `gpt-4o` is not a model DeepSeek serves and one
+    variable cannot honestly mean both; each other provider falls back to the catalogue's
+    own §5.3 name, which is `deepseek-chat` or `claude-3-5-sonnet-latest`.
+    """
+    return {
+        name: (
+            settings.chat_model
+            if name == "openai"
+            else getattr(settings, f"{name}_chat_model", None) or _catalogue_model(name)
+        )
+        for name in names
+    }
+
+
+def _catalogue_model(name: str) -> str | None:
+    """The catalogue's default model for a provider, or `None` for one that has no entry.
+
+    `fake` is the case that needs this: it is an in-process adapter with no catalogue entry,
+    no model and no base URL, and every accessor here has to answer for it rather than raise.
+    """
+    from app.domain.answer.chat import PROVIDERS
+
+    config = PROVIDERS.get(name)
+    return config.model if config else None
+
+
+def _provider_base_urls(settings, names: tuple[str, ...]) -> dict[str, str | None]:  # noqa: ANN001
+    """Where each provider is posted, from its own setting or the catalogue's default.
+
+    `OPENAI_BASE_URL` is read for `openai` because it is the setting that existed before this
+    ticket and a deployment may already route through a gateway; every other provider reads
+    its own, falling back to the catalogue. `fake` has no entry and takes no URL at all, so it
+    is left as `None` — which is what `build_chat_chain`'s own default does for it.
+    """
+    return {
+        name: (
+            settings.openai_base_url
+            if name == "openai"
+            else getattr(settings, f"{name}_base_url", None) or _catalogue_url(name)
+        )
+        for name in names
+    }
+
+
+def _catalogue_url(name: str) -> str | None:
+    """The catalogue's base URL for a provider, or `None` for one that has none."""
+    from app.domain.answer.chat import PROVIDERS
+
+    config = PROVIDERS.get(name)
+    return config.base_url if config else None
 
 
 @router.post(
