@@ -2823,7 +2823,7 @@ async function checkDraftDecisions(browser, sessionCookie, request) {
   );
   expect(
     (await leaveRequestCount(request)) === leavesBefore,
-    `decide: a chat reply created a leave request (${leavesBefore} → ${await leaveRequestCount(request)})`,
+    `decide: a chat reply created no leave request (${leavesBefore} → ${await leaveRequestCount(request)})`,
   );
   ok("decide: a confirming-sounding message in the chat created nothing");
 
@@ -2839,7 +2839,7 @@ async function checkDraftDecisions(browser, sessionCookie, request) {
   // dialog" from "committing": a dialog that posted on open would create the document here.
   expect(
     (await leaveRequestCount(request)) === leavesBefore,
-    "decide: opening the confirmation dialog already created something",
+    "decide: opening the confirmation dialog created nothing yet",
   );
   await page.screenshot({ path: join(OUT, "qa-draft-confirm-dialog-es.png"), fullPage: true });
 
@@ -2852,7 +2852,7 @@ async function checkDraftDecisions(browser, sessionCookie, request) {
   );
   expect(
     (await leaveRequestCount(request)) === leavesBefore + 1,
-    "decide: the click did not create exactly one leave request",
+    "decide: the click created exactly one leave request",
   );
   const entityType = afterClick.confirmedEntity?.type ?? null;
   expect(
@@ -2931,9 +2931,9 @@ async function checkDraftDecisions(browser, sessionCookie, request) {
   );
   expect(
     (await leaveRequestCount(request)) === leavesBeforeReject,
-    "decide: discarding created a document",
+    "decide: discarding created no document",
   );
-  expect(!afterReject.confirmedEntity, "decide: a discarded draft names an entity");
+  expect(!afterReject.confirmedEntity, "decide: a discarded draft names no entity");
   ok("decide: discarding created nothing and said so");
 
   // --- English, and the narrow widths: the answered state in the other language ----
