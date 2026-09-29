@@ -381,19 +381,24 @@ def test_the_registry_is_design_6_2s_read_only_rows_and_nothing_else() -> None:
     Five names, each mapping to a `Tool` whose own name is the key it is filed under, and
     a `ToolKind` with no `WRITE` member at all — so "the agent has no write tool" is a
     fact about the type rather than a rule somebody has to keep.
+
+    **The draft half is ticket 40's and this assertion is now about the read half.** It
+    used to say `registered(ToolKind.DRAFT) == ()`; ticket 40 registered §6.2's three draft
+    rows, so the set this file owns is `registered(ToolKind.READ_ONLY)`, and what it still
+    asserts about the whole registry is the part that is about *every* tool: the name it is
+    filed under, and the kind.
     """
-    assert {tool.name for tool in registered()} == {
+    assert {tool.name for tool in registered(ToolKind.READ_ONLY)} == {
         "get_my_attendance",
         "get_my_leave_balance",
         "get_my_timesheets",
         "get_colleague_contact",
         "get_team_attendance_summary",
     }
-    assert registered(ToolKind.DRAFT) == ()
     assert not hasattr(ToolKind, "WRITE"), "a write kind exists"
     for name, tool in REGISTRY.items():
         assert tool.name == name, f"{name} is filed under another tool's name"
-        assert tool.kind is ToolKind.READ_ONLY
+        assert tool.kind in {ToolKind.READ_ONLY, ToolKind.DRAFT}
 
 
 def test_design_6_2s_search_policy_is_not_a_second_retrieval_path() -> None:
@@ -546,9 +551,10 @@ def test_no_registered_tool_can_reach_a_write() -> None:
 
     `codebase-design.md` §6: 「测试断言 AI 可触达的工具集合中不存在写库工具」. The registry is
     that set, so this walks the source of the whole `app/ai/tools` package — the five
-    implementations *and* the wiring that builds their domain services — and fails on a
-    write-shaped call or a write statement. Ticket 40 extends the same walk to the draft
-    half; the walk is what this ticket establishes.
+    implementations *and* the wiring that builds their domain services, plus ticket 40's
+    three draft tools — and fails on a write-shaped call or a write statement.
+    `tests/test_agent_draft_tools.py` is where the draft half's own behaviour is asserted;
+    the walk is one function over one package, so it covers both by construction.
     """
     modules = sorted(TOOLS_PACKAGE.glob("*.py"))
     assert len(modules) >= 6, modules
@@ -583,8 +589,20 @@ def test_no_tool_parameter_can_name_an_employee() -> None:
     cannot even *declare* an employee id: `Tool.__post_init__` refuses a parameter outside
     `ALLOWED_PARAMETERS`, so an escalation would have to be an edit to that set — which the
     first assertion pins, so the edit is visible in a diff rather than in a prompt.
+
+    Ticket 40 widened the literal with the draft tools' fields (a leave type, two dates, a
+    punch kind and its instant, a week and a day, a project and a task, minutes, a note),
+    and this test is why that widening is a *decision*: the assertion below is the list, so
+    a name arriving in `ALLOWED_PARAMETERS` without a reader seeing it here is impossible.
     """
-    assert ALLOWED_PARAMETERS == {"from_date", "to_date", "year", "status", "name"}
+    assert ALLOWED_PARAMETERS == {
+        # read-only (ticket 39)
+        "from_date", "to_date", "year", "status", "name",
+        # drafts (ticket 40)
+        "leave_type", "start_date", "end_date", "attachment_reference",
+        "business_date", "kind", "corrected_at", "reason",
+        "week_start", "entry_date", "project_id", "task_id", "minutes", "note",
+    }
     declared: set[str] = set()
     for tool in registered():
         declared |= set(tool.parameters)
@@ -1214,7 +1232,7 @@ async def test_the_read_only_record_names_the_tool_and_carries_no_values(
     assert tool_record["tool_name"] == "get_my_attendance"
     assert tool_record["decision"] == str(ToolOutcome.OK)
     assert tool_record["input_keys"] == ["question", "rule", "tool", "tool_arguments"]
-    assert tool_record["counts"]["tools_registered"] == len(registered())
+    assert tool_record["counts"]["tools_registered"] == len(registered(ToolKind.READ_ONLY))
     assert tool_record["counts"]["result_fields"] == len(state["tool_result"])
 
     serialised = json.dumps(records, ensure_ascii=False)
@@ -1244,7 +1262,10 @@ def test_the_tool_names_a_tool_can_be_reached_by_are_the_classifiers_read_only_o
     the graph can reach are therefore the union of what the selector produces, and every
     one of them is a registry key. Asserted from both ends, because a tool registered but
     unreachable (§6.2's `search_policy` is the deliberate exception, and it is not
-    registered) and a name produced but unregistered are different bugs.
+    registered) and a name produced but unregistered are different bugs. The reachable set
+    is compared with the *read-only* half: ticket 40's draft tools are selected by a model's
+    function call (ticket 42) and not by this lexical layer, which is the seam that module
+    documents.
     """
     reachable = {
         select_tool(question, today=date(2026, 9, 15)).name
@@ -1256,9 +1277,9 @@ def test_the_tool_names_a_tool_can_be_reached_by_are_the_classifiers_read_only_o
             "¿Cuántas horas ha fichado mi equipo este mes?",
         )
     }
-    assert reachable == {tool.name for tool in registered()}
+    assert reachable == {tool.name for tool in registered(ToolKind.READ_ONLY)}
     with pytest.raises(UnknownTool):
-        lookup("draft_timesheet")
+        lookup("draft_reports")
 
 
 def test_the_read_only_branch_is_reachable_for_the_tickets_own_example() -> None:

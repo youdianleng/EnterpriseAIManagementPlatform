@@ -8,6 +8,15 @@ type CommonProps = {
   error?: string;
   hint?: string;
   required?: boolean;
+  /**
+   * Renders the control read-only, for a record that is shown but no longer acts.
+   *
+   * The design system's six states include `disabled`, and `CONTROL_CLASSES` has carried the
+   * `disabled:` styling since ticket 03 — what was missing was the prop. Ticket 40's expired
+   * draft is the first caller: its values are still worth reading, and its form can no longer
+   * be confirmed, so the fields say that rather than looking editable.
+   */
+  disabled?: boolean;
 };
 
 const CONTROL_CLASSES =
@@ -51,6 +60,7 @@ export function TextField({
   error,
   hint,
   required,
+  disabled,
   value,
   onChange,
   type = "text",
@@ -82,6 +92,7 @@ export function TextField({
         name={name}
         type={type}
         ref={inputRef}
+        disabled={disabled}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
@@ -121,6 +132,7 @@ export function SelectField({
   error,
   hint,
   required,
+  disabled,
   value,
   onChange,
   options,
@@ -147,6 +159,7 @@ export function SelectField({
         name={name}
         value={value}
         onChange={(event) => onChange(event.target.value)}
+        disabled={disabled}
         required={required}
         aria-invalid={error ? true : undefined}
         aria-describedby={describedBy || undefined}
@@ -197,6 +210,7 @@ export function TextAreaField({
   error,
   hint,
   required,
+  disabled,
   value,
   onChange,
   rows = 3,
@@ -223,6 +237,7 @@ export function TextAreaField({
         id={id}
         name={name}
         rows={rows}
+        disabled={disabled}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}

@@ -16,6 +16,7 @@ import { cn } from "@/lib/ui/cn";
 
 import { AnswerView, fromStored, fromTurn, type AnswerView as Answer } from "./answer-view";
 import { CitationPanel } from "./citation-panel";
+import { DraftForm } from "./draft-form";
 
 /**
  * The Q&A screen: the conversations on the left, the answer on the right, the question box
@@ -57,6 +58,7 @@ export function QaScreen({
 
   const selectedId = useQaStore((state) => state.selectedId);
   const transcripts = useQaStore((state) => state.transcripts);
+  const drafts = useQaStore((state) => state.drafts);
   const turns = useQaStore((state) => state.turns);
   const composer = useQaStore((state) => state.composer);
   const openCitation = useQaStore((state) => state.openCitation);
@@ -78,6 +80,15 @@ export function QaScreen({
 
   const busy = isStreaming(turns);
   const stored = selectedId ? (transcripts[selectedId] ?? null) : null;
+  /**
+   * The draft waiting in the open conversation, if the assistant proposed one.
+   *
+   * Read from the same server answer the transcript comes from (`GET
+   * /answers/conversations/{id}` carries both), so a refresh or a restart cannot lose it and
+   * the screen never holds a second copy it would have to keep in step. Ticket 40's card is
+   * drawn *above* the answers: what a draft asks for is the next thing the reader does.
+   */
+  const draft = selectedId ? (drafts[selectedId] ?? null) : null;
 
   /**
    * The transcript and the live turns, as one list.
@@ -229,7 +240,15 @@ export function QaScreen({
           <p className="text-fg-muted">{t.thread.loading}</p>
         )}
 
-        {answers.length === 0 && !loadingTranscript ? (
+        {draft && draft.prefill_form && (
+          <DraftForm draft={draft} dict={dict} locale={locale} />
+        )}
+
+        {/* **Not while a draft is on screen.** The thread's empty state tells a reader how to
+            start; a conversation whose whole content is a form waiting to be confirmed has
+            already started, and the two together read as a screen contradicting itself —
+            which is what the first screenshot of this card showed. */}
+        {answers.length === 0 && !loadingTranscript && !draft ? (
           <p className="rounded-lg border border-border bg-surface p-4 text-fg-muted" data-testid="qa-thread-empty">
             {t.thread.empty}
           </p>

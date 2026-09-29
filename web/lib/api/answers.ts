@@ -79,7 +79,66 @@ export type Conversation = {
   expires_at: string;
 };
 
-export type ConversationDetail = Conversation & { messages: StoredMessage[] };
+export type ConversationDetail = Conversation & {
+  messages: StoredMessage[];
+  /** Ticket 40's draft: the newest one the assistant proposed in this conversation. */
+  draft: Draft | null;
+};
+
+/**
+ * One field of a draft form (ticket 40), as the API describes it.
+ *
+ * **The labels travel with the field, in both languages.** The wording lives in the API's
+ * own catalogue (`app/core/messages.py`), and the alternative — sending `label_key` and
+ * keeping a second copy in this dictionary — is the copy that goes stale. `kind` is which
+ * control to draw and `options` the choices of a select, each named in both languages.
+ */
+export type PrefillField = {
+  name: string;
+  label_key: string;
+  kind: "date" | "time" | "text" | "textarea" | "number" | "select";
+  label_es: string;
+  label_en: string;
+  value: string | number | null;
+  required: boolean;
+  options: Array<{ value: string; label_es: string; label_en: string }>;
+  hint_es: string | null;
+  hint_en: string | null;
+};
+
+/**
+ * A complete, editable form: what the assistant filled in, and where a confirmed one goes.
+ *
+ * `facts` is what the *validation* answered — the working days a leave costs, the billable
+ * answer a time entry resolved to — and it is read-only by construction: nothing in it is a
+ * field, because nothing in it is written by the submission.
+ */
+export type PrefillForm = {
+  tool: string;
+  entity: "leave_request" | "attendance_correction" | "timesheet_entry";
+  title_key: string;
+  title_es: string;
+  title_en: string;
+  submit_path: string;
+  fields: PrefillField[];
+  facts: Record<string, unknown>;
+};
+
+/**
+ * The conversation's newest draft, with the status the database's clock implies.
+ *
+ * `proposed` is the only value that offers confirmation; `expired` means its 24 hours ran
+ * out and the employee has to ask for a new one. The form still travels with an expired
+ * draft: it is the record of what was proposed.
+ */
+export type Draft = {
+  id: string;
+  tool_name: string;
+  status: "proposed" | "confirmed" | "rejected" | "expired";
+  created_at: string;
+  expires_at: string;
+  prefill_form: PrefillForm | null;
+};
 
 export type ConversationPage = { items: Conversation[]; total: number };
 

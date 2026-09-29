@@ -1021,6 +1021,34 @@ export type Dictionary = {
       /** Beside the button while a turn is still arriving. */
       streaming: string;
     };
+    /**
+     * The draft the assistant prepared (ticket 40).
+     *
+     * The form's *content* — its title and every field label — comes from the API with the
+     * form, because the set of fields is the server's. What is typed here is the screen's
+     * own state around it: when the draft lapses, what an expired one means, and what the
+     * disabled confirmation is waiting for.
+     */
+    draft: {
+      proposedBadge: string;
+      expiredBadge: string;
+      expiresAt: string;
+      expiredAt: string;
+      expiredTitle: string;
+      expiredBody: string;
+      expiredAction: string;
+      confirm: string;
+      confirmNote: string;
+      factWorkingDays: string;
+      factWeek: string;
+      factProject: string;
+      factTask: string;
+      factBillable: string;
+      factDay: string;
+      factAttachment: string;
+      yes: string;
+      no: string;
+    };
   };
   footer: {
     milestone: string;

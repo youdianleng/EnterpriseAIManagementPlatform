@@ -96,6 +96,7 @@ before it raises, which is the same rule `_editable` follows for a repaired cach
 """
 
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from uuid import UUID
 
@@ -168,6 +169,16 @@ _STATUS_OF: dict[ApprovalStatus, TimesheetStatus] = {
 #: Why the system closes a week. Stored on the lock row, so the record says which of
 #: the two ways a week was closed rather than leaving a reader to guess from the date.
 CLOSED_BY_WINDOW = "outside the eight-week supplementary window"
+
+
+def _status_of(state, fallback: TimesheetStatus) -> TimesheetStatus:  # noqa: ANN001 - ApprovalState
+    """The week status an engine state means, or the row's own when the table has no row.
+
+    One function rather than the same `_STATUS_OF.get(...) or fallback` at two sites
+    (ticket 40 has both a writer and a reader asking it), because "which statuses are the
+    employee's again" is the same question whichever side of the write is asking.
+    """
+    return _STATUS_OF.get(state.status, fallback)
 
 
 class TimesheetService:
@@ -320,6 +331,51 @@ class TimesheetService:
         return await self._approvals.state_of(ENTITY_TYPE, timesheet_id)
 
     # --- entries ------------------------------------------------------------
+
+    async def check_entry(
+        self,
+        week_start: date,
+        *,
+        entry_date: date,
+        project_id: UUID,
+        task_id: UUID,
+        minutes: int,
+    ) -> RecordTarget:
+        """Everything `add_entry` checks before it writes, and **not one write**.
+
+        Extracted for the agent's draft tool (ticket 40), and the extraction is the point:
+        a draft the employee confirms must not be refused at submission for a rule the
+        assistant never asked about, so the tool calls *this* rather than a second copy of
+        the window, the lock, the per-day cap or the project check. What it does not do is
+        any of the three writes the real path performs on the way to the same answer:
+
+        * `_require_open_week` **records** the closing it discovers (`timesheet_weeks_lock`
+          plus a trail row) before it refuses. This method raises the same catalogued error
+          through `_window_refusal` and writes nothing — a draft is not a write attempt, and
+          a table row saying a week was closed by a request that was never made would be
+          this ticket's own audit lying about who closed it. The week is genuinely closed:
+          the next *write* attempt records it exactly as before.
+        * `_editable` writes the engine's answer back onto the sheets whose cached status
+          has gone stale. This method asks `_engine_status` for the same answer and applies
+          it in memory: same decision, no cache repair.
+        * `_create` would create the week row. A draft creates no timesheet.
+
+        Everything else is literally the same code: `assert_monday`, `_require_day_in_week`,
+        `_require_minutes`, `_require_employee`, the shared `_open_sheet` ladder, the shared
+        `_require_room` cap and the project module's own `_recordable`.
+        """
+        assert_monday(week_start)
+        self._require_day_in_week(entry_date, week_start)
+        self._require_minutes(minutes)
+        await self._require_employee()
+        refusal = self._window_refusal(week_start)
+        if refusal is not None:
+            raise refusal
+
+        sheets = await self._read_only_sheets(week_start)
+        self._open_sheet(week_start, sheets)
+        await self._require_room(week_start, entry_date)
+        return await self._recordable(project_id, task_id, entry_date)
 
     async def add_entry(
         self,
@@ -1078,8 +1134,8 @@ class TimesheetService:
         state = await self._approvals.state_of(ENTITY_TYPE, sheet.id)
         if state is None:
             return sheet
-        status = _STATUS_OF.get(state.status)
-        if status is None or status is sheet.status:
+        status = _status_of(state, sheet.status)
+        if status is sheet.status:
             return sheet
         moved = await self._repository.set_status(sheet.id, status)
         await self._audit(
@@ -1130,18 +1186,34 @@ class TimesheetService:
         that discovers a stale cache is also the one that throws the repair away with
         its own rollback, and the row stays wrong until somebody's read happens to
         succeed — which, for a locked week, is never.
+
+        **The ladder below is `_open_sheet`'s**, shared with `check_entry`: the agent's
+        draft tool has to refuse exactly this and writes nothing, so the *rule* is one
+        function and the only difference between the two callers is whether the engine's
+        answer was written back on the way here.
         """
         await self._require_employee()
         await self._require_open_week(week_start)
 
         sheets = await self._decided_sheets(week_start)
+        open_sheet = self._open_sheet(week_start, sheets)
+        if open_sheet is not None:
+            return open_sheet
+        return await self._create(week_start)
+
+    def _open_sheet(self, week_start: date, sheets: list[Timesheet]) -> Timesheet | None:
+        """The week's open sheet, the refusal that says why there is none, or `None`.
+
+        `None` means nobody has written the week at all, which is not a refusal: the first
+        write creates the original. The two refusals below name *which* state the week is
+        in, because "waiting for a decision" and "approved for ever" have different ways
+        forward and a single "not editable" would hide that.
+        """
         open_sheet = next((sheet for sheet in sheets if sheet.is_editable), None)
         if open_sheet is not None:
             return open_sheet
-
         if not sheets:
-            return await self._create(week_start)
-
+            return None
         if any(sheet.is_locked for sheet in sheets) and all(
             not sheet.is_editable for sheet in sheets
         ):
@@ -1160,6 +1232,52 @@ class TimesheetService:
             ),
         )
 
+    async def _read_only_sheets(self, week_start: date) -> list[Timesheet]:
+        """The week's sheets with the engine's status **applied in memory, never written**.
+
+        `_decided_sheets` is the same list after a cache repair. This is what
+        `check_entry` reads: the rows as stored, each one's status replaced by what the
+        engine's request says when it says anything. A draft therefore decides on the same
+        answer a write would decide on, and leaves the columns for the write path to repair.
+        """
+        sheets = await self._repository.sheets_in_week(self.employee_id, week_start)
+        return [
+            replace(sheet, status=await self._engine_status(sheet)) for sheet in sheets
+        ]
+
+    async def _engine_status(self, sheet: Timesheet) -> TimesheetStatus:
+        """What the engine's answer says this sheet's status is; the row's own if it has none.
+
+        Pure. `_apply_to` is this plus the write, and the two callers exist so that "the
+        week is locked" has one implementation whether or not the caller may repair the
+        cache on the way past. The mapping itself is `_status_of`, so the two cannot
+        disagree about which engine status means which week status.
+        """
+        state = await self._approvals.state_of(ENTITY_TYPE, sheet.id)
+        if state is None:
+            return sheet.status
+        return _status_of(state, sheet.status)
+
+    def _window_refusal(self, week_start: date) -> DomainError | None:
+        """The refusal a week outside the window earns, or `None` when it is inside it.
+
+        The *decision* half of `_require_open_week`, split out in ticket 40 so that the
+        agent's draft tool can refuse a closed week without recording a closing nobody
+        asked for. The rule itself is `supplement_weeks_left`'s, as it always was: this
+        function only says which of the two outcomes it produced.
+        """
+        if supplement_weeks_left(week_start, self._current_week()) > 0:
+            return None
+        left = supplement_weeks_left(week_start, self._current_week())
+        return DomainError(
+            TimesheetErrorCode.TIMESHEET_WEEK_CLOSED,
+            detail=(
+                f"the week of {week_start} is outside the {SUPPLEMENT_WINDOW_WEEKS}-week "
+                f"supplementary window: {left} of {SUPPLEMENT_WINDOW_WEEKS} weeks remain, "
+                "and no write may touch it"
+            ),
+        )
+
     async def _require_open_week(self, week_start: date) -> None:
         """The global week lock: beyond the eight-week window no write path may write.
 
@@ -1175,9 +1293,10 @@ class TimesheetService:
         follows for a repaired cache: what was learned must not be rolled back with
         the refusal that learned it.
         """
-        left = supplement_weeks_left(week_start, self._current_week())
-        if left > 0:
+        refusal = self._window_refusal(week_start)
+        if refusal is None:
             return
+        left = supplement_weeks_left(week_start, self._current_week())
         closed = await self._repository.lock_week(week_start, reason=CLOSED_BY_WINDOW)
         await self._audit(
             AuditAction.TIMESHEET_WEEK_LOCKED,
@@ -1193,14 +1312,7 @@ class TimesheetService:
             initiated_by="system",
         )
         await self._repository.commit()
-        raise DomainError(
-            TimesheetErrorCode.TIMESHEET_WEEK_CLOSED,
-            detail=(
-                f"the week of {week_start} is outside the {SUPPLEMENT_WINDOW_WEEKS}-week "
-                f"supplementary window: {left} of {SUPPLEMENT_WINDOW_WEEKS} weeks remain, "
-                "and no write may touch it"
-            ),
-        )
+        raise refusal
 
     async def _create(self, week_start: date) -> Timesheet:
         try:

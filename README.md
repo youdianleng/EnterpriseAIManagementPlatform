@@ -150,6 +150,19 @@ correction chain and leave requests in every state. That is the opposite of what
 deliberate: a password printed once cannot be typed into an automated run, and the four
 demo accounts are the only ones affected.
 
+The assistant's draft forms (ticket 40) have their own fixture, because a draft is something
+the *product* produced rather than something a fixture may invent:
+
+```bash
+docker compose exec -T api python /app/tests/tools/seed_timesheet_demo.py   # the week and the project
+docker compose exec -T api python /app/tests/tools/seed_agent_draft.py      # three drafts, one expired
+```
+
+`seed_agent_draft.py` runs the three draft tools and records the rows through the platform's
+own service, in a conversation each; `seed-screens.ps1` calls it at the end. Without it,
+`node scripts/visual-check.mjs` reports that the draft checks are skipped rather than failing
+on a screen that has nothing to draw.
+
 **Do not add `-q` to the pytest command.** `api/pyproject.toml` already sets
 `addopts = "-q"`, and a second one makes pytest quiet enough to drop its summary
 line — the run then prints nothing but dots and an exit code, so "did it pass, and

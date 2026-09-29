@@ -309,6 +309,31 @@ class LeaveRequestInput:
 
 
 @dataclass(slots=True, frozen=True)
+class LeaveRequestCheck:
+    """What a request would cost, and the type it would be filed as — with nothing written.
+
+    The answer `LeaveService.check_request` returns, and the reason it exists: the
+    agent's draft tool (ticket 40) has to refuse exactly what `draft` refuses, and a
+    second copy of the window, the overlap or the balance rule is the copy that goes
+    stale. Everything here is read or computed; the ledger's view of "can this be
+    afforded" is `counts` and the caller's answer for the year is in `_require_affordable`.
+
+    `counts` is per year because a request that crosses the boundary is charged to two
+    balances (the module's docstring records why), and `business_days_count` is the total
+    the row will store — computed here so the draft the employee is shown and the row the
+    submission writes cannot disagree about how many days it is.
+    """
+
+    leave_type: LeaveType
+    start_date: date
+    end_date: date
+    working_days: tuple[date, ...]
+    counts: dict[int, int]
+    business_days_count: int
+    attachment_reference: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
 class LeaveRequestQuery:
     """Which requests to read. `employee_id` is the subject, never the requester."""
 
@@ -389,6 +414,7 @@ __all__ = [
     "LeaveDay",
     "LeaveEntryType",
     "LeaveRequest",
+    "LeaveRequestCheck",
     "LeaveRequestInput",
     "LeaveRequestQuery",
     "LeaveRequestState",

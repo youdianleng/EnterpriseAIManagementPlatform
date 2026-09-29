@@ -57,6 +57,7 @@ from app.domain.attendance.corrections import (
     ApplyFailure,
     ApplyReport,
     Correction,
+    CorrectionDraftCheck,
     CorrectionInput,
     CorrectionPatch,
     CorrectionQuery,
@@ -114,6 +115,39 @@ class CorrectionService:
 
     # --- the document -------------------------------------------------------
 
+    async def check_draft(
+        self,
+        *,
+        employee_id: UUID,
+        business_date: date,
+        kind: EventType | str,
+        corrected_at: datetime,
+        reason: str,
+    ) -> CorrectionDraftCheck:
+        """Every refusal `draft` makes, and **not one write**.
+
+        Extracted from `draft` in ticket 40 for the agent's draft tool. What a correction
+        is about is decided by four things — that the kind is a punch, that the instant
+        carries a timezone and has happened, that the reason says why, and that the day and
+        kind identify exactly one punch (or none, which is the forgotten clock-out the flow
+        makes up) — and all four are asked here. The tool shows a form only if this
+        answers, so a draft the employee confirms cannot be refused afterwards for a rule
+        that was checked somewhere else.
+        """
+        event_kind = _punch_kind(kind)
+        instant = _timed(corrected_at)
+        self._require_reason(reason)
+        await self._require_employee(employee_id)
+        self._require_past(instant, business_date)
+        await self._require_resolvable(employee_id, business_date, event_kind)
+        return CorrectionDraftCheck(
+            employee_id=employee_id,
+            business_date=business_date,
+            kind=event_kind,
+            corrected_at=instant,
+            reason=reason.strip(),
+        )
+
     async def draft(
         self,
         *,
@@ -124,21 +158,27 @@ class CorrectionService:
         reason: str,
         requested_by_employee_id: UUID,
     ) -> CorrectionView:
-        """Write the request, having refused one that could never be applied."""
-        event_kind = _punch_kind(kind)
-        instant = _timed(corrected_at)
-        self._require_reason(reason)
-        await self._require_employee(employee_id)
-        self._require_past(instant, business_date)
-        await self._require_resolvable(employee_id, business_date, event_kind)
+        """Write the request, having refused one that could never be applied.
 
+        **The refusals are `check_draft`'s** (ticket 40); what is left here is the write —
+        the row and its trail. The agent's draft tool calls the same method, so the four
+        rules a correction is checked against have one implementation rather than one per
+        surface.
+        """
+        check = await self.check_draft(
+            employee_id=employee_id,
+            business_date=business_date,
+            kind=kind,
+            corrected_at=corrected_at,
+            reason=reason,
+        )
         correction = await self._repository.save_correction(
             CorrectionInput(
-                employee_id=employee_id,
-                business_date=business_date,
-                kind=event_kind,
-                corrected_at=instant,
-                reason=reason.strip(),
+                employee_id=check.employee_id,
+                business_date=check.business_date,
+                kind=check.kind,
+                corrected_at=check.corrected_at,
+                reason=check.reason,
                 requested_by_employee_id=requested_by_employee_id,
             )
         )
@@ -146,11 +186,11 @@ class CorrectionService:
             AuditAction.ATTENDANCE_CORRECTION_REQUESTED,
             correction,
             after={
-                "employee_id": employee_id,
-                "business_date": business_date.isoformat(),
-                "kind": event_kind.value,
-                "corrected_at": instant.isoformat(),
-                "reason": reason.strip(),
+                "employee_id": check.employee_id,
+                "business_date": check.business_date.isoformat(),
+                "kind": check.kind.value,
+                "corrected_at": check.corrected_at.isoformat(),
+                "reason": check.reason,
                 "requested_by_employee_id": requested_by_employee_id,
             },
         )

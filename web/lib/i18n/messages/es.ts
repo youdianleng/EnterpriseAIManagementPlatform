@@ -930,6 +930,32 @@ export const es: Dictionary = {
       asking: "Preguntando…",
       streaming: "La respuesta está en camino.",
     },
+    // The draft the assistant prepared (ticket 40). The *field* labels and the form's own
+    // title come from the API — they are the form's content and the form's shape is the
+    // server's — while everything here is the screen's own state: when it lapses, what an
+    // expired one means, and what the disabled button is waiting for.
+    draft: {
+      proposedBadge: "Pendiente de tu confirmación",
+      expiredBadge: "Caducado",
+      expiresAt: "Puedes confirmarlo hasta el {date}.",
+      expiredAt: "Caducó el {date}.",
+      expiredTitle: "Este borrador ha caducado",
+      expiredBody:
+        "Han pasado más de 24 horas desde que se preparó, así que ya no se puede confirmar. Pide otro y lo preparo de nuevo con los datos actualizados.",
+      expiredAction: "Pide un borrador nuevo para continuar.",
+      confirm: "Confirmar y enviar",
+      confirmNote:
+        "La confirmación —el clic que crea el documento— llega en la siguiente entrega. Aquí puedes revisar y cambiar cualquier valor.",
+      factWorkingDays: "Días laborables",
+      factWeek: "Semana",
+      factProject: "Proyecto",
+      factTask: "Tarea",
+      factBillable: "Facturable",
+      factDay: "Día",
+      factAttachment: "Necesita justificante",
+      yes: "Sí",
+      no: "No",
+    },
   },
   footer: {
     milestone: "Hito 0 — base del proyecto",

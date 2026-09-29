@@ -68,14 +68,20 @@ from app.api.v1.schemas.answer import (
     ConversationRead,
     ConversationRenameRequest,
     ConversationSummaryRead,
+    DraftRead,
     MessageRead,
+    PrefillFieldRead,
+    PrefillFormRead,
     source_notice_read,
     sse_frame,
 )
 from app.audit import AuditAction, record
+from app.config import get_settings
 from app.core.errors import AppError, ErrorCode
 from app.domain.access import Action, Principal
 from app.domain.access.kernel import ResourceKind
+from app.domain.agent.models import AgentAction
+from app.domain.agent.service import service_for
 from app.domain.answer.chat import build_chat_model
 from app.domain.answer.driver import AnswerService
 from app.domain.answer.repository import ConversationRead as StoredConversation
@@ -221,6 +227,14 @@ async def read_conversation_route(
     from "does not exist". The lookup carries the user id, so ownership is a `WHERE`
     clause rather than a comparison in Python, and there is no spelling of this query that
     omits it.
+
+    **And the conversation's newest draft, if it has one** (ticket 40). A draft the assistant
+    proposed is *part of* what the thread holds: §6.3 requires it to be found again after a
+    refresh or a restart, and the client that draws the transcript is the client that draws
+    the form. Reading it here rather than through an endpoint of its own keeps one ownership
+    rule — the same `session.read_own` guard, the same `WHERE user_id` — and one request.
+    `latest_draft` also records a lapsed draft as `expired` before answering, which is
+    §6.3's 「过期后 `status=expired`」 happening where the fact is first observed.
     """
     repository = PostgresAnswerRepository(session)
     conversation = await repository.load_for(principal.user_id, conversation_id)
@@ -229,7 +243,10 @@ async def read_conversation_route(
             ErrorCode.NOT_FOUND,
             detail=f"no conversation {conversation_id} for this caller",
         )
-    return _conversation_read(conversation)
+    draft = await service_for(
+        session, ttl_hours=get_settings().agent_draft_ttl_hours
+    ).latest_draft(user_id=principal.user_id, conversation_id=conversation_id)
+    return _conversation_read(conversation, draft)
 
 
 @router.get(
@@ -354,7 +371,9 @@ def _summary_read(summary: StoredSummary) -> ConversationSummaryRead:
     )
 
 
-def _conversation_read(conversation: StoredConversation) -> ConversationRead:
+def _conversation_read(
+    conversation: StoredConversation, draft: AgentAction | None = None
+) -> ConversationRead:
     return ConversationRead(
         id=conversation.id,
         title=conversation.title,
@@ -362,6 +381,40 @@ def _conversation_read(conversation: StoredConversation) -> ConversationRead:
         last_message_at=conversation.last_message_at,
         expires_at=conversation.expires_at,
         messages=[_message_read(message) for message in conversation.messages],
+        draft=None if draft is None else _draft_read(draft),
+    )
+
+
+def _draft_read(draft: AgentAction) -> DraftRead:
+    """One recorded draft as the API answers it: the form, re-validated, and its dates.
+
+    `PrefillForm.from_stored` rather than the raw JSONB, for the reason `_message_read`
+    re-validates a stored citation: the column is the record and this is the contract, so a
+    shape that drifted fails in the API rather than in a browser that cannot draw a field.
+    """
+    form = draft.form
+    return DraftRead(
+        id=draft.id,
+        tool_name=draft.tool_name,
+        status=str(draft.status),
+        created_at=draft.created_at,
+        expires_at=draft.expires_at,
+        prefill_form=(
+            None
+            if form is None
+            else PrefillFormRead(
+                tool=form.tool,
+                entity=str(form.entity),
+                title_key=form.title_key,
+                title_es=form.title_es,
+                title_en=form.title_en,
+                submit_path=form.submit_path,
+                fields=[
+                    PrefillFieldRead(**field.as_dict()) for field in form.fields
+                ],
+                facts=dict(form.facts),
+            )
+        ),
     )
 
 

@@ -35,10 +35,11 @@ answer that said "not visible to you" would restore exactly the distinction the
 projection exists to remove.
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from app.ai.tools.draft import NEEDS_DETAILS_KEY
 from app.ai.tools.models import ToolOutcome, ToolResult
 from app.core.messages import MESSAGES
 
@@ -48,6 +49,10 @@ from app.core.messages import MESSAGES
 UNAVAILABLE_KEY = "agent.tool.unavailable"
 UNKNOWN_KEY = "agent.tool.unknown"
 NOT_PERMITTED_KEY = "agent.tool.not_permitted"
+
+#: What the draft branch says when no draft was asked for (ticket 40). A question rather
+#: than a refusal: the three drafts are things this assistant can prepare.
+NO_REQUEST_KEY = "agent.draft.no_request"
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,9 +83,34 @@ def _answer(message_key: str, values: Mapping[str, Any] | None = None) -> ToolAn
     """One message from the catalogue, with its placeholders filled from the result."""
     return ToolAnswer(
         message_key=message_key,
-        es=MESSAGES["es"][message_key].format(**(values or {})),
-        en=MESSAGES["en"][message_key].format(**(values or {})),
+        es=_sentence(message_key, "es", values),
+        en=_sentence(message_key, "en", values),
     )
+
+
+class _Partial(dict):
+    """A mapping that answers a missing key with the placeholder itself.
+
+    `str.format_map` calls `__missing__` instead of raising, so a sentence with a placeholder
+    nobody supplied renders `{days}` — visible, and reportable — rather than turning an answer
+    into a `KeyError`.
+    """
+
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
+
+
+def _sentence(message_key: str, language: str, values: Mapping[str, Any] | None) -> str:
+    """One catalogue sentence in one language, formatted without ever raising.
+
+    **A refusal sentence is not always this module's to fill.** `_invalid` renders the domain
+    error's own `message_key`, and some catalogue messages carry placeholders the domain
+    never puts in the client's sentence (`errors.timesheet_report_range_invalid` has one).
+    Formatting with nothing would be a `KeyError` raised inside the *answer* — in the graph,
+    from a call nobody can wrap — so an unfilled placeholder stays as written: a reader sees
+    something odd and can report it, which is strictly better than a run that fails.
+    """
+    return MESSAGES[language][message_key].format_map(_Partial(values or {}))
 
 
 def render(result: ToolResult) -> ToolAnswer:
@@ -91,10 +121,71 @@ def render(result: ToolResult) -> ToolAnswer:
         return _answer(UNAVAILABLE_KEY)
     if result.outcome is ToolOutcome.UNKNOWN:
         return _answer(UNKNOWN_KEY)
+    if result.outcome is ToolOutcome.INVALID:
+        return _invalid(result.data)
     # `_RENDERERS[result.tool]` and not `.get(...)`: a registered tool with no renderer
     # is a wiring bug, and a KeyError here names it. `test_every_registered_tool_has_a
     # _renderer` is what makes it unreachable.
     return _RENDERERS[result.tool](result.data)
+
+
+def _invalid(data: Mapping[str, Any]) -> ToolAnswer:
+    """A draft the tool would not produce, in the words the system already has for it.
+
+    Two shapes, and both are the checklist's 「不合法时明确告知原因」 rather than a generic
+    apology:
+
+    * `needs_details` — the tool was given too little to fill the form, so the sentence
+      names the *fields* that are missing. The labels are read from the catalogue in the
+      sentence's own language, which is what makes the answer read "fecha de inicio"
+      rather than `start_date`.
+    * a refused document — the domain error already owns wording in both languages, and its
+      `message_key` is what this renders. Nothing here composes a sentence of its own: a
+      second wording for "you have no leave left" is the copy that goes stale, and
+      `tool_result` carries the catalogue's `detail` beside it for an operator.
+    """
+    key = str(data.get("message_key") or "")
+    if key == NEEDS_DETAILS_KEY:
+        fields = [str(name) for name in data.get("fields") or ()]
+        return ToolAnswer(
+            message_key=key,
+            es=_sentence(key, "es", {"fields": _labels(fields, "es")}),
+            en=_sentence(key, "en", {"fields": _labels(fields, "en")}),
+        )
+    return _answer(key)
+
+
+def _labels(fields: Sequence[str], language: str) -> str:
+    """The missing fields, as the form will label them when they are filled in."""
+    return ", ".join(
+        MESSAGES[language][f"agent.draft.field.{name}"] for name in fields
+    )
+
+
+def _draft(message_key: str) -> Callable[[Mapping[str, Any]], ToolAnswer]:
+    """The sentence for one draft form.
+
+    A constant, and deliberately one that states no value: what the employee reviews is the
+    form (`prefill_form`), and a sentence repeating the dates would be a second copy of them
+    that can disagree with the fields a person is editing.
+    """
+
+    def rendered(_data: Mapping[str, Any]) -> ToolAnswer:
+        return _answer(message_key)
+
+    return rendered
+
+
+def render_no_request() -> ToolAnswer:
+    """The draft branch's answer when no tool was named: a question, not a refusal.
+
+    A *function* rather than a constant because a `ToolAnswer` is built from the catalogue
+    in both languages, and because it is not an outcome of any tool: nothing ran, no name
+    was given, and the honest answer is to ask which of the three drafts the employee wants
+    (with the ticket's own example — 「帮我请下周三的假」 — being exactly a case a lexical
+    layer cannot date, which is why ticket 42 puts a model here).
+    """
+    return _answer(NO_REQUEST_KEY)
 
 
 def _attendance(data: Mapping[str, Any]) -> ToolAnswer:
@@ -174,12 +265,18 @@ def _team_attendance(data: Mapping[str, Any]) -> ToolAnswer:
 
 #: tool name → the sentence its values make. Total over the registry, and
 #: `test_every_registered_tool_has_a_renderer` is what keeps it that way.
+#:
+#: The three drafts are constants (ticket 40): what a person acts on is the form the state
+#: carries, and a sentence that repeated the form's values would be a second copy of them.
 _RENDERERS: dict[str, Callable[[Mapping[str, Any]], ToolAnswer]] = {
     "get_my_attendance": _attendance,
     "get_my_leave_balance": _leave_balance,
     "get_my_timesheets": _timesheets,
     "get_colleague_contact": _contact,
     "get_team_attendance_summary": _team_attendance,
+    "draft_leave_request": _draft("agent.draft.leave_request"),
+    "draft_attendance_correction": _draft("agent.draft.attendance_correction"),
+    "draft_timesheet": _draft("agent.draft.timesheet"),
 }
 
 
@@ -194,10 +291,13 @@ def rendered_tools() -> tuple[str, ...]:
 
 
 __all__ = [
+    "NEEDS_DETAILS_KEY",
+    "NO_REQUEST_KEY",
     "NOT_PERMITTED_KEY",
     "UNAVAILABLE_KEY",
     "UNKNOWN_KEY",
     "ToolAnswer",
     "render",
+    "render_no_request",
     "rendered_tools",
 ]

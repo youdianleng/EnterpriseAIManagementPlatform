@@ -36,11 +36,11 @@ from app.ai.agents.intents import (
 )
 from app.ai.agents.records import ALLOWED_FIELDS, NodeRecord, node_names, records_of
 from app.ai.agents.replies import (
-    NO_DRAFT_TOOL,
     REFUSALS,
     SMALL_TALK_REPLY,
     NotAForbiddenRule,
     Refusal,
+    confirmation_payload,
     refusal_for,
 )
 from app.ai.agents.state import AgentContext, AgentState
@@ -55,7 +55,6 @@ __all__ = [
     "ENTRY_NODE",
     "FORBIDDEN_RULES",
     "NODES",
-    "NO_DRAFT_TOOL",
     "REFUSALS",
     "ROUTES",
     "RULES",
@@ -75,6 +74,7 @@ __all__ = [
     "build_graph",
     "checkpoint_dsn",
     "classify",
+    "confirmation_payload",
     "node_names",
     "nodes_of",
     "open_checkpointer",

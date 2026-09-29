@@ -1494,6 +1494,11 @@ async function main() {
     await checkTimesheets(browser, sessionCookie);
     await checkLockAndCorrection(browser, sessionCookie, request);
     await checkDocuments(browser, sessionCookie, request);
+    // **Before `checkQa`, and that order is load-bearing.** Ticket 37's check clears every
+    // conversation the demo account has so its sidebar assertions are exact counts, and the
+    // fixtures that give this check its drafts are conversations. Running afterwards would
+    // find the fixture deleted by the check that ran before it.
+    await checkDraftForm(browser, sessionCookie, request);
     await checkQa(browser, sessionCookie, request);
   } else {
     console.log("[note] signed-in checks skipped (no usable credentials)");
@@ -2430,6 +2435,250 @@ async function checkQa(browser, sessionCookie, request) {
   }
 
   await context.close();
+}
+
+/**
+ * The draft form the assistant prepared (ticket 40).
+ *
+ * DESIGN §6.3's first requirement is that the `PrefillForm` is a **complete, editable
+ * form**, and this is the only layer that can check "complete" and "editable" the way a
+ * person means them. Four things are asserted, and each one is a rule rather than a
+ * preference:
+ *
+ *   1. **Every field the submission will write is on screen.** The card is compared with
+ *      the API's own form: the number of controls equals the number of fields, and every
+ *      control is a labelled, enabled input a person can type into. A field the API sends
+ *      and the screen forgets is exactly the defect §6.3 is about, and counting controls is
+ *      how it becomes visible.
+ *   2. **Editing works.** One value is changed in the browser and read back, because
+ *      "editable" is a claim about what the *rendered* control does — a `readOnly` input
+ *      with the right markup would pass every structural assertion above.
+ *   3. **The expiry is stated**, in the reader's language, and an expired draft says what to
+ *      do instead while still showing what was proposed.
+ *   4. **The confirmation is deliberately absent**, and the screen says so rather than
+ *      offering a button that does nothing: ticket 41 owns the click that creates the
+ *      document.
+ *
+ * **Which conversation holds which draft comes from the API**, not from a title this script
+ * guessed: `api/tests/tools/seed_agent_draft.py` writes one draft per conversation, and the
+ * ids are new on every run. The fixture's questions are fixed, so the drafts are findable —
+ * but finding them through `agent_actions`' own endpoint is what makes this check about the
+ * product's read path rather than about the fixture.
+ */
+async function checkDraftForm(browser, sessionCookie, request) {
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 900 },
+    locale: "es-ES",
+  });
+  await context.addCookies([sessionCookie]);
+  const page = await context.newPage();
+
+  const card = page.locator('[data-testid="qa-draft"]');
+  const seeded = await draftConversations(request);
+  const entities = ["leave_request", "attendance_correction", "timesheet_entry"];
+  const missing = entities.filter((entity) => !seeded[entity]);
+  expect(
+    missing.length === 0,
+    `draft: the fixture's drafts are seeded (missing: ${missing.join(", ") || "none"})`,
+  );
+  if (missing.length > 0) {
+    console.log(
+      "[note] draft: run `docker compose exec -T api python /app/tests/tools/seed_agent_draft.py`",
+    );
+    await context.close();
+    return;
+  }
+
+  for (const entity of entities) {
+    const detail = seeded[entity];
+    const form = detail.draft.prefill_form;
+
+    await openDraft(page, detail.id, card);
+    expect(
+      (await card.getAttribute("data-draft-entity")) === entity,
+      `draft: the ${entity} card is the one drawn`,
+    );
+    const heading = (await card.locator("h3").innerText()).trim();
+    expect(
+      heading === form.title_es,
+      `draft: the ${entity} heading is the form's own title ("${heading}")`,
+    );
+
+    // 1. every field is drawn, labelled and enabled.
+    const controls = card.locator("input, select, textarea");
+    const drawn = await controls.count();
+    expect(
+      drawn === form.fields.length,
+      `draft ${entity}: every field is drawn (${drawn} controls for ${form.fields.length} fields)`,
+    );
+    const unlabelled = await card.evaluate((element) =>
+      [...element.querySelectorAll("input, select, textarea")].filter((control) => {
+        const labels = control.id
+          ? document.querySelectorAll(`label[for="${control.id}"]`).length
+          : 0;
+        return labels === 0 && !control.getAttribute("aria-label");
+      }).length,
+    );
+    expect(unlabelled === 0, `draft ${entity}: every control carries a label (${unlabelled} without)`);
+    const disabled = await card.evaluate((element) =>
+      [...element.querySelectorAll("input, select, textarea")].filter((control) => control.disabled)
+        .length,
+    );
+    expect(disabled === 0, `draft ${entity}: every field is editable (${disabled} disabled)`);
+
+    const facts = card.locator('[data-testid="qa-draft-facts"]');
+    expect(
+      (await facts.count()) === 1,
+      `draft ${entity}: what the validation answered is shown beside the form`,
+    );
+
+    // The screenshot before anything is edited: what a reviewer sees is the form the
+    // assistant proposed, and the edit below would otherwise be the version on file.
+    await page.screenshot({ path: join(OUT, `qa-draft-${entity}-es.png`), fullPage: true });
+
+    // 2. editing is real: change one value and read it back. The first `input` is a date in
+    //    all three forms (the selects follow it), which is a control a person types into and
+    //    whose value a `readOnly` attribute would visibly freeze.
+    const editable = card.locator("input").first();
+    const before = await editable.inputValue();
+    const after = "2026-12-15";
+    await editable.fill(after);
+    expect(
+      (await editable.inputValue()) === after,
+      `draft ${entity}: a field can be edited ("${before}" -> "${await editable.inputValue()}")`,
+    );
+
+    // 3. the expiry, and 4. the confirmation this ticket does not own.
+    const expiry = (await card.locator('[data-testid="qa-draft-expiry"]').innerText()).replace(
+      /\s+/g,
+      " ",
+    );
+    expect(/\d{2}\/\d{2}\/\d{4}/.test(expiry), `draft ${entity}: the expiry is stated ("${expiry}")`);
+    expect(
+      await card.locator('[data-testid="qa-draft-confirm"]').isDisabled(),
+      `draft ${entity}: the confirmation is not offered yet (ticket 41)`,
+    );
+    expect(
+      /\S/.test(await card.locator('[data-testid="qa-draft-confirm-note"]').innerText()),
+      `draft ${entity}: and the screen says what it is waiting for`,
+    );
+
+    await page.screenshot({ path: join(OUT, `qa-draft-${entity}-edited-es.png`), fullPage: true });
+
+    // The tablet width, where the card shares the page with the sidebar (§7).
+    await page.setViewportSize({ width: 768, height: 900 });
+    await openDraft(page, detail.id, card);
+    await page.screenshot({ path: join(OUT, `qa-draft-${entity}-768-es.png`), fullPage: true });
+    await page.setViewportSize({ width: 1280, height: 900 });
+
+    // English: the same draft, the other language, from the labels the server sent.
+    await openDraft(page, detail.id, card, "en");
+    const englishHeading = (await card.locator("h3").innerText()).trim();
+    expect(
+      englishHeading === form.title_en,
+      `draft ${entity} en: the heading is the English wording ("${englishHeading}")`,
+    );
+    const englishLabels = await card.evaluate((element) =>
+      [...element.querySelectorAll("label")].map((label) => label.textContent ?? "").join(" | "),
+    );
+    expect(
+      !/Vacaciones|permiso|Jornada|Motivo|Minutos/i.test(englishLabels) || entity === "",
+      `draft ${entity} en: no Spanish label leaked ("${englishLabels.slice(0, 90)}")`,
+    );
+    await page.screenshot({ path: join(OUT, `qa-draft-${entity}-en.png`), fullPage: true });
+  }
+
+  // The expired draft: the same card, with its state named and its values still readable.
+  if (seeded.expired) {
+    await openDraft(page, seeded.expired.id, card);
+    expect(
+      (await card.getAttribute("data-draft-status")) === "expired",
+      "draft: a lapsed draft is drawn as expired",
+    );
+    const expiredText = (await card.innerText()).replace(/\s+/g, " ");
+    expect(/Caducado/.test(expiredText), `draft: the expired state is a word ("${expiredText.slice(0, 80)}")`);
+    expect(
+      (await card.locator('[data-testid="qa-draft-expired"]').count()) === 1,
+      "draft: and it says what to do instead",
+    );
+    const stillReadable = await card.locator("input, select, textarea").count();
+    expect(
+      stillReadable > 0,
+      "draft: an expired draft still shows what was proposed rather than an empty screen",
+    );
+    const frozen = await card.evaluate((element) =>
+      [...element.querySelectorAll("input, select, textarea")].filter((control) => control.disabled)
+        .length,
+    );
+    expect(
+      frozen === stillReadable,
+      `draft: and its fields are read-only, because nothing can be confirmed (${frozen} of ${stillReadable})`,
+    );
+    await page.screenshot({ path: join(OUT, "qa-draft-expired-es.png"), fullPage: true });
+  }
+
+  // The narrow widths, in both languages: the form a person fills in on a phone (§7, §5's
+  // touch rule) — and English is the language whose *labels* are shortest and whose
+  // *sentences* are longest, so both have to be looked at.
+  for (const width of [320, 768]) {
+    for (const locale of LOCALES) {
+      await page.setViewportSize({ width, height: width === 320 ? 720 : 900 });
+      await openDraft(page, seeded.leave_request.id, card, locale);
+      const overflow = await page.evaluate(() => ({
+        scrollWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth,
+      }));
+      expect(
+        overflow.scrollWidth <= overflow.clientWidth + 1,
+        `draft ${width}px ${locale}: the form does not push the viewport ` +
+          `(${overflow.scrollWidth} > ${overflow.clientWidth})`,
+      );
+      const heights = await card.evaluate((element) =>
+        [...element.querySelectorAll("input, select, textarea")].map((control) =>
+          Math.round(control.getBoundingClientRect().height),
+        ),
+      );
+      if (locale === "es" && width === 320) {
+        console.log(`[note] draft 320px: control heights ${heights.join(", ")} px`);
+      }
+      expect(
+        heights.length > 0 && heights.every((height) => height >= 32),
+        `draft ${width}px ${locale}: no control is collapsed (${heights.join(", ")})`,
+      );
+      await page.screenshot({
+        path: join(OUT, `qa-draft-${width}-${locale}.png`),
+        fullPage: true,
+      });
+    }
+  }
+
+  await context.close();
+}
+
+/** The conversations holding a draft, keyed by the entity each one is a draft of. */
+async function draftConversations(request) {
+  const list = await request.get(`${API}/api/v1/answers/conversations?limit=200`);
+  const conversations = list.ok() ? ((await list.json()).items ?? []) : [];
+  const byEntity = {};
+  for (const conversation of conversations) {
+    const read = await request.get(`${API}/api/v1/answers/conversations/${conversation.id}`);
+    if (!read.ok()) continue;
+    const detail = await read.json();
+    const entity = detail.draft?.prefill_form?.entity;
+    if (!entity) continue;
+    // The expired draft is the one whose status is not `proposed`: the fixture back-dates
+    // it, and the read reports what the database's clock says.
+    if (detail.draft.status === "expired") byEntity.expired = detail;
+    else byEntity[entity] = detail;
+  }
+  return byEntity;
+}
+
+/** Open one conversation and wait for its draft card. */
+async function openDraft(page, conversationId, card, locale = "es") {
+  await page.goto(`${BASE}/${locale}/qa`, { waitUntil: "networkidle" });
+  await page.locator(`[data-conversation-id="${conversationId}"] button`).first().click();
+  await card.waitFor({ state: "visible", timeout: 20000 });
 }
 
 /**

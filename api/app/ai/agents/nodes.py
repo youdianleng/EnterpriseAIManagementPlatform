@@ -46,9 +46,8 @@ from langgraph.types import interrupt
 from app.ai.agents.intents import classify
 from app.ai.agents.records import recorded
 from app.ai.agents.replies import (
-    CONFIRMATION_PENDING,
-    NO_DRAFT_TOOL,
     SMALL_TALK_REPLY,
+    confirmation_payload,
     refusal_for,
 )
 from app.ai.agents.state import AgentContext, AgentState
@@ -61,10 +60,15 @@ from app.ai.tools import (
     UnknownTool,
     arguments_for,
     invoke,
+    lookup,
     registered,
     render,
+    render_no_request,
     select_tool,
 )
+from app.config import get_settings
+from app.domain.agent.models import PrefillForm
+from app.domain.agent.service import RecordedDraft, service_for
 from app.domain.answer.models import AnswerEvent, EventKind
 from app.domain.attendance.business_day import madrid_today
 
@@ -215,42 +219,132 @@ async def read_only_tools_node(state: AgentState, runtime: Runtime[AgentContext]
 
 @recorded(
     "draft_tools",
-    reads=("question",),
-    counts=(("tools_registered", "tools_registered"),),
+    reads=("question", "rule", "tool", "tool_arguments"),
+    counts=(
+        ("tools_registered", "tools_registered"),
+        # How many keys the form carries — a count, never the form. §10.1 keeps
+        # `tool_output` out of every record, and the form *is* the tool's output.
+        ("form_fields", "prefill_form"),
+    ),
+    decision_key="tool_outcome",
+    tool_key="tool",
 )
 async def draft_tools_node(state: AgentState, runtime: Runtime[AgentContext]) -> dict:
-    """待办操作: §6.2's draft tools, which ticket 40 registers.
+    """待办操作: §6.2's draft tools, called **as the caller**, producing a form — never a write.
 
-    `pending_action` is the seam ticket 40 fills with the tool's output and ticket 41 with
-    the `PrefillForm`. Today it says plainly that there is nothing to confirm.
+    Four facts make this branch safe, and they are the same four the read-only branch states
+    in its own docstring, with one substitution:
+
+    * **the identity is the context's.** Each implementation reads
+      `runtime.context.principal`; no parameter in the registry's closed vocabulary could
+      name a second person, and the form has no identity field at all
+      (`domain/agent/models.py::IDENTITY_FIELDS`).
+    * **the name goes through the whitelist.** `invoke` looks the tool up in
+      `app.ai.tools.REGISTRY`, so a name that is not registered runs nothing — and this
+      node additionally refuses a name that is registered as *read-only*: the draft branch
+      answers with a form, and running a query here would put a read under a draft's reply.
+    * **the validation is the submission's.** The tools call the three `check_*` methods the
+      write paths themselves call, so a draft cannot be refused afterwards for a rule
+      nobody asked about.
+    * **the tool writes nothing.** The row is this node's, through
+      `domain/agent/service.py` — the platform records what the assistant proposed, which is
+      DESIGN §6.3's fourth point and the reason the draft survives a restart.
+
+    **The call is the seam ticket 42 fills.** Like the read-only branch, the node takes a
+    name and its arguments from the state when the caller named one — that is where a
+    model's function call arrives, and what a caller or a test uses to exercise one tool —
+    and otherwise it answers 「dime qué borrador y para cuándo」: it does **not** guess dates.
+    A lexical selector can reasonably decide "this month" (ticket 39's `selection.py` does),
+    and it cannot reasonably decide that「下周三」is a specific date in 2026 — an invented
+    date is a value in a form a person is asked to confirm, which is a different kind of
+    guess from a default period in an answer.
+
+    **A run with nothing to confirm does not pause.** `await_confirmation` is reached either
+    way — the topology is ticket 38's and does not change — and it interrupts only when a
+    form came out of this node. A branch that paused on a question it had just asked would
+    be waiting for an answer to something it never showed.
     """
+    context = runtime.context
+    today = context.today or madrid_today(datetime.now(UTC))
+    call = _draft_call(state)
+    result = await _run_draft(call, context, today) if call is not None else _no_call()
+
+    drafted: RecordedDraft | None = None
+    if result.outcome is ToolOutcome.OK:
+        drafted = await _record_draft(result, call, state, context, runtime)  # type: ignore[arg-type]
+
+    ran = result.outcome is not ToolOutcome.UNKNOWN
+    answer = (
+        render(result).as_dict() if call is not None else render_no_request().as_dict()
+    )
     return {
-        "notice": NO_DRAFT_TOOL,
+        "tool": result.tool if ran else None,
+        "tool_arguments": dict(call.arguments) if ran and call is not None else {},
+        "tool_result": dict(result.data) or None,
+        "tool_answer": answer,
+        "tool_outcome": str(result.outcome) if call is not None else None,
+        "prefill_form": dict(result.data) if drafted is not None else None,
+        "agent_action_id": None if drafted is None else str(drafted.action.id),
+        "pending_action": {
+            "status": _draft_status(result, drafted, call),
+            "tool": result.tool if ran else None,
+            "draft_id": None if drafted is None else str(drafted.action.id),
+            "expires_at": (
+                None if drafted is None else drafted.action.expires_at.isoformat()
+            ),
+        },
+        # Written back because the draft's conversation may be one this node minted: a
+        # resumed run, or a second question in the same thread, needs the id.
+        "conversation_id": (
+            str(drafted.conversation_id)
+            if drafted is not None
+            else state.get("conversation_id")
+        ),
         "tools_registered": len(registered(ToolKind.DRAFT)),
-        "pending_action": {"status": "no_tool_registered", "tool": None},
+        "notice": answer["text"] if call is None else None,
     }
 
 
 @recorded(
     "await_confirmation",
-    reads=("pending_action",),
-    counts=(("pending_fields", "pending_action"),),
+    reads=("pending_action", "prefill_form"),
+    counts=(("form_fields", "prefill_form"),),
 )
 async def await_confirmation_node(state: AgentState, runtime: Runtime[AgentContext]) -> dict:
-    """The pause DESIGN §6.1 draws, and the reason this ticket is not just a router.
+    """The pause DESIGN §6.1 draws, and the reason this graph is not just a router.
 
     `interrupt()` stops the run **and the checkpointer stores it**, so the thread is
     resumable by a different process tomorrow (§6.3's 「用户关掉浏览器第二天回来确认」). The
-    payload is a placeholder: §6.3 requires a complete editable `PrefillForm` and an
-    explicit confirmation click, which is ticket 40's form and ticket 41's handling.
+    payload carries the **complete form** — §6.3's first requirement — so a client can draw
+    every field the submission will write, with its expiry, from the checkpoint alone.
 
-    **What is recorded on resume is the answer's *type*, never its content.** A resume value
-    can be anything a caller sends, including a sentence a person typed, and the whole point
-    of this module is that a person's words do not become a record. Nothing here interprets
-    the value either — that is ticket 41's confirm/reject branch, and inventing a partial
-    version of it here would be a decision this ticket has no evidence to make.
+    **Ticket 41's half is the confirmation itself.** What happens with the answer the human
+    gives — re-validating, submitting as the employee, recording `confirmed_at` and the
+    resulting entity — is that ticket's; nothing here interprets the resume value beyond
+    recording its *type*, because a person's words must not become a record and inventing a
+    partial confirmation now would be a decision this ticket has no evidence to make.
+
+    **Nothing to confirm means no pause.** The node is reached from the draft branch either
+    way; when the branch answered a question instead of drafting (no call was named) there
+    is no form, and `interrupt()` on it would park a run that has nothing to wait for.
     """
-    answer = interrupt(CONFIRMATION_PENDING)
+    pending = state.get("pending_action") or {}
+    if pending.get("status") != "proposed":
+        return {
+            "confirmation": {
+                "received": False,
+                "value_type": "none",
+                "interpreted": False,
+            }
+        }
+
+    answer = interrupt(
+        confirmation_payload(
+            draft=state.get("prefill_form"),
+            draft_id=state.get("agent_action_id"),
+            expires_at=pending.get("expires_at"),
+        )
+    )
     return {
         "confirmation": {
             "received": True,
@@ -311,9 +405,9 @@ async def _run(
         return ToolResult(tool="", outcome=ToolOutcome.UNKNOWN)
     if context.session is None:
         raise RuntimeError(
-            f"{call.name} needs a session: the read-only branch reads through "
-            "AgentContext.session, and a context built without one cannot answer a "
-            "data question"
+            f"{call.name} needs a session: the tool branches read through "
+            "AgentContext.session, and a context built without one cannot read the "
+            "balance, the week or the punch a tool is asked about"
         )
     context_for_tools = ToolContext(
         principal=context.principal, session=context.session, today=today
@@ -322,6 +416,109 @@ async def _run(
         return await invoke(call, context_for_tools)
     except UnknownTool:
         return ToolResult(tool=call.name, outcome=ToolOutcome.UNKNOWN)
+
+
+def _draft_call(state: AgentState) -> ToolCall | None:
+    """The draft this run produces, or `None` — which is an answer, not a failure.
+
+    A *named* tool with its arguments is the seam ticket 42 replaces with a model's function
+    call, and what a caller or a test uses to exercise one draft without writing a sentence
+    a lexical selector would have to happen to read. `None` means nothing named one, and the
+    node answers with a question rather than inventing a call: see its docstring for why
+    guessing a date is not the same kind of guess as defaulting a period.
+    """
+    named = state.get("tool")
+    if not named:
+        return None
+    return ToolCall(name=named, arguments=dict(state.get("tool_arguments") or {}))
+
+
+def _no_call() -> ToolResult:
+    """Nothing was named. `UNKNOWN` is the outcome that states nothing ran."""
+    return ToolResult(tool="", outcome=ToolOutcome.UNKNOWN)
+
+
+async def _run_draft(
+    call: ToolCall, context: AgentContext, today: date
+) -> ToolResult:
+    """Run one *draft* tool, and refuse a registered name that is not one.
+
+    The kind check is the draft branch's own whitelist: a name the model produced that is
+    registered as read-only would otherwise run a *query* here, and its values would arrive
+    under the draft branch's reply with no form beside them. Answering "no such draft tool"
+    is the same shape as the whitelist's answer for a name nobody registered.
+    """
+    try:
+        tool = lookup(call.name)
+    except UnknownTool:
+        return ToolResult(tool=call.name, outcome=ToolOutcome.UNKNOWN)
+    if tool.kind is not ToolKind.DRAFT:
+        return ToolResult(tool=call.name, outcome=ToolOutcome.UNKNOWN)
+    return await _run(call, context, today)
+
+
+async def _record_draft(
+    result: ToolResult,
+    call: ToolCall | None,
+    state: AgentState,
+    context: AgentContext,
+    runtime: Runtime[AgentContext],
+) -> RecordedDraft:
+    """Record the proposed draft, and hand it to the platform's own table.
+
+    The form is re-read through `PrefillForm.from_stored` rather than trusted as the dict
+    the tool built: the row is the record and this is the contract, so a shape that drifted
+    fails here, in the installation, rather than in a browser that cannot draw a field.
+
+    `thread_id` comes from the run's execution info — the LangGraph thread, which for this
+    system is the conversation (§3.6 keeps both) — and is `None` for a graph compiled
+    without a checkpointer, which is a real state rather than a missing value.
+    """
+    assert context.session is not None  # `_run` refused a context without one
+    assert call is not None
+    form = PrefillForm.from_stored(result.data)
+    assert form is not None  # `OK` from a draft tool is exactly "there is a form"
+    service = service_for(
+        context.session, ttl_hours=get_settings().agent_draft_ttl_hours
+    )
+    return await service.record_draft(
+        principal=context.principal,
+        conversation_id=_conversation_id(state, context),
+        question=state["question"],
+        tool_name=call.name,
+        tool_input=dict(call.arguments),
+        tool_output=dict(result.data),
+        form=form,
+        thread_id=_thread_id(runtime),
+    )
+
+
+def _thread_id(runtime: Runtime[AgentContext]) -> str | None:
+    """The LangGraph thread this run belongs to, or `None` without a checkpointer."""
+    info = getattr(runtime, "execution_info", None)
+    thread = getattr(info, "thread_id", None)
+    return None if thread is None else str(thread)
+
+
+def _draft_status(
+    result: ToolResult, drafted: RecordedDraft | None, call: ToolCall | None
+) -> str:
+    """What the draft branch decided, as one word a client and a test can read.
+
+    `proposed` is the only value that pauses: it means a form exists and a human is being
+    asked about it. The three others are answers — a refusal from the kernel, a draft the
+    contents would not allow, and "tell me what to draft" — and none of them has anything
+    to confirm.
+    """
+    if drafted is not None:
+        return "proposed"
+    if call is None:
+        return "no_request"
+    if result.outcome is ToolOutcome.INVALID:
+        return "invalid"
+    if result.outcome is ToolOutcome.REFUSED:
+        return "refused"
+    return "no_draft"
 
 
 def _conversation_id(state: AgentState, context: AgentContext) -> UUID | None:

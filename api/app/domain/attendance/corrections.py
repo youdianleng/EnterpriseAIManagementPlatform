@@ -158,6 +158,26 @@ class CorrectionInput:
 
 
 @dataclass(slots=True, frozen=True)
+class CorrectionDraftCheck:
+    """A correction request that has passed every rule, and **nothing has been written**.
+
+    The answer `CorrectionService.check_draft` returns. The agent's draft tool (ticket 40)
+    shows the employee a form filled in from this, and the rule it exists for is the same
+    one `LeaveRequestCheck` records: a draft that would be refused when it is filed must be
+    refused *here*, by the same code — the punch kind, the instant, the reason, the day
+    that has to have happened, and the day-and-kind pair that has to identify exactly one
+    punch. `reason` is the stripped value the row would store, so the form and the document
+    cannot show two different strings.
+    """
+
+    employee_id: UUID
+    business_date: date
+    kind: EventType
+    corrected_at: datetime
+    reason: str
+
+
+@dataclass(slots=True, frozen=True)
 class CorrectionPatch:
     """What a draft may be changed to. `None` on either field leaves it alone."""
 
@@ -244,6 +264,7 @@ __all__ = [
     "ApplyFailure",
     "ApplyReport",
     "Correction",
+    "CorrectionDraftCheck",
     "CorrectionInput",
     "CorrectionPatch",
     "CorrectionQuery",

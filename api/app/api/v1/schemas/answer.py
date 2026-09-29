@@ -174,8 +174,75 @@ class MessageRead(BaseModel):
     created_at: datetime
 
 
+class PrefillFieldRead(BaseModel):
+    """One field of a draft: what the submission will write, and how to draw it.
+
+    The two labels travel with the field rather than being looked up by the client, the way
+    `ToolAnswer` carries both sentences: the wording lives in `app/core/messages.py`, and a
+    client that received only `label_key` would keep a second copy of it. `kind` is the input
+    to draw (`date`, `time`, `text`, `textarea`, `number`, `select`) and `options` the choices
+    of a select, each named in both languages.
+    """
+
+    name: str
+    label_key: str
+    kind: str
+    label_es: str
+    label_en: str
+    value: str | int | None = None
+    required: bool = True
+    options: list[dict] = []
+    hint_es: str | None = None
+    hint_en: str | None = None
+
+
+class PrefillFormRead(BaseModel):
+    """Ticket 40's form, as the client draws it: the draft, and where it would be filed.
+
+    An editable form rather than a summary — DESIGN §6.3's first requirement — so this is
+    the tool's own `as_dict()` re-validated (the column is the record, this is the
+    contract), not a projection somebody chose for the screen. `facts` is what the
+    validation answered and is deliberately *not* a field list: nothing in it is editable,
+    because nothing in it is written by a submission.
+    """
+
+    tool: str
+    entity: str
+    title_key: str
+    title_es: str
+    title_en: str
+    submit_path: str
+    fields: list[PrefillFieldRead]
+    facts: dict
+
+
+class DraftRead(BaseModel):
+    """The conversation's newest draft, and whether it still stands.
+
+    `status` is the *effective* one: a `proposed` row whose 24 hours have passed reads
+    `expired` here, and the row itself is marked as expired when this read observes it
+    (`domain/agent/service.py`). A client needs the difference — one offers "confirm", the
+    other "generate it again" — and it is the database's clock that decides.
+    """
+
+    id: UUID
+    tool_name: str
+    status: str
+    created_at: datetime
+    expires_at: datetime
+    prefill_form: PrefillFormRead | None = None
+
+
 class ConversationRead(BaseModel):
-    """A conversation and its messages, newest message last."""
+    """A conversation and its messages, newest message last.
+
+    **Ticket 40's draft rides here, and deliberately as a field rather than a route of its
+    own.** A draft belongs to a conversation (§3.6 keys `agent_actions` by `conversation_id`
+    and `user_id`), the read is already the caller's own conversation behind
+    `session.read_own`, and a separate endpoint would be a second place the same ownership
+    rule is spelled. The interface that shows the transcript is the interface that shows the
+    form waiting inside it, and one request answers both.
+    """
 
     id: UUID
     title: str
@@ -183,6 +250,8 @@ class ConversationRead(BaseModel):
     last_message_at: datetime
     expires_at: datetime
     messages: list[MessageRead]
+    #: The conversation's newest draft, or `None` when the assistant never proposed one.
+    draft: DraftRead | None = None
 
 
 class ConversationSummaryRead(BaseModel):

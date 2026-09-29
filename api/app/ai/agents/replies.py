@@ -142,46 +142,43 @@ SMALL_TALK_REPLY = (
     "attendance and leave data, or draft a request for you to confirm."
 )
 
-#: 待办操作's branch, until ticket 40 registers the draft tools.
-NO_DRAFT_TOOL = (
-    "The graph routed this to the draft tool branch, but no draft tool is registered yet: "
-    "ticket 40 adds draft_leave_request, draft_attendance_correction and draft_timesheet, "
-    "each producing a PrefillForm rather than writing anything. Nothing was drafted and "
-    "nothing was written."
-)
+#: 待办操作's branch no longer has a placeholder here. Ticket 40 registered §6.2's three
+#: draft tools, so the branch calls one and the sentence a caller reads is rendered from the
+#: tool's outcome in `app/ai/tools/render.py`: `agent.draft.*` when a form came out (and for
+#: the two ways no form did — "tell me what to draft", and "I am missing these fields"), and
+#: the tool catalogue's own sentences for a permission refusal or a failure. `NO_DRAFT_TOOL`
+#: was deleted with the placeholder it described.
 
-#: 只读数据查询's branch no longer has a placeholder here. Ticket 39 registered §6.2's
-#: read-only tools, so the branch calls one and the sentence a caller reads is rendered
-#: from the tool's own values (`app/ai/tools/render.py`) — the answers, the "no registered
-#: tool" reply and the "could not fetch that data" reply all live in
-#: `app/core/messages.py` under `agent.tool.`, the one place this project keeps user-facing
-#: wording. `NO_READ_ONLY_TOOL` was deleted with the placeholder it described.
-
-#: What the interruption is waiting for. **This is a placeholder payload, and it says so.**
-#: DESIGN §6.3 requires the real one to be a complete, editable PrefillForm whose
-#: confirmation is an explicit button click; ticket 40 produces the form and ticket 41
-#: implements the confirmation, the re-validation and the `agent_actions` trail. What this
-#: ticket delivers is the *mechanism* — `interrupt()` on a Postgres-checkpointed thread —
-#: and a payload that names what is missing.
-CONFIRMATION_PENDING = {
-    "awaiting": "human_confirmation",
-    "draft": None,
-    "notice": NO_DRAFT_TOOL,
-    "filled_by": "ticket 40 (draft tools and PrefillForm)",
-    "handled_by": "ticket 41 (confirmation, re-validation, agent_actions)",
-}
+#: What the interruption is waiting for. **An explicit confirmation, and the whole form.**
+#: DESIGN §6.3 requires a complete editable `PrefillForm` and a click; the form travels in
+#: the payload so a client draws it from the checkpoint alone, and the id and the expiry
+#: travel with it because the row that holds them is what a resumed run acts on.
+#:
+#: **What handles the answer is ticket 41**, and this payload deliberately promises nothing
+#: about it: re-validating the session and the permissions, submitting as the employee, and
+#: recording the outcome are that ticket's, and a payload that claimed them would be this
+#: one claiming behaviour it does not have.
+def confirmation_payload(
+    *, draft: dict | None, draft_id: str | None, expires_at: str | None
+) -> dict:
+    """The `interrupt()` payload: what is being asked, and everything needed to draw it."""
+    return {
+        "awaiting": "human_confirmation",
+        "draft": draft,
+        "agent_action_id": draft_id,
+        "expires_at": expires_at,
+    }
 
 
 __all__ = [
     "ATTENDANCE_OF_ANOTHER_KEY",
-    "CONFIRMATION_PENDING",
     "DATABASE_WRITE_KEY",
-    "NO_DRAFT_TOOL",
     "PERFORMANCE_OR_PROMOTION_ADVICE_KEY",
     "REFUSALS",
     "SALARY_OF_ANOTHER_KEY",
     "SMALL_TALK_REPLY",
     "NotAForbiddenRule",
     "Refusal",
+    "confirmation_payload",
     "refusal_for",
 ]

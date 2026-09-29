@@ -62,19 +62,64 @@ class ToolKind(StrEnum):
 #: own lookup key, the directory is readable by everybody (`employee.directory`), and
 #: what a caller receives for a match is decided by the projection in
 #: `domain/employee/visibility.py` — never by the parameter.
+#:
+#: **Ticket 40 added the draft half of this list, and it is still a closed vocabulary
+#: with no way to name a person.** The eight read-only names are periods, a year, a
+#: status and a directory string; the draft names below are the fields of a *document*
+#: the caller is about to file — a leave type, two dates, a punch kind and its instant,
+#: a week and a day, a project and a task, minutes, a note. A draft tool cannot declare
+#: `employee_id` for the same reason a read tool cannot: `Tool.__post_init__` refuses it,
+#: and `ai/tools/draft.py` takes the subject from `context.principal` and from nowhere
+#: else. The request models the eventual submission accepts *do* carry an `employee_id`
+#: (`app/api/v1/leave.py::RequestCreate`); the draft form deliberately does not, and
+#: `domain/agent/models.py::IDENTITY_FIELDS` names the difference so a test can compare
+#: the two shapes and see exactly which fields the platform, not the model, supplies.
 ALLOWED_PARAMETERS: Final[frozenset[str]] = frozenset(
-    {"from_date", "to_date", "year", "status", "name"}
+    {
+        # read-only (ticket 39)
+        "from_date",
+        "to_date",
+        "year",
+        "status",
+        "name",
+        # drafts (ticket 40): the fields of the three documents §6.2 lets the assistant fill in
+        "leave_type",
+        "start_date",
+        "end_date",
+        "attachment_reference",
+        "business_date",
+        "kind",
+        "corrected_at",
+        "reason",
+        "week_start",
+        "entry_date",
+        "project_id",
+        "task_id",
+        "minutes",
+        "note",
+    }
 )
 
 
 class ToolOutcome(StrEnum):
-    """How one execution ended. Four values, and only one of them has figures."""
+    """How one execution ended. Five values, and only one of them has figures."""
 
     #: The query ran and its values are in `data` — possibly an empty set of rows,
     #: which is a result and not a failure.
     OK = "ok"
     #: The permission kernel refused the caller. `data` is empty; the answer says so.
     REFUSED = "refused"
+    #: **The tool refused what it was asked to produce** (ticket 40). A draft whose
+    #: fields would be refused when the employee filed it is not a draft — the checklist
+    #: says 「不合法时明确告知原因而不是生成一张注定失败的草稿」 — so a draft tool answers with
+    #: the *reason* instead: `data` carries the catalogued `message_key` of the refusal the
+    #: submission itself would have raised (`app/core/errors.definition_of`), which is what
+    #: makes the sentence the employee reads a sentence the system already owns, in both
+    #: languages and with no copy of its own. It is a separate outcome from `REFUSED`
+    #: because that one is the permission kernel's answer ("you may not") and this one is
+    #: about the *contents* ("these dates cannot be filed") — a client offers a different
+    #: remedy for each, and a run's record should not confuse them.
+    INVALID = "invalid"
     #: The query raised. `data` is empty and the answer states that the figure could
     #: not be fetched — **never** a plausible number.
     FAILED = "failed"

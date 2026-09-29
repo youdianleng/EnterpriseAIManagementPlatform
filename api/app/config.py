@@ -247,6 +247,15 @@ class Settings(BaseSettings):
     # majority of accounts have never been asked).
     digest_default_language: str = "es"
 
+    # --- the agent's drafts (ticket 40) -------------------------------------
+    # How long a draft stands before it is `expired` and the employee is told to
+    # generate it again. DESIGN §6.3 names 24 hours and calls it a default, so it is
+    # a setting rather than a constant: `AGENT_DRAFT_TTL_HOURS=8` makes a draft last a
+    # working day in a deployment that wants that, with no code change. It is *not* a
+    # maintenance window — the clock that decides is the database's, and a draft that
+    # lapsed is evidence of an offer that was never taken up (§3.6's trail).
+    agent_draft_ttl_hours: int = 24
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

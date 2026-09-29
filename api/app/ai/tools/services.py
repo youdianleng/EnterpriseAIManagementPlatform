@@ -28,10 +28,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.domain.access.principal import Principal
 from app.domain.approval.service import ApprovalService
+from app.domain.attendance.anomaly_service import AnomalyService
+from app.domain.attendance.correction_service import CorrectionService
 from app.domain.attendance.service import AttendanceService
 from app.domain.employee.models import DirectoryEntry
 from app.domain.employee.repository import EmployeeRepository
-from app.domain.leave.service import LeaveService
+from app.domain.leave.service import LeaveCalendar, LeaveService
 from app.domain.notification.approval import ApprovalNotifier
 from app.domain.notification.service import NotificationService
 from app.domain.overtime.service import OvertimeLedger
@@ -39,7 +41,11 @@ from app.domain.project.service import ProjectService
 from app.domain.schedule.service import ScheduleService
 from app.domain.timesheet.service import TimesheetService
 from app.repositories.approval import PostgresApprovalRepository
-from app.repositories.attendance import PostgresAttendanceRepository
+from app.repositories.attendance import (
+    PostgresAnomalyRepository,
+    PostgresAttendanceRepository,
+    PostgresCorrectionRepository,
+)
 from app.repositories.employee import PostgresEmployeeRepository
 from app.repositories.leave import PostgresLeaveRepository
 from app.repositories.notification import PostgresNotificationRepository
@@ -57,10 +63,39 @@ def attendance(session: AsyncSession) -> AttendanceService:
     `expected_minutes` and no `overtime_minutes`, and the figures a caller asks about
     would depend on which surface answered.
     """
-    return AttendanceService(
-        PostgresAttendanceRepository(session),
+    return _attendance_collaborators(session)[1]
+
+
+def _attendance_collaborators(
+    session: AsyncSession,
+) -> tuple[PostgresAttendanceRepository, AttendanceService]:
+    """The stream's repository and the day service beside it, as the routers build them.
+
+    Two callers need both (ticket 24's correction flow takes the repository *and* the
+    service), so the pair is assembled once here rather than twice with the risk of two
+    different day reads.
+    """
+    punches = PostgresAttendanceRepository(session)
+    service = AttendanceService(
+        punches,
         expectations=ScheduleService(PostgresScheduleRepository(session), session),
         overtime=OvertimeLedger(PostgresOvertimeRepository(session)),
+    )
+    return punches, service
+
+
+def _approvals(session: AsyncSession) -> ApprovalNotifier:
+    """The engine, wrapped so the notifications cannot be forgotten.
+
+    One builder for the three modules that submit documents (ticket 40 adds the correction
+    flow to the two ticket 39 wired): a bare `ApprovalService` at one of them would still
+    record decisions and silently lose the notices that follow.
+    """
+    repository = PostgresApprovalRepository(session)
+    return ApprovalNotifier(
+        engine=ApprovalService(repository, session),
+        notifications=NotificationService(PostgresNotificationRepository(session), session),
+        approvals=repository,
     )
 
 
@@ -71,18 +106,11 @@ def leave(session: AsyncSession) -> LeaveService:
     for the schedule and the wrapped approval engine, and handing it `None` would be a
     lie about an object the module may consult on any other call.
     """
-    approvals = PostgresApprovalRepository(session)
     return LeaveService(
         PostgresLeaveRepository(session),
         session,
         expectations=ScheduleService(PostgresScheduleRepository(session), session),
-        approvals=ApprovalNotifier(
-            engine=ApprovalService(approvals, session),
-            notifications=NotificationService(
-                PostgresNotificationRepository(session), session
-            ),
-            approvals=approvals,
-        ),
+        approvals=_approvals(session),
         annual_leave_days=get_settings().annual_leave_days,
     )
 
@@ -95,7 +123,6 @@ def timesheets(session: AsyncSession, principal: Principal) -> TimesheetService:
     name somebody else even by mistake.
     """
     projects = PostgresProjectRepository(session)
-    approvals = PostgresApprovalRepository(session)
     return TimesheetService(
         PostgresTimesheetRepository(session),
         session,
@@ -103,13 +130,7 @@ def timesheets(session: AsyncSession, principal: Principal) -> TimesheetService:
         projects=ProjectService(projects, session),
         project_repository=projects,
         expectations=ScheduleService(PostgresScheduleRepository(session), session),
-        approvals=ApprovalNotifier(
-            engine=ApprovalService(approvals, session),
-            notifications=NotificationService(
-                PostgresNotificationRepository(session), session
-            ),
-            approvals=approvals,
-        ),
+        approvals=_approvals(session),
     )
 
 
@@ -125,9 +146,51 @@ def directory(session: AsyncSession) -> EmployeeRepository:
     return PostgresEmployeeRepository(session)
 
 
+def corrections(session: AsyncSession) -> CorrectionService:
+    """The correction flow, wired the way `app/api/v1/attendance.py::_corrections` wires it.
+
+    Ticket 40's draft tool calls `check_draft` on this — the four rules a correction is
+    refused by, and no write. The collaborators are the ones the request path supplies, so
+    the punch lineage the draft is checked against is the one the flow itself reads: an
+    anomaly scan wired differently here would make a draft refuse a day the flow accepts.
+    """
+    punches, attendance_service = _attendance_collaborators(session)
+    expectations = ScheduleService(PostgresScheduleRepository(session), session)
+    return CorrectionService(
+        PostgresCorrectionRepository(session),
+        session,
+        punches=punches,
+        attendance=attendance_service,
+        anomalies=AnomalyService(
+            PostgresAnomalyRepository(session),
+            expectations=expectations,
+            leave=LeaveCalendar(PostgresLeaveRepository(session)),
+        ),
+        approvals=_approvals(session),
+    )
+
+
+def projects(session: AsyncSession) -> ProjectService:
+    """The project module: the only thing that decides whether a task may be booked.
+
+    A draft's two selects are drawn from it, and the check the form passed came from the
+    same `resolve_record_target` — which is what makes "a task the form offered" and "a task
+    the submission accepts" the same set rather than two similar ones.
+    """
+    return ProjectService(PostgresProjectRepository(session), session)
+
+
 async def contact_rows(session: AsyncSession) -> list[DirectoryEntry]:
     """Every directory row. The caller projects and filters; this only reads."""
     return await directory(session).list_directory()
 
 
-__all__ = ["attendance", "contact_rows", "directory", "leave", "timesheets"]
+__all__ = [
+    "attendance",
+    "contact_rows",
+    "corrections",
+    "directory",
+    "leave",
+    "projects",
+    "timesheets",
+]

@@ -24,13 +24,14 @@ the tool set contains no write tool. `ToolKind` therefore has exactly two member
 all. Making the forbidden thing unrepresentable is worth more than a rule saying not
 to do it, which is the whole reason §6 records three layers instead of one.
 
-**The read-only half is registered here; the draft half is ticket 40's.** §8's table
-gives constraint B's structural layer to ticket 40, and the assertion this ticket
-establishes is the one that has to hold for *every* tool: no registered implementation
-reaches a write. `tests/test_agent_readonly_tools.py` walks each implementation's own
-source with `ast` and fails on a write-shaped call or a write-shaped SQL literal, with
-a positive control that proves the walker catches what it looks for. Ticket 40 extends
-that walk to its draft tools; the walk itself is here.
+**Both halves are registered here now.** §8's table gives constraint B's structural layer
+to ticket 40, and the assertion is the one that has to hold for *every* tool: no registered
+implementation reaches a write. `tests/test_agent_readonly_tools.py` established the walk —
+it reads each implementation's own source with `ast` and fails on a write-shaped call or a
+write-shaped SQL literal, with a positive control that proves the walker catches what it
+looks for — and `tests/test_agent_draft_tools.py` extends the same walk to the three draft
+tools. The draft half is what makes the draft branch real; ticket 41 is what makes the
+confirmation real.
 
 **`search_policy` is deliberately not a tool.** §6.2 lists it as §6.2's sixth read-only
 row and `agents/intents.py` routes 制度问答 to `answer_policy`, which streams ticket
@@ -51,6 +52,7 @@ import time
 from types import MappingProxyType
 from typing import Final
 
+from app.ai.tools.draft import DRAFT_TOOLS
 from app.ai.tools.models import (
     Tool,
     ToolCall,
@@ -65,10 +67,12 @@ from app.logging import get_logger
 
 logger = get_logger(__name__)
 
-#: Every registered tool, keyed by name. Ticket 40 merges the draft half into this
-#: literal; nothing else may add a tool, which is what makes "who can register a tool"
-#: have exactly one answer — an edit here, in the ticket that owns it.
-REGISTRY: Final[MappingProxyType[str, Tool]] = MappingProxyType({**READ_ONLY_TOOLS})
+#: Every registered tool, keyed by name: §6.2's five read-only rows (ticket 39) and its
+#: three draft rows (ticket 40). Nothing else may add a tool, which is what makes "who can
+#: register a tool" have exactly one answer — an edit here, in the ticket that owns it.
+REGISTRY: Final[MappingProxyType[str, Tool]] = MappingProxyType(
+    {**READ_ONLY_TOOLS, **DRAFT_TOOLS}
+)
 
 
 def registered(kind: ToolKind | None = None) -> tuple[Tool, ...]:

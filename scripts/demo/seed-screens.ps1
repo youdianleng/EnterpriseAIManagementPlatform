@@ -148,3 +148,15 @@ foreach ($balance in $balances.items) {
     $balance.leave_type, $balance.entitled_days, $balance.used_days, $balance.pending_days,
     $balance.remaining_days, $balance.history.Count)
 }
+
+# --- the assistant's draft forms (ticket 40) ---------------------------------------------
+#
+# The drafts the Q&A screen draws come from the *product*: `seed_agent_draft.py` runs the three
+# draft tools and records the rows the way the graph's node does, in a conversation each. It
+# needs the company week and the project `api/tests/tools/seed_timesheet_demo.py` writes (the
+# leave draft is priced in working days and the time-entry draft names a task this account may
+# book), and it says so itself if they are missing — so this runs it last, after everything
+# above, and a stack whose timesheet fixture has never been seeded reports that clearly instead
+# of writing a draft the validation would refuse.
+Write-Output '--- the assistant''s drafts (run seed_timesheet_demo.py first if this fails) ---'
+docker compose exec -T api python /app/tests/tools/seed_agent_draft.py | Select-Object -Last 6

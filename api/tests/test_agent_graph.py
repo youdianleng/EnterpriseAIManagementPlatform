@@ -51,7 +51,6 @@ from langgraph.types import Command
 from app.ai.agents import (
     CONFIRMATION_NODE,
     DRAFT_BRANCH,
-    NO_DRAFT_TOOL,
     NODES,
     REFUSALS,
     ROUTES,
@@ -73,7 +72,7 @@ from app.ai.agents.graph import branch_for, branch_of
 from app.ai.agents.intents import FORBIDDEN_RULES
 from app.ai.agents.records import ALLOWED_FIELDS, node_names, records_of
 from app.ai.agents.state import AgentState
-from app.ai.tools import ToolKind, registered
+from app.ai.tools import ToolKind, ToolOutcome, registered
 from app.config import get_settings
 from app.core.messages import MESSAGES
 from app.domain.answer.chat import StreamedChatModel
@@ -214,6 +213,37 @@ async def principal_of(platform: Platform, actor: Actor):  # noqa: ANN201
         return principal
 
 
+async def company_week(platform: Platform, *, code: str = "graphweek") -> None:
+    """A company week, so a *date range* is a number of working days.
+
+    Ticket 40's draft branch validates with the leave module's own rules, and the first of
+    those is 「is this a working day」 — asked of `ScheduleService`, which answers "no" for
+    every day of an employee no schedule reaches. A test that drafts leave therefore needs a
+    calendar, and the default schedule is the company-wide one that every employee without
+    their own inherits. `test_leave.py::staff` builds the same week for the same reason.
+    """
+    admin = await platform.admin()
+    created = await admin.post(
+        "/api/v1/schedules",
+        json={
+            "code": code,
+            "name_es": "Semana completa",
+            "name_en": "Full week",
+            "is_default": True,
+            "days": [
+                {
+                    "weekday": weekday,
+                    "expected_minutes": 480,
+                    "start_time": "08:00",
+                    "end_time": "16:00",
+                }
+                for weekday in range(5)
+            ],
+        },
+    )
+    assert created.status_code == 201, created.text
+
+
 @dataclass
 class Agent:
     """A compiled graph, one context and one thread — what a test drives.
@@ -230,9 +260,29 @@ class Agent:
     def config(self) -> dict:
         return thread_config(self.thread)
 
-    async def run(self, question: str | None = None, *, resume: Any = None) -> dict:
-        """One run: a question, or a resumption of the thread's stored pause."""
-        payload: Any = Command(resume=resume) if resume is not None else {"question": question}
+    async def run(
+        self,
+        question: str | None = None,
+        *,
+        resume: Any = None,
+        tool: str | None = None,
+        arguments: dict[str, Any] | None = None,
+    ) -> dict:
+        """One run: a question, or a resumption of the thread's stored pause.
+
+        `tool` and `arguments` name a tool directly — the seam ticket 42 replaces with a
+        model's function call, and what a test uses to exercise the draft branch without
+        writing a sentence a lexical layer would have to happen to read. Ticket 39's
+        read-only tests do the same for the read half.
+        """
+        if resume is not None:
+            payload: Any = Command(resume=resume)
+        else:
+            payload = {"question": question}
+            if tool is not None:
+                payload["tool"] = tool
+            if arguments is not None:
+                payload["tool_arguments"] = dict(arguments)
         return await self.graph.ainvoke(payload, self.config, context=self.context)
 
     async def stream(self, question: str) -> tuple[dict, list[AnswerEvent]]:
@@ -264,9 +314,18 @@ async def agent(
     thread: str | None = None,
     conversation_id: UUID | None = None,
 ) -> AsyncIterator[Agent]:
-    """A graph with the real Postgres checkpointer, on this test's database."""
+    """A graph with the real Postgres checkpointer, on this test's database.
+
+    The context carries the pipeline's session (ticket 40): the draft branch validates
+    against the same database a write would, and reads that session — the wiring
+    `AgentContext.session` documents, and the reason a branch that touches the database
+    raises rather than answering when it is missing.
+    """
     context = AgentContext(
-        principal=principal, answers=answers.service, conversation_id=conversation_id
+        principal=principal,
+        answers=answers.service,
+        conversation_id=conversation_id,
+        session=answers.session,
     )
     async with open_checkpointer(get_settings(), test=True) as saver:
         yield Agent(
@@ -615,19 +674,31 @@ async def test_the_refusal_record_carries_the_decision_and_none_of_the_copy(
 # --- 1 & the scope boundary: the branches' tool sets --------------------------
 
 
-async def test_the_draft_branch_says_no_tool_is_registered_and_pauses(
+#: The draft the pause/resume tests drive the branch with, and its arguments. Written out
+#: rather than guessed by a lexical layer: ticket 40's branch takes the *call* from the state
+#: (a model's function call from ticket 42), and a test that relied on a sentence being read
+#: as "the third working day of November" would be testing a parser nobody promised.
+DRAFT_CALL = "draft_leave_request"
+DRAFT_ARGUMENTS = {
+    "leave_type": "annual",
+    "start_date": "2026-11-02",
+    "end_date": "2026-11-04",
+}
+
+
+async def test_the_draft_branch_asks_what_to_draft_and_does_not_pause(
     platform: Platform, cast
 ) -> None:
-    """待办操作 routes to draft tools (ticket 40) and then to the human confirmation (41).
+    """待办操作 routes to the draft tools (ticket 40) and then to the human confirmation (41).
 
-    The read-only half of the registry is no longer empty — ticket 39 registered §6.2's
-    five read-only tools and owns that branch's tests in
-    `tests/test_agent_readonly_tools.py` — so this test asserts the *draft* half is still a
-    placeholder, and that the run pauses rather than completing: that pause is the
-    mechanism this ticket delivers, and the payload names both tickets that will finish it.
+    The read-only half of the registry is ticket 39's and the draft half is ticket 40's, so
+    what this test asserts is the branch's behaviour with nothing named: it **asks** rather
+    than drafting — the ticket's own example 「帮我请下周三的假」 is a date a lexical layer
+    cannot resolve and ticket 42's model call will — and, having asked a question, it does not
+    pause waiting for confirmation of a form it never produced.
     """
     assert registered(ToolKind.READ_ONLY), "the read-only half is registered by ticket 39"
-    assert registered(ToolKind.DRAFT) == ()
+    assert registered(ToolKind.DRAFT), "the draft half is registered by ticket 40"
 
     actor = cast.uploader
     async with pipeline(platform) as answers, agent(
@@ -636,20 +707,60 @@ async def test_the_draft_branch_says_no_tool_is_registered_and_pauses(
         state = await running.run(QUESTIONS[Intent.PENDING_ACTION])
 
     assert state["intent"] == str(Intent.PENDING_ACTION)
-    assert state["notice"] == NO_DRAFT_TOOL
-    assert "ticket 40" in state["notice"]
-    assert state["tools_registered"] == 0
-    assert state["pending_action"] == {"status": "no_tool_registered", "tool": None}
-    assert node_names(state) == ["classify", "draft_tools"], "the run did not stop to confirm"
+    assert state["tool_answer"]["message_key"] == "agent.draft.no_request"
+    assert state["pending_action"]["status"] == "no_request"
+    assert state["pending_action"]["tool"] is None
+    assert state["prefill_form"] is None
+    assert state["tool_outcome"] is None, "nothing ran, so no tool has an outcome"
+    assert state["tools_registered"] == len(registered(ToolKind.DRAFT))
+    assert node_names(state) == ["classify", "draft_tools", CONFIRMATION_NODE]
+    assert "__interrupt__" not in state, "a question is not something to confirm"
     assert answers.model.calls == []
 
+
+async def test_the_draft_branch_produces_a_form_and_pauses_for_the_human(
+    platform: Platform, cast
+) -> None:
+    """The branch's real answer: a complete form in the payload, and a paused thread.
+
+    §6.3's first requirement is that the `PrefillForm` is complete and editable, so this
+    reads the payload's draft rather than a summary of it: every field the submission will
+    write is there, with its label in both languages and the value the validation accepted.
+    """
+    await company_week(platform)
+    actor = cast.uploader
+    async with pipeline(platform) as answers, agent(
+        answers, await principal_of(platform, actor)
+    ) as running:
+        state = await running.run(
+            QUESTIONS[Intent.PENDING_ACTION],
+            tool=DRAFT_CALL,
+            arguments=DRAFT_ARGUMENTS,
+        )
+
+    assert state["pending_action"]["status"] == "proposed"
+    assert state["tool"] == DRAFT_CALL
+    assert state["tool_outcome"] == str(ToolOutcome.OK)
+    form = state["prefill_form"]
+    assert form["entity"] == "leave_request"
+    assert [field["name"] for field in form["fields"]] == [
+        "leave_type",
+        "start_date",
+        "end_date",
+        "attachment_reference",
+    ]
+    assert form["submit_path"] == "/api/v1/leave/requests"
+    assert state["agent_action_id"] is not None
+    assert state["conversation_id"] is not None, "a draft belongs to a conversation"
+
     interrupts = state["__interrupt__"]
-    assert len(interrupts) == 1, "an undrafted action must pause exactly once"
+    assert len(interrupts) == 1, "a produced draft must pause exactly once"
     payload = interrupts[0].value
     assert payload["awaiting"] == "human_confirmation"
-    assert payload["draft"] is None
-    assert "ticket 40" in payload["filled_by"]
-    assert "ticket 41" in payload["handled_by"]
+    assert payload["draft"] == form, "the payload must carry the form, not a summary of it"
+    assert payload["agent_action_id"] == state["agent_action_id"]
+    assert payload["expires_at"] == state["pending_action"]["expires_at"]
+    assert answers.model.calls == [], "a draft is not a model call"
 
 
 async def test_small_talk_gets_a_fixed_reply_and_no_model_call(platform: Platform, cast) -> None:
@@ -690,12 +801,17 @@ async def test_the_pause_is_written_to_the_langgraph_schema_and_not_to_redis(
     assert f"options=-csearch_path%3D{CHECKPOINT_SCHEMA}" in dsn
     assert dsn.startswith(settings.runtime_test_database_url.replace("+psycopg", ""))
     assert "redis" not in dsn
+    await company_week(platform)
 
     async with pipeline(platform) as answers, agent(
         answers, await principal_of(platform, cast.uploader)
     ) as running:
         thread = running.thread
-        await running.run(QUESTIONS[Intent.PENDING_ACTION])
+        await running.run(
+            QUESTIONS[Intent.PENDING_ACTION],
+            tool=DRAFT_CALL,
+            arguments=DRAFT_ARGUMENTS,
+        )
         snapshot = await running.graph.aget_state(running.config)
 
     assert snapshot.next == (CONFIRMATION_NODE,), snapshot.next
@@ -740,10 +856,14 @@ async def test_an_interrupted_run_resumes_on_a_graph_rebuilt_against_the_same_da
     Two consequences a weaker test would miss, and both are asserted: the resumed state still
     holds the question and the pending action from before the pause, and the resumption
     value arrives at the paused node (`value_type` is the answer's *type*, because the value
-    itself may be words a person typed and this graph records no content).
+    itself may be words a person typed and this graph records no content). Ticket 40 makes
+    the pending action a *form*, so the resumed run also still knows which draft it was
+    waiting about — the one fact a confirmation needs and cannot re-derive from the resume
+    value.
     """
     principal = await principal_of(platform, cast.uploader)
     thread = uuid4().hex
+    await company_week(platform)
 
     async with pipeline(platform) as first:
         async with open_checkpointer(get_settings(), test=True) as saver:
@@ -752,9 +872,15 @@ async def test_an_interrupted_run_resumes_on_a_graph_rebuilt_against_the_same_da
                 context=_context(first, principal),
                 thread=thread,
             )
-            state = await paused.run(QUESTIONS[Intent.PENDING_ACTION])
+            state = await paused.run(
+                QUESTIONS[Intent.PENDING_ACTION],
+                tool=DRAFT_CALL,
+                arguments=DRAFT_ARGUMENTS,
+            )
         # The first "process" is gone at this point: connection closed, saver dropped.
         assert state["__interrupt__"], "the draft branch must pause"
+        form = state["prefill_form"]
+        draft_id = state["agent_action_id"]
 
     async with pipeline(platform) as second:
         async with open_checkpointer(get_settings(), test=True) as saver:
@@ -770,7 +896,9 @@ async def test_an_interrupted_run_resumes_on_a_graph_rebuilt_against_the_same_da
     assert final["question"] == QUESTIONS[Intent.PENDING_ACTION], (
         "the resumed run lost the question, which only the checkpoint could have given it"
     )
-    assert final["pending_action"] == {"status": "no_tool_registered", "tool": None}
+    assert final["prefill_form"] == form, "the resumed run lost the form it was asking about"
+    assert final["agent_action_id"] == draft_id
+    assert final["pending_action"]["status"] == "proposed"
     assert final["confirmation"] == {
         "received": True,
         "value_type": "dict",
@@ -780,8 +908,14 @@ async def test_an_interrupted_run_resumes_on_a_graph_rebuilt_against_the_same_da
 
 
 def _context(answers: Pipeline, principal) -> AgentContext:  # noqa: ANN001
-    """A fresh context per run, so a resumed run cannot be reading the first run's objects."""
-    return AgentContext(principal=principal, answers=answers.service)
+    """A fresh context per run, so a resumed run cannot be reading the first run's objects.
+
+    The session is the pipeline's, as `agent()`'s is: the draft branch reads through it
+    (ticket 40), and a context without one raises rather than drafting from nothing.
+    """
+    return AgentContext(
+        principal=principal, answers=answers.service, session=answers.session
+    )
 
 
 async def test_resuming_does_not_re_run_the_nodes_before_the_pause(
@@ -797,6 +931,7 @@ async def test_resuming_does_not_re_run_the_nodes_before_the_pause(
     """
     principal = await principal_of(platform, cast.uploader)
     thread = uuid4().hex
+    await company_week(platform)
 
     async with pipeline(platform) as first:
         async with open_checkpointer(get_settings(), test=True) as saver:
@@ -805,7 +940,11 @@ async def test_resuming_does_not_re_run_the_nodes_before_the_pause(
                 context=_context(first, principal),
                 thread=thread,
             )
-            before = await paused.run(QUESTIONS[Intent.PENDING_ACTION])
+            before = await paused.run(
+                QUESTIONS[Intent.PENDING_ACTION],
+                tool=DRAFT_CALL,
+                arguments=DRAFT_ARGUMENTS,
+            )
     assert node_names(before) == ["classify", "draft_tools"]
 
     async with pipeline(platform) as second:
@@ -825,9 +964,11 @@ async def test_resuming_does_not_re_run_the_nodes_before_the_pause(
         record["counts"] for record in records_of(before)
     ]
     # The confirmation node ran exactly once, and it ran *after* the pause — its record's
-    # `input_keys` say it read the pending action the first run produced.
-    assert records_of(after)[-1]["input_keys"] == ["pending_action"]
-    assert records_of(after)[-1]["counts"] == {"pending_fields": 2}
+    # `input_keys` say it read the pending action and the form the first run produced.
+    assert records_of(after)[-1]["input_keys"] == ["pending_action", "prefill_form"]
+    assert records_of(after)[-1]["counts"] == {
+        "form_fields": len(before["prefill_form"])
+    }
 
 
 async def test_a_thread_with_no_checkpoint_cannot_be_resumed(platform: Platform, cast) -> None:

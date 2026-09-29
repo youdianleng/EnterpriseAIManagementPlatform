@@ -86,18 +86,33 @@ class AgentState(TypedDict, total=False):
     #: The answer the result was rendered into — a message key, both sentences, and the
     #: block they form (`app.ai.tools.render.ToolAnswer`). Its figures are `tool_result`'s.
     tool_answer: dict[str, str] | None
-    #: How the call ended: `ok`, `refused`, `failed` or `unknown`. Recorded, so a reader
-    #: of a run can see why an answer states no figures at all.
+    #: How the call ended: `ok`, `refused`, `invalid`, `failed` or `unknown`. Recorded, so
+    #: a reader of a run can see why an answer states no figures at all.
     tool_outcome: str | None
+    #: What came back from the human. `{"received": True, "value_type": "dict"}` — the type
+    #: of the answer, never the answer.
+    confirmation: dict[str, Any] | None
+    #: **The draft the assistant proposed, in full** (ticket 40): every field the eventual
+    #: submission will write, each with the value the validation accepted, its label in both
+    #: languages, and the input a client should draw (`domain/agent/models.PrefillForm`).
+    #: It is the same object `tool_result` carries and it is kept under its own name because
+    #: it is what the pause shows and what a resumed run acts on — ticket 41 confirms *this*,
+    #: and the interruption's payload is built from it.
+    prefill_form: dict[str, Any] | None
+    #: The `agent_actions` row this run wrote, or `None` when nothing was drafted. It is the
+    #: draft's durable identity: the row survives the process, and the interface reads the
+    #: same form back through it (`GET /answers/conversations/{id}` carries the conversation's
+    #: newest draft). Recorded rather than derived because a resumed run cannot re-derive an
+    #: id it never saw.
+    agent_action_id: str | None
     #: The answer's summary — ids, model, counts, outcome. **No text, no citations.**
     answer: dict[str, Any] | None
     #: The bilingual refusal, verbatim, for a prohibited ask.
     refusal: dict[str, str] | None
-    #: What the draft branch would have produced. A placeholder until ticket 40.
+    #: What the draft branch decided: `proposed` (a form exists and a human is being asked),
+    #: `invalid` (the contents would be refused), `refused` (the kernel said no),
+    #: `no_request` (nothing was named) or `no_draft`. Only `proposed` pauses.
     pending_action: dict[str, Any] | None
-    #: What came back from the human. `{"received": True, "value_type": "dict"}` — the type
-    #: of the answer, never the answer.
-    confirmation: dict[str, Any] | None
     #: D23's refusal, or the answer path's own D20 refusal. Read by callers and by ticket
     #: 42's trace filter.
     is_refusal: bool

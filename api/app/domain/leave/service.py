@@ -81,6 +81,7 @@ from app.domain.leave.models import (
     LeaveDay,
     LeaveEntryType,
     LeaveRequest,
+    LeaveRequestCheck,
     LeaveRequestInput,
     LeaveRequestQuery,
     LeaveRequestState,
@@ -377,7 +378,7 @@ class LeaveService:
 
     # --- requests -----------------------------------------------------------
 
-    async def draft(
+    async def check_request(
         self,
         *,
         employee_id: UUID,
@@ -385,17 +386,20 @@ class LeaveService:
         start_date: date,
         end_date: date,
         attachment_reference: str | None = None,
-        actor_user_id: UUID | None = None,
-        actor_roles: frozenset[str] | None = None,
-    ) -> LeaveRequestView:
-        """Write the request, having refused what could never be filed.
+    ) -> LeaveRequestCheck:
+        """Every refusal a request meets, and **not one write**.
 
-        Everything a later step would refuse is refused here, while the document is
-        still the requester's to fix: a range that ends before it starts, one with no
-        working day in it, a retired type, a missing attachment, an attachment
-        reference that is not a storage key, dates that overlap a leave already asked
-        for, and — as a courtesy rather than as the decision — a balance that does not
-        cover it. The authoritative check is at filing, under the row's lock.
+        Extracted from `draft` in ticket 40, and the reason is the agent's draft tool: a
+        draft the employee confirms must not be refused at submission for a rule the
+        assistant never asked about, and the surest way to have one rule is to have one
+        implementation. `draft` below is this method plus the three writes; the tool is this
+        method and nothing else.
+
+        The order of the refusals is `draft`'s own order and is preserved deliberately: a
+        range that ends before it starts is refused before the balance is read, and a type
+        nobody offers is refused before an employee is looked up. Reordering them would
+        change *which* reason a request with two faults is told about, which is a behaviour
+        change wearing a refactor's clothes.
         """
         leave_type = await self._require_type(code)
         self._require_active(leave_type)
@@ -417,15 +421,56 @@ class LeaveService:
                 ),
             )
         await self._require_affordable(employee_id, leave_type, counts)
+        return LeaveRequestCheck(
+            leave_type=leave_type,
+            start_date=start_date,
+            end_date=end_date,
+            working_days=tuple(days),
+            counts=counts,
+            business_days_count=total(counts.values()),
+            attachment_reference=attachment_reference,
+        )
 
+    async def draft(
+        self,
+        *,
+        employee_id: UUID,
+        code: str,
+        start_date: date,
+        end_date: date,
+        attachment_reference: str | None = None,
+        actor_user_id: UUID | None = None,
+        actor_roles: frozenset[str] | None = None,
+    ) -> LeaveRequestView:
+        """Write the request, having refused what could never be filed.
+
+        Everything a later step would refuse is refused here, while the document is
+        still the requester's to fix: a range that ends before it starts, one with no
+        working day in it, a retired type, a missing attachment, an attachment
+        reference that is not a storage key, dates that overlap a leave already asked
+        for, and — as a courtesy rather than as the decision — a balance that does not
+        cover it. The authoritative check is at filing, under the row's lock.
+
+        **The refusals are `check_request`'s, not this method's** (ticket 40). What is left
+        here is the write: the row, the trail, and the read-back. The agent's draft tool
+        calls the same `check_request`, so "a draft the assistant proposed" and "a request
+        the employee filed" are checked by one implementation of every rule.
+        """
+        check = await self.check_request(
+            employee_id=employee_id,
+            code=code,
+            start_date=start_date,
+            end_date=end_date,
+            attachment_reference=attachment_reference,
+        )
         request = await self._repository.save_request(
             LeaveRequestInput(
                 employee_id=employee_id,
-                leave_type_id=leave_type.id,
-                start_date=start_date,
-                end_date=end_date,
-                business_days_count=total(counts.values()),
-                attachment_reference=attachment_reference,
+                leave_type_id=check.leave_type.id,
+                start_date=check.start_date,
+                end_date=check.end_date,
+                business_days_count=check.business_days_count,
+                attachment_reference=check.attachment_reference,
             )
         )
         await record(
@@ -437,9 +482,9 @@ class LeaveService:
             # rather than a fact about the request, and compliance reads this record.
             after={
                 "employee_id": employee_id,
-                "leave_type": leave_type.code,
-                "start_date": start_date.isoformat(),
-                "end_date": end_date.isoformat(),
+                "leave_type": check.leave_type.code,
+                "start_date": check.start_date.isoformat(),
+                "end_date": check.end_date.isoformat(),
                 "business_days_count": request.business_days_count,
             },
             actor_user_id=actor_user_id,

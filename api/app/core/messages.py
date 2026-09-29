@@ -507,6 +507,76 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "agent.tool.team_attendance.empty": (
             "Tu equipo no tiene datos de jornada en ese periodo."
         ),
+        # --- the drafts (ticket 40, DESIGN §6.2's draft half and §6.3) ------------
+        #
+        # What the assistant says when it has a form for the employee to review. The
+        # sentence never states a figure or a date: the values are in `prefill_form`,
+        # which the interface draws as an editable form, and a sentence that repeated
+        # them would be a second copy that can disagree with the fields.
+        "agent.draft.leave_request": (
+            "He preparado un borrador de solicitud de permiso. Revísalo, cambia lo que "
+            "haga falta y confírmalo tú: hasta que lo confirmes no se ha enviado nada."
+        ),
+        "agent.draft.attendance_correction": (
+            "He preparado un borrador de corrección de fichaje. Revísalo, cambia lo que "
+            "haga falta y confírmalo tú: hasta que lo confirmes no se ha enviado nada."
+        ),
+        "agent.draft.timesheet": (
+            "He preparado un borrador de imputación de horas. Revísalo, cambia lo que "
+            "haga falta y confírmalo tú: hasta que lo confirmes no se ha enviado nada."
+        ),
+        # What it says when the question did not say what to draft. A question, not a
+        # refusal: the three drafts are things this assistant can prepare.
+        "agent.draft.no_request": (
+            "Puedo preparar un borrador de solicitud de permiso, de corrección de "
+            "fichaje o de imputación de horas. Dime cuál y para qué fechas, y te lo "
+            "dejo listo para que lo confirmes."
+        ),
+        # What it says when the fields it was given are not enough to fill the form. The
+        # placeholder is filled with the *labels* of the fields that are missing, in this
+        # same language (`ai/tools/render.py`), so the employee reads "start date" rather
+        # than `start_date`.
+        "agent.draft.needs_details": (
+            "Me faltan datos para preparar ese borrador: {fields}."
+        ),
+        # The three form titles. Words rather than a code, because a form a person is
+        # about to confirm has to say what it is.
+        "agent.draft.title.leave_request": "Solicitud de permiso (borrador)",
+        "agent.draft.title.attendance_correction": "Corrección de fichaje (borrador)",
+        "agent.draft.title.timesheet_entry": "Imputación de horas (borrador)",
+        # The field labels, one per field the eventual submission writes. The keys are the
+        # submission's own field names (`domain/agent/models.py::PrefillField.label_key`),
+        # so a reader can go from a form to the endpoint's request model and back.
+        "agent.draft.field.leave_type": "Tipo de permiso",
+        "agent.draft.field.start_date": "Fecha de inicio",
+        "agent.draft.field.end_date": "Fecha de fin",
+        "agent.draft.field.attachment_reference": "Justificante",
+        # `week_start` is not a field of the submission (the timesheet module takes its week
+        # as a query parameter) — it is a *parameter*, and a tool that was given no week says
+        # so by that name. The label exists so that every name a draft tool can report as
+        # missing has wording, which `test_every_draft_parameter_has_a_label_its_answer_can_use`
+        # asserts rather than hopes.
+        "agent.draft.field.week_start": "Semana",
+        "agent.draft.field.business_date": "Fecha del fichaje",
+        "agent.draft.field.kind": "Qué fichaje",
+        "agent.draft.field.corrected_at": "Hora correcta",
+        "agent.draft.field.reason": "Motivo",
+        "agent.draft.field.entry_date": "Día",
+        "agent.draft.field.project_id": "Proyecto",
+        "agent.draft.field.task_id": "Tarea",
+        "agent.draft.field.minutes": "Minutos",
+        "agent.draft.field.note": "Nota",
+        # The two select choices of a correction, which are enum values rather than names.
+        "agent.draft.option.clock_in": "Entrada",
+        "agent.draft.option.clock_out": "Salida",
+        # The two fields whose value needs a word of explanation:
+        "agent.draft.hint.corrected_at": (
+            "La hora de la fecha indicada arriba, en horario de Madrid."
+        ),
+        "agent.draft.hint.attachment_reference": (
+            "Solo si el tipo de permiso lo exige; es la referencia del fichero guardado."
+        ),
+        "agent.draft.hint.minutes": "Minutos trabajados ese día en esa tarea.",
     },
     "en": {
         "errors.validation_failed": "The submitted data is not valid.",
@@ -947,6 +1017,53 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "agent.tool.team_attendance.empty": (
             "Your team has no attendance data in that period."
         ),
+        # --- the drafts (ticket 40) — the English half of the block above ----------
+        "agent.draft.leave_request": (
+            "I have prepared a draft leave request. Review it, change whatever needs "
+            "changing and confirm it yourself: nothing has been filed until you do."
+        ),
+        "agent.draft.attendance_correction": (
+            "I have prepared a draft attendance correction. Review it, change whatever "
+            "needs changing and confirm it yourself: nothing has been filed until you do."
+        ),
+        "agent.draft.timesheet": (
+            "I have prepared a draft time entry. Review it, change whatever needs "
+            "changing and confirm it yourself: nothing has been filed until you do."
+        ),
+        "agent.draft.no_request": (
+            "I can prepare a draft leave request, attendance correction or time entry. "
+            "Tell me which one and for which dates, and I will have it ready for you to "
+            "confirm."
+        ),
+        "agent.draft.needs_details": (
+            "I am missing something I need to prepare that draft: {fields}."
+        ),
+        "agent.draft.title.leave_request": "Leave request (draft)",
+        "agent.draft.title.attendance_correction": "Attendance correction (draft)",
+        "agent.draft.title.timesheet_entry": "Time entry (draft)",
+        "agent.draft.field.leave_type": "Leave type",
+        "agent.draft.field.start_date": "Start date",
+        "agent.draft.field.end_date": "End date",
+        "agent.draft.field.attachment_reference": "Supporting document",
+        "agent.draft.field.week_start": "Week",
+        "agent.draft.field.business_date": "Date of the punch",
+        "agent.draft.field.kind": "Which punch",
+        "agent.draft.field.corrected_at": "Correct time",
+        "agent.draft.field.reason": "Reason",
+        "agent.draft.field.entry_date": "Day",
+        "agent.draft.field.project_id": "Project",
+        "agent.draft.field.task_id": "Task",
+        "agent.draft.field.minutes": "Minutes",
+        "agent.draft.field.note": "Note",
+        "agent.draft.option.clock_in": "Clock-in",
+        "agent.draft.option.clock_out": "Clock-out",
+        "agent.draft.hint.corrected_at": (
+            "The time on the date above, in Madrid local time."
+        ),
+        "agent.draft.hint.attachment_reference": (
+            "Only if the leave type requires one; it is the reference of the stored file."
+        ),
+        "agent.draft.hint.minutes": "Minutes worked that day on that task.",
     },
 }
 

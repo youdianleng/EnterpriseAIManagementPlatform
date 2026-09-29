@@ -6,6 +6,7 @@ import {
   type Citation,
   type Conversation,
   type DoneFrame,
+  type Draft,
   type ErrorFrame,
   type RefusalFrame,
   type SourceNotice,
@@ -78,6 +79,16 @@ type QaState = {
   /** `null` means "a new conversation", which is what the composer starts on. */
   selectedId: string | null;
   transcripts: Record<string, StoredMessage[]>;
+  /**
+   * The draft each conversation holds, by conversation id (ticket 40).
+   *
+   * Kept beside the transcript because that is where the server sends it: the conversation
+   * read answers with the messages *and* the newest draft, and this is the client's copy of
+   * that one answer. `undefined` means "this conversation has not been read yet"; `null`
+   * means "it was read and the assistant proposed nothing", which is the ordinary case and
+   * not the same fact.
+   */
+  drafts: Record<string, Draft | null>;
   loadingTranscript: boolean;
   transcriptFailed: boolean;
   /** Every turn this session has asked, by key. Filtered by conversation when rendered. */
@@ -105,6 +116,7 @@ function pendingKey(): string {
 export const useQaStore = create<QaState>((set, get) => ({
   selectedId: null,
   transcripts: {},
+  drafts: {},
   loadingTranscript: false,
   transcriptFailed: false,
   turns: {},
@@ -123,6 +135,7 @@ export const useQaStore = create<QaState>((set, get) => ({
       const detail = await readConversation(id);
       set((state) => ({
         transcripts: { ...state.transcripts, [id]: detail.messages },
+        drafts: { ...state.drafts, [id]: detail.draft },
         // A turn whose message the transcript now carries stops being a live turn: the
         // stored row has the accounting and the citations, and rendering both would show
         // the same answer twice.
@@ -234,8 +247,11 @@ export const useQaStore = create<QaState>((set, get) => ({
     set((state) => {
       const transcripts = { ...state.transcripts };
       delete transcripts[id];
+      const drafts = { ...state.drafts };
+      delete drafts[id];
       return {
         transcripts,
+        drafts,
         selectedId: state.selectedId === id ? null : state.selectedId,
         openCitation: null,
       };
@@ -372,6 +388,7 @@ async function readInto(
     const detail = await readConversation(id);
     set((state) => ({
       transcripts: { ...state.transcripts, [id]: detail.messages },
+      drafts: { ...state.drafts, [id]: detail.draft },
       turns: dropLoaded(state.turns, detail.messages),
     }));
   } catch {

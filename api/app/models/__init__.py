@@ -1,6 +1,7 @@
 """ORM models package: importing it registers every table with the metadata."""
 
 from app.models.account import User
+from app.models.agent_action import AgentAction
 from app.models.approval import ApprovalDecision, ApprovalRequest, ApprovalStep
 from app.models.audit import AuditLog
 from app.models.document import Document, DocumentChunk
@@ -26,6 +27,7 @@ from app.models.schedule import (
 from app.models.timesheet import Timesheet, TimesheetEntry
 
 __all__ = [
+    "AgentAction",
     "ApprovalDecision",
     "ApprovalRequest",
     "ApprovalStep",

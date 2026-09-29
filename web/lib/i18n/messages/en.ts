@@ -923,6 +923,30 @@ export const en: Dictionary = {
       asking: "Asking…",
       streaming: "The answer is on its way.",
     },
+    // The draft the assistant prepared (ticket 40): the screen's own state beside the
+    // form's content, which the API sends with its labels.
+    draft: {
+      proposedBadge: "Waiting for you to confirm",
+      expiredBadge: "Expired",
+      expiresAt: "You can confirm it until {date}.",
+      expiredAt: "It expired on {date}.",
+      expiredTitle: "This draft has expired",
+      expiredBody:
+        "More than 24 hours have passed since it was prepared, so it can no longer be confirmed. Ask for another one and I will prepare it again with the current data.",
+      expiredAction: "Ask for a new draft to continue.",
+      confirm: "Confirm and submit",
+      confirmNote:
+        "Confirmation — the click that creates the document — arrives in the next delivery. Here you can review and change any value.",
+      factWorkingDays: "Working days",
+      factWeek: "Week",
+      factProject: "Project",
+      factTask: "Task",
+      factBillable: "Billable",
+      factDay: "Day",
+      factAttachment: "Needs a supporting document",
+      yes: "Yes",
+      no: "No",
+    },
   },
   footer: {
     milestone: "Milestone 0 — project skeleton",
