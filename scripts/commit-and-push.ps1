@@ -82,6 +82,35 @@ try {
         return
     }
 
+    # Mutation testing is this project's verification bar, and it works by *leaving a
+    # deliberate break in the tree* while the tests are run against it. So a working tree is
+    # not always a tree that should be committed, and a commit taken mid-mutation is a commit
+    # that fails its own tests. That happened once -- a mutation probe landed in
+    # `domain/payslip/service.py` between a full-suite run and the `git add`, and the pushed
+    # commit carried `reserved=(),  # MUTATION PROBE`. This guard is the cheap fix: a staged
+    # diff that names a mutation does not get committed, whatever else it contains.
+    $markers = 'MUTATION', 'MUTATED', '# BREAK', 'if False and'
+    $offenders = @()
+    foreach ($path in $staged) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+        # The file that *defines* the vocabulary necessarily contains it, so it cannot be
+        # checked against itself -- the first version of this guard refused to commit the
+        # guard. Everywhere else the check holds.
+        if ([System.IO.Path]::GetFileName($path) -eq 'commit-and-push.ps1') { continue }
+        $added = & git diff --cached --unified=0 -- $path | Where-Object { $_ -match '^\+' }
+        foreach ($line in $added) {
+            foreach ($marker in $markers) {
+                if ($line.Contains($marker)) { $offenders += "$path`: $($line.Trim())" }
+            }
+        }
+    }
+    if ($offenders) {
+        Write-Host 'REFUSING TO COMMIT: the staged diff contains a mutation marker.' -ForegroundColor Red
+        $offenders | Select-Object -First 10 | ForEach-Object { Write-Host "  $_" }
+        Write-Host 'Restore the mutated source before committing (a mutation probe left in the tree is not a state to publish).' -ForegroundColor Yellow
+        return
+    }
+
     if ($DryRun) {
         Write-Host "Would commit $($staged.Count) file(s):" -ForegroundColor Cyan
         $staged | ForEach-Object { Write-Host "  $_" }
