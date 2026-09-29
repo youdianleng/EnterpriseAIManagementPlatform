@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app import __version__
 from app.api.v1 import accounts as accounts_v1
+from app.api.v1 import agent as agent_v1
 from app.api.v1 import answer as answer_v1
 from app.api.v1 import attendance as attendance_v1
 from app.api.v1 import audit as audit_v1
@@ -151,6 +152,7 @@ def create_app() -> FastAPI:
 
     app.include_router(system.router)
     app.include_router(app_info.router, prefix=API_PREFIX)
+    app.include_router(agent_v1.router, prefix=API_PREFIX)
     app.include_router(answer_v1.router, prefix=API_PREFIX)
     app.include_router(attendance_v1.router, prefix=API_PREFIX)
     app.include_router(departments_v1.router, prefix=API_PREFIX)

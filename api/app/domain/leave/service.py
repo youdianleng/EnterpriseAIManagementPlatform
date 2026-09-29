@@ -493,7 +493,9 @@ class LeaveService:
         await self._repository.commit()
         return await self.get(request.id)
 
-    async def submit(self, request_id: UUID) -> LeaveRequestView:
+    async def submit(
+        self, request_id: UUID, context: SubmitContext | None = None
+    ) -> LeaveRequestView:
         """Reserve the days and hand the document to the engine.
 
         The order is the rule: the reservation happens **before** the engine is
@@ -506,6 +508,15 @@ class LeaveService:
         back from the draft: a calendar edited between drafting and filing changes
         what the leave costs, and the figure charged is the figure the requester is
         then shown.
+
+        **`context` is how a filing says who asked for it** (ticket 41). Defaulted
+        rather than required, so every existing caller — the route, the settle sweep's
+        fixtures, the tests — keeps filing as `initiated_by="user"` without naming it;
+        the agent's confirmation is the one caller that passes
+        `SubmitContext(initiated_by="agent", confirmed_by_user_id=…)`, and it passes it
+        *here* rather than writing an approval row of its own. That is the whole point:
+        a confirmed draft goes down the same two levels as a hand-filed one, and the
+        only difference is the two columns §3.4 keeps for exactly this.
         """
         request = await self._require(request_id)
         await self._require_state(request, LeaveRequestState.DRAFT, "filed")
@@ -521,7 +532,7 @@ class LeaveService:
 
         try:
             approval_request_id = await self._approvals.submit(
-                ENTITY_TYPE, request.id, request.employee_id, SubmitContext()
+                ENTITY_TYPE, request.id, request.employee_id, context or SubmitContext()
             )
         except DomainError as error:
             # The engine's refusal in this module's vocabulary: the client routes on

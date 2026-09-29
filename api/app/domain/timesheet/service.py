@@ -610,7 +610,7 @@ class TimesheetService:
 
     # --- filing -------------------------------------------------------------
 
-    async def submit(self, week_start: date) -> WeekView:
+    async def submit(self, week_start: date, context: SubmitContext | None = None) -> WeekView:
         """File the week with the approval engine, and answer with the warning.
 
         The engine decides who approves — the direct manager, then HR — so this
@@ -629,6 +629,12 @@ class TimesheetService:
         — under a request of its own, and the original's approval is left exactly as it
         was. That is what "补充提交同样走两级审批" means in practice: one engine, one
         route, two documents.
+
+        **`context` is how a filing says who asked for it** (ticket 41), defaulted so
+        the route files as a person did. The agent's confirmation of a drafted entry
+        passes `SubmitContext(initiated_by="agent", confirmed_by_user_id=…)`: §6.3's
+        「走既有的两级审批流，不跳过任何一级」 is satisfied by calling *this* method
+        rather than by reassembling a filing beside it.
         """
         assert_monday(week_start)
         sheet = await self._editable(week_start)
@@ -643,7 +649,7 @@ class TimesheetService:
 
         try:
             request_id = await self._approvals.submit(
-                ENTITY_TYPE, sheet.id, self.employee_id, SubmitContext()
+                ENTITY_TYPE, sheet.id, self.employee_id, context or SubmitContext()
             )
         except DomainError as error:
             # The engine's refusal, in this module's vocabulary: the client routes on

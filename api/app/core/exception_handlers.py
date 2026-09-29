@@ -51,12 +51,25 @@ def build_envelope(
     *,
     detail: str | None = None,
     fields: list[dict[str, Any]] | None = None,
+    message_key: str | None = None,
 ) -> dict[str, Any]:
+    """The catalogue's wording for a code, unless the raise site named a different one.
+
+    `message_key` is the override ticket 41 needed: a confirmation refused because the
+    *document's* rules moved is reported under the agent's own code — the envelope has to
+    say whose draft it is — while the sentence a person should read is the domain's, naming
+    the balance or the week that moved. It is validated against the catalogue before it is
+    used, so the one way to get this wrong (a key with no wording) is an error here rather
+    than an empty string in a browser.
+    """
     definition = definition_of(code)
+    if message_key is not None and not message_for(message_key, _ENVELOPE_LOCALE):
+        raise ValueError(f"{message_key!r} is not a catalogue key")
+    key = message_key or definition.message_key
     error: dict[str, Any] = {
         "code": code.value,
-        "message_key": definition.message_key,
-        "message": message_for(definition.message_key, _ENVELOPE_LOCALE),
+        "message_key": key,
+        "message": message_for(key, _ENVELOPE_LOCALE),
         "detail": detail if definition.expose_detail else None,
         "request_id": _request_id(),
         "timestamp": datetime.now(UTC).isoformat(),
@@ -77,7 +90,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def handle_app_error(_: Request, exc: AppError) -> JSONResponse:
         logger.info("app_error", error_code=exc.code.value, detail=exc.detail)
-        return _json(exc.code, detail=exc.detail)
+        return _json(exc.code, detail=exc.detail, message_key=exc.message_key)
 
     @app.exception_handler(DomainError)
     async def handle_domain_error(_: Request, exc: DomainError) -> JSONResponse:

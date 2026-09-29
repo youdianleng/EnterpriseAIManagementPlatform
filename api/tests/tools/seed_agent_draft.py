@@ -37,6 +37,7 @@ from app.db import get_session_factory
 from app.domain.access.kernel import apply_rls_context
 from app.domain.access.snapshot import resolve_principal
 from app.domain.agent.service import service_for
+from app.domain.answer.models import title_for
 from app.domain.answer.repository import PostgresAnswerRepository
 from app.domain.attendance.business_day import MADRID, madrid_today
 from app.domain.project.models import ProjectQuery
@@ -45,6 +46,7 @@ from app.domain.schedule.service import ScheduleService
 from app.domain.timesheet.models import monday_of
 from app.models.account import User
 from app.models.agent_action import AgentAction
+from app.models.answer import RagConversation
 from app.models.attendance import AttendanceEvent
 from app.repositories.project import PostgresProjectRepository
 from app.repositories.schedule import PostgresScheduleRepository
@@ -67,6 +69,31 @@ QUESTIONS = {
 EXPIRED_QUESTION = "Quiero pedir un dia de vacaciones"
 EXPIRED_HOURS_AGO = 25
 
+#: Two more, one per decision the confirmation point offers (ticket 41).
+#:
+#: **They exist because confirming is destructive to a fixture.** `checkDraftForm` draws each
+#: of the three drafts above and asserts its fields are editable and that the form is the
+#: assistant's; the confirmation check then *answers* one of them, which moves its
+#: `agent_actions` row out of `proposed` and creates a real leave request. Reusing the three
+#: would make the two checks interfere — and would make the check's own re-run fail, because
+#: a `confirmed` draft has no confirm button. So the decisions get drafts of their own, and
+#: each run of this script writes them fresh (it clears the conversations it wrote first).
+CONFIRM_QUESTION = "Confirmame el permiso de la semana que viene"
+REJECT_QUESTION = "Prepara un permiso que voy a descartar"
+
+#: How far back the *decision* drafts are searched for a free week, in days.
+#:
+#: **They need a week of their own, and finding one is a search rather than an offset.**
+#: Confirming a leave draft creates a leave request, and the module refuses a second one that
+#: overlaps a live one (`ERR_LVE_008`) — so a re-run of this fixture against a database where
+#: the confirmation check has already run would be refused for a collision it caused itself.
+#: A fixed offset is what the first two versions used, and it broke on the *third* run of the
+#: check, because a still-live request from an earlier run had reached that week by then. So
+#: the fixture asks the database which weekdays in the last couple of months are free of live
+#: leave and picks one, and `EAM_DRAFT_DECISION_SEARCH_DAYS` widens the search if a deployment
+#: has filled that window.
+DECISION_SEARCH_DAYS = int(os.environ.get("EAM_DRAFT_DECISION_SEARCH_DAYS", "60"))
+
 MINUTES = 480
 
 
@@ -82,6 +109,23 @@ async def main() -> None:
 
         week = monday_of(madrid_today(datetime.now(UTC)))
         working = await _working_day(session, principal.employee_id, week)
+        # **The context is published before the search, and that is not a formality.** The
+        # request's permission context is `set_config(..., is_local => true)`, transaction-
+        # scoped, and `leave_requests` is row-level-secured: a query without it matches **no
+        # rows**, so a search for "a week with no live leave" would find every week free and
+        # hand back a day the draft tool then refuses. The fixture's own second run found
+        # exactly that, and the error message named the wrong cause.
+        await apply_rls_context(session, principal)
+        # **The expired draft needs a *different* day from the leave draft**, and it did not
+        # have one until the fourth run of the visual check. The fixture writes four
+        # `draft_leave_request` drafts and only the decision pair are confirmed — but the
+        # *second run* of this script in one database is refused anyway, because the expired
+        # draft reuses the leave draft's dates and the **previous run's live draft request** is
+        # still there. That is the fixture refusing itself; the days are searched for instead,
+        # the same way the correction's quiet day is.
+        expired_day = await _free_weekday(
+            session, principal.employee_id, start=working - timedelta(days=7)
+        )
         quiet = await _quiet_day(session, principal.employee_id, start=working)
         project, task = await _project(session, principal)
         await _publish(session, principal)
@@ -122,8 +166,13 @@ async def main() -> None:
             form = await _draft(session, principal, name, arguments)
             if form is None:
                 raise SystemExit(
-                    f"{name} was refused: the fixture's arguments are not valid for "
-                    f"{TARGET} — has seed_timesheet_demo.py run?"
+                    f"{name} was refused for {arguments.get('start_date')}.."
+                    f"{arguments.get('end_date')}. Two causes, and they look alike: "
+                    "seed_timesheet_demo.py has not run (the schedule and the project), or a "
+                    "live leave request of this account covers that week — including one a "
+                    "previous run of visual-check.mjs created by confirming a draft. Withdraw "
+                    "it from the leave screen, or re-run scripts/demo/seed-screens.ps1, which "
+                    "resets this account's year."
                 )
             service = service_for(
                 session, ttl_hours=get_settings().agent_draft_ttl_hours
@@ -142,24 +191,116 @@ async def main() -> None:
                 f"(expires {recorded.action.expires_at.isoformat()})"
             )
 
-        await _expired(session, principal, working)
+        await _expired(session, principal, expired_day)
+        await _decisions(session, principal, working)
 
 
-async def _expired(session, principal, working: date) -> None:  # noqa: ANN001
+async def _decisions(session, principal, working: date) -> None:  # noqa: ANN001
+    """The two drafts the confirmation check answers: one to confirm, one to discard.
+
+    Filed under the same tool as the first draft above and in a week of their own (see
+    `DECISION_SEARCH_DAYS`), in conversations of their own — the interface shows the
+    conversation's *newest* draft, so one thread per decision is the only shape in which two
+    of them can be on screen independently.
+    """
+    day = await _free_weekday(session, principal.employee_id, start=working)
+    arguments = {
+        "leave_type": "annual",
+        "start_date": day.isoformat(),
+        "end_date": (day + timedelta(days=1)).isoformat(),
+    }
+    for question in (CONFIRM_QUESTION, REJECT_QUESTION):
+        await _publish(session, principal)
+        form = await _draft(session, principal, "draft_leave_request", arguments)
+        if form is None:
+            raise SystemExit(
+                f"{question!r} was refused: has seed_timesheet_demo.py run, and is the "
+                f"week {day} free of live leave? "
+                "EAM_DRAFT_DECISION_SEARCH_DAYS widens the search."
+            )
+        service = service_for(session, ttl_hours=get_settings().agent_draft_ttl_hours)
+        recorded = await service.record_draft(
+            principal=principal,
+            conversation_id=None,
+            question=question,
+            tool_name="draft_leave_request",
+            tool_input=arguments,
+            tool_output=form.as_dict(),
+            form=form,
+        )
+        print(f"draft: decision -> conversation {recorded.conversation_id}")
+
+
+async def _free_weekday(session, employee_id, *, start: date) -> date:  # noqa: ANN001
+    """A past weekday whose two-day range collides with no live leave of this employee.
+
+    **Why this is a query rather than an offset.** Confirming a leave draft writes a real
+    leave request, and the module refuses a second one over a live request — so a fixture
+    that always used "the Monday of last week" was refused by its own previous run's document
+    the second time the visual check ran, and the third time it was refused for a request an
+    *earlier* version had left two weeks back. The set of taken days is a fact about the
+    database, so the fixture reads it: the same shape as `_quiet_day` and `_working_day`
+    above, and the same reason — a fixture that assumes a free week is a fixture that fails
+    with a message that looks like a product defect.
+
+    Walked back from `start` and skipping weekends, because a range with no working day in it
+    is refused by the module itself.
+    """
+    day = start
+    for _ in range(DECISION_SEARCH_DAYS):
+        if day.weekday() < 5:
+            taken = await session.scalar(
+                text(
+                    """
+                    SELECT count(*)
+                      FROM leave_requests
+                     WHERE employee_id = :employee_id
+                       AND withdrawn_at IS NULL
+                       AND start_date <= :end_date
+                       AND end_date >= :start_date
+                       AND (approval_request_id IS NULL
+                            OR approval_request_id NOT IN
+                               (SELECT id FROM approval_requests WHERE status = 'rejected'))
+                    """
+                ),
+                {
+                    "employee_id": employee_id,
+                    "start_date": day,
+                    "end_date": day + timedelta(days=1),
+                },
+            )
+            if not taken:
+                return day
+        day -= timedelta(days=1)
+    raise SystemExit(
+        f"no free weekday in the last {DECISION_SEARCH_DAYS} days for the decision drafts; "
+        "set EAM_DRAFT_DECISION_SEARCH_DAYS higher"
+    )
+
+
+async def _expired(session, principal, day: date) -> None:  # noqa: ANN001
     """One more draft, moved 25 hours into the past: the state the interface has to draw.
 
     Both instants move, not only the expiry: the row's own `ck_agent_actions_expiry` says a
     draft cannot lapse before it was proposed, and a fixture that broke its own constraint
     would be a fixture contradicting the schema it is seeding for.
+
+    `day` is a day of its own rather than the leave draft's — see `main`: reusing the leave
+    draft's dates made the *second* run of this script refuse itself, because the first run's
+    draft request is still live over them.
     """
     await _publish(session, principal)
     arguments = {
         "leave_type": "annual",
-        "start_date": working.isoformat(),
-        "end_date": (working + timedelta(days=1)).isoformat(),
+        "start_date": day.isoformat(),
+        "end_date": (day + timedelta(days=1)).isoformat(),
     }
     form = await _draft(session, principal, "draft_leave_request", arguments)
-    assert form is not None, "the expired fixture's arguments are not valid"
+    if form is None:
+        raise SystemExit(
+            f"the expired fixture was refused for {day}..{day + timedelta(days=1)}: that week "
+            "is not free. EAM_DRAFT_DECISION_SEARCH_DAYS widens the search."
+        )
     service = service_for(session, ttl_hours=get_settings().agent_draft_ttl_hours)
     recorded = await service.record_draft(
         principal=principal,
@@ -289,6 +430,24 @@ async def _clear(session, user_id: UUID) -> None:  # noqa: ANN001
             select(AgentAction.conversation_id).where(
                 AgentAction.user_id == user_id,
                 AgentAction.tool_name.in_(sorted(QUESTIONS)),
+            )
+        )
+    )
+    # The decision drafts too, found by the *titles* their questions produced rather than by
+    # their tool: they are the same tool as the first three, so a tool-shaped filter would
+    # take the form checks' own fixture with them. `title_for` is the same function the answer
+    # path derives a conversation's title with, so this asks the product's own question.
+    decisions = {title_for(question) for question in (CONFIRM_QUESTION, REJECT_QUESTION)}
+    conversations |= set(
+        await session.scalars(
+            select(AgentAction.conversation_id).where(
+                AgentAction.user_id == user_id,
+                AgentAction.conversation_id.in_(
+                    select(RagConversation.id).where(
+                        RagConversation.user_id == user_id,
+                        RagConversation.title.in_(sorted(decisions)),
+                    )
+                ),
             )
         )
     )

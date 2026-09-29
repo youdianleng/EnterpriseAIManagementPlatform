@@ -468,6 +468,26 @@ class ErrorCode(StrEnum):
     # in the log instead.
     ANSWER_MODEL_UNAVAILABLE = "ERR_ANS_001"
 
+    # The agent's human-review point (ticket 41). Three codes, and the split is what a
+    # client shows rather than which module raises them:
+    #
+    # * `DRAFT_NOT_FOUND` — no such draft for this caller. A 404 and not a 403, for the
+    #   reason the conversation read gives: telling "somebody else's draft" apart from
+    #   "no such draft" would make this endpoint an existence oracle over other people's
+    #   proposals, and the row's own `WHERE user_id` is what makes the two the same answer.
+    # * `DRAFT_NOT_CONFIRMABLE` — the draft is not `proposed` any more: it was confirmed,
+    #   rejected, or it lapsed. A 409, because the request is well-formed and the
+    #   *state* is the conflict, and the detail says which of the four it is now. §6.3's
+    #   「过期后…需重新生成」 is this code with `expired` in it.
+    # * `DRAFT_CONFIRMATION_REFUSED` — the employee's *document* was refused at
+    #   confirmation: the rules changed since the draft was produced. A 409 for the
+    #   reason `LEAVE_SUBMISSION_REFUSED` is one: the caller owns the draft and is being
+    #   told what its contents now collide with, and the sentence tells them to ask for
+    #   a new draft rather than to edit this one.
+    AGENT_DRAFT_NOT_FOUND = "ERR_AGT_001"
+    AGENT_DRAFT_NOT_CONFIRMABLE = "ERR_AGT_002"
+    AGENT_DRAFT_CONFIRMATION_REFUSED = "ERR_AGT_003"
+
     # Cross-cutting.
     INTERNAL_ERROR = "ERR_INTERNAL_001"
     SERVICE_UNAVAILABLE = "ERR_INTERNAL_002"
@@ -830,6 +850,19 @@ ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
     ErrorCode.ANSWER_MODEL_UNAVAILABLE: ErrorDefinition(
         503, "errors.answer_model_unavailable", expose_detail=False
     ),
+    # The agent's human-review point (ticket 41), with the readings recorded in the enum
+    # entry above: a draft this caller does not have is a 404 (the same answer the
+    # conversation read gives, so the endpoint is not an existence oracle), a draft that is
+    # no longer `proposed` is a 409 naming its state, and a *document* refused at
+    # confirmation is a 409 too — the row is the caller's own and what collides is its
+    # contents.
+    ErrorCode.AGENT_DRAFT_NOT_FOUND: ErrorDefinition(404, "errors.agent_draft_not_found"),
+    ErrorCode.AGENT_DRAFT_NOT_CONFIRMABLE: ErrorDefinition(
+        409, "errors.agent_draft_not_confirmable"
+    ),
+    ErrorCode.AGENT_DRAFT_CONFIRMATION_REFUSED: ErrorDefinition(
+        409, "errors.agent_draft_confirmation_refused"
+    ),
     ErrorCode.INTERNAL_ERROR: ErrorDefinition(500, "errors.internal_error", expose_detail=False),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorDefinition(
         503, "errors.service_unavailable", expose_detail=False
@@ -846,12 +879,28 @@ class AppError(Exception):
 
     Carries an optional human-readable detail for the *log*; whether it reaches
     the client is decided by the catalogue, not by the raise site.
+
+    `message_key` may be given explicitly, and exactly one caller does (ticket 41): a
+    confirmation refused because the *document's* rules moved is reported under this
+    module's own code — the caller owns the draft and the envelope has to say so — while the
+    sentence the employee should read is the domain's, naming the balance, the week or the
+    project that moved. The code stays a closed set; only the wording is borrowed, and the
+    same borrowing is what the agent's draft reply already does
+    (`ai/tools/draft.py::_invalid`). A raise site that passes nothing gets the code's own
+    wording, which is every other error in the system.
     """
 
-    def __init__(self, code: ErrorCode, detail: str | None = None) -> None:
+    def __init__(
+        self,
+        code: ErrorCode,
+        detail: str | None = None,
+        *,
+        message_key: str | None = None,
+    ) -> None:
         super().__init__(detail or code.value)
         self.code = code
         self.detail = detail
+        self._message_key = message_key
 
     @property
     def status_code(self) -> int:
@@ -859,4 +908,4 @@ class AppError(Exception):
 
     @property
     def message_key(self) -> str:
-        return definition_of(self.code).message_key
+        return self._message_key or definition_of(self.code).message_key

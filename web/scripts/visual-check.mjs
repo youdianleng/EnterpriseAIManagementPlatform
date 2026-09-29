@@ -1499,6 +1499,7 @@ async function main() {
     // fixtures that give this check its drafts are conversations. Running afterwards would
     // find the fixture deleted by the check that ran before it.
     await checkDraftForm(browser, sessionCookie, request);
+    await checkDraftDecisions(browser, sessionCookie, request);
     await checkQa(browser, sessionCookie, request);
   } else {
     console.log("[note] signed-in checks skipped (no usable credentials)");
@@ -2455,9 +2456,12 @@ async function checkQa(browser, sessionCookie, request) {
  *      with the right markup would pass every structural assertion above.
  *   3. **The expiry is stated**, in the reader's language, and an expired draft says what to
  *      do instead while still showing what was proposed.
- *   4. **The confirmation is deliberately absent**, and the screen says so rather than
- *      offering a button that does nothing: ticket 41 owns the click that creates the
- *      document.
+ *   4. **The confirmation is offered and it is a click.** The button is enabled, and the
+ *      dialog behind it names the document and lists what will be recorded, so the click is
+ *      informed rather than merely deliberate. The *outcome* of that click is
+ *      `checkDraftDecisions`' subject, on drafts of its own: answering a draft is
+ *      destructive to the fixture, and this check has to be able to run against drafts that
+ *      are still waiting for an answer.
  *
  * **Which conversation holds which draft comes from the API**, not from a title this script
  * guessed: `api/tests/tools/seed_agent_draft.py` writes one draft per conversation, and the
@@ -2499,30 +2503,47 @@ async function checkDraftForm(browser, sessionCookie, request) {
       `draft: the ${entity} card is the one drawn`,
     );
     const heading = (await card.locator("h3").innerText()).trim();
+    // The form's own title, from the attribute rather than from the visible heading: the
+    // heading drops the "(borrador)" suffix once the draft has been answered (see
+    // `cardTitle`), and this check is about the form the *assistant* proposed.
+    const posted = await card.locator("h3").getAttribute("data-draft-title");
+    expect(
+      posted === form.title_es,
+      `draft: the ${entity} form's title is the one the API sent ("${posted}")`,
+    );
     expect(
       heading === form.title_es,
       `draft: the ${entity} heading is the form's own title ("${heading}")`,
     );
 
     // 1. every field is drawn, labelled and enabled.
-    const controls = card.locator("input, select, textarea");
+    //
+    // **Scoped to the `<form>`, and that scoping is load-bearing**: the confirmation and
+    // discard dialogs are `<dialog>` elements in the same card, and a closed `<dialog>` is
+    // still in the DOM — so an unscoped `input, select, textarea` count picks up the
+    // discard dialog's reason box and reports one control too many. The form is the part
+    // that is the submission; the dialogs are what happens to it.
+    const controls = card.locator("form input, form select, form textarea");
     const drawn = await controls.count();
     expect(
       drawn === form.fields.length,
       `draft ${entity}: every field is drawn (${drawn} controls for ${form.fields.length} fields)`,
     );
     const unlabelled = await card.evaluate((element) =>
-      [...element.querySelectorAll("input, select, textarea")].filter((control) => {
-        const labels = control.id
-          ? document.querySelectorAll(`label[for="${control.id}"]`).length
-          : 0;
-        return labels === 0 && !control.getAttribute("aria-label");
-      }).length,
+      [...element.querySelectorAll("form input, form select, form textarea")].filter(
+        (control) => {
+          const labels = control.id
+            ? document.querySelectorAll(`label[for="${control.id}"]`).length
+            : 0;
+          return labels === 0 && !control.getAttribute("aria-label");
+        },
+      ).length,
     );
     expect(unlabelled === 0, `draft ${entity}: every control carries a label (${unlabelled} without)`);
     const disabled = await card.evaluate((element) =>
-      [...element.querySelectorAll("input, select, textarea")].filter((control) => control.disabled)
-        .length,
+      [...element.querySelectorAll("form input, form select, form textarea")].filter(
+        (control) => control.disabled,
+      ).length,
     );
     expect(disabled === 0, `draft ${entity}: every field is editable (${disabled} disabled)`);
 
@@ -2548,20 +2569,66 @@ async function checkDraftForm(browser, sessionCookie, request) {
       `draft ${entity}: a field can be edited ("${before}" -> "${await editable.inputValue()}")`,
     );
 
-    // 3. the expiry, and 4. the confirmation this ticket does not own.
+    // 3. the expiry, and 4. the confirmation this ticket offers.
     const expiry = (await card.locator('[data-testid="qa-draft-expiry"]').innerText()).replace(
       /\s+/g,
       " ",
     );
     expect(/\d{2}\/\d{2}\/\d{4}/.test(expiry), `draft ${entity}: the expiry is stated ("${expiry}")`);
     expect(
-      await card.locator('[data-testid="qa-draft-confirm"]').isDisabled(),
-      `draft ${entity}: the confirmation is not offered yet (ticket 41)`,
+      !(await card.locator('[data-testid="qa-draft-confirm"]').isDisabled()),
+      `draft ${entity}: the confirmation is offered`,
+    );
+    expect(
+      !(await card.locator('[data-testid="qa-draft-reject"]').isDisabled()),
+      `draft ${entity}: discarding is offered beside it`,
     );
     expect(
       /\S/.test(await card.locator('[data-testid="qa-draft-confirm-note"]').innerText()),
-      `draft ${entity}: and the screen says what it is waiting for`,
+      `draft ${entity}: and the screen says what confirming will do`,
     );
+
+    // The dialog behind the button: it names the document and lists what will be recorded,
+    // which is the design system's rule for a committing action. Opened and closed without
+    // answering, because this draft is the form check's and has to stay unanswered.
+    await card.locator('[data-testid="qa-draft-confirm"]').click();
+    const dialog = page.locator("dialog[open]");
+    await dialog.waitFor({ state: "visible", timeout: 10000 });
+    const dialogText = (await dialog.innerText()).replace(/\s+/g, " ");
+    expect(
+      dialogText.includes(form.title_es),
+      `draft ${entity}: the confirmation dialog names the document ("${dialogText.slice(0, 80)}")`,
+    );
+    const listed = await dialog.locator('[data-testid="qa-draft-confirm-fields"] li').count();
+    expect(
+      listed === form.fields.length,
+      `draft ${entity}: and lists every value it will record (${listed} of ${form.fields.length})`,
+    );
+    await page.screenshot({
+      path: join(OUT, `qa-draft-${entity}-confirm-dialog-es.png`),
+      fullPage: true,
+    });
+    await closeDialog(dialog);
+    expect(
+      (await card.locator('[data-testid="qa-draft-status"]').innerText()).trim().length > 0 &&
+        (await card.locator('[data-testid="qa-draft-confirm"]').isEnabled()),
+      `draft ${entity}: closing the dialog leaves the draft unanswered`,
+    );
+
+    // And the discard dialog, which needs no reason (§6.4's rule is about an *approver*
+    // rejecting somebody's request, not about clearing one's own screen).
+    await card.locator('[data-testid="qa-draft-reject"]').click();
+    await dialog.waitFor({ state: "visible", timeout: 10000 });
+    const discardText = (await dialog.innerText()).replace(/\s+/g, " ");
+    expect(
+      /descartar/i.test(discardText),
+      `draft ${entity}: the discard dialog says what it does ("${discardText.slice(0, 80)}")`,
+    );
+    await page.screenshot({
+      path: join(OUT, `qa-draft-${entity}-reject-dialog-es.png`),
+      fullPage: true,
+    });
+    await closeDialog(dialog);
 
     await page.screenshot({ path: join(OUT, `qa-draft-${entity}-edited-es.png`), fullPage: true });
 
@@ -2601,14 +2668,15 @@ async function checkDraftForm(browser, sessionCookie, request) {
       (await card.locator('[data-testid="qa-draft-expired"]').count()) === 1,
       "draft: and it says what to do instead",
     );
-    const stillReadable = await card.locator("input, select, textarea").count();
+    const stillReadable = await card.locator("form input, form select, form textarea").count();
     expect(
       stillReadable > 0,
       "draft: an expired draft still shows what was proposed rather than an empty screen",
     );
     const frozen = await card.evaluate((element) =>
-      [...element.querySelectorAll("input, select, textarea")].filter((control) => control.disabled)
-        .length,
+      [...element.querySelectorAll("form input, form select, form textarea")].filter(
+        (control) => control.disabled,
+      ).length,
     );
     expect(
       frozen === stillReadable,
@@ -2634,7 +2702,7 @@ async function checkDraftForm(browser, sessionCookie, request) {
           `(${overflow.scrollWidth} > ${overflow.clientWidth})`,
       );
       const heights = await card.evaluate((element) =>
-        [...element.querySelectorAll("input, select, textarea")].map((control) =>
+        [...element.querySelectorAll("form input, form select, form textarea")].map((control) =>
           Math.round(control.getBoundingClientRect().height),
         ),
       );
@@ -2679,6 +2747,276 @@ async function openDraft(page, conversationId, card, locale = "es") {
   await page.goto(`${BASE}/${locale}/qa`, { waitUntil: "networkidle" });
   await page.locator(`[data-conversation-id="${conversationId}"] button`).first().click();
   await card.waitFor({ state: "visible", timeout: 20000 });
+}
+
+/** Close an open `<dialog>` through the element's own `close()`. The same path Escape takes. */
+async function closeDialog(dialog) {
+  await dialog.evaluate((element) => element.close());
+  await dialog.waitFor({ state: "hidden", timeout: 10000 });
+}
+
+/**
+ * The click that creates the document (ticket 41).
+ *
+ * DESIGN §6.3's second requirement is 「"确认提交"必须是**显式按钮点击**…聊天里回一句"好的"不算确认」,
+ * and this is the only layer that can check it the way the requirement means it: a person
+ * presses a button in a browser and a document appears in the approval chain.
+ *
+ * Four things are asserted, and the first two are the ticket's whole argument:
+ *
+ *   1. **Rendering the form and writing a confirming-sounding message into the chat creates
+ *      nothing.** The draft is re-read from the API before and after and is still `proposed`,
+ *      and the leave-request list is still empty. A chat reply is a *question* — it goes to
+ *      `POST /answers` — and this is what makes that visible rather than merely true.
+ *   2. **The button does the creating, and the dialog is what actually posts.** The button
+ *      opens a dialog; nothing has been created while it is open; the second click is the one
+ *      that files the document — and it is filed in the *person's* name, into the ordinary
+ *      two-level flow, which the API's own read confirms.
+ *   3. **The card says what happened.** It is redrawn from the server's answer as `Confirmado`
+ *      with every field read-only, rather than keeping a stale form on screen.
+ *   4. **Discarding creates nothing**, and the card says so. The row moves to `Descartado`
+ *      and no document exists that did not exist before.
+ *
+ * It has drafts of its own (`seed_agent_draft.py`'s `CONFIRM_QUESTION` / `REJECT_QUESTION`),
+ * because answering one consumes it and `checkDraftForm` needs drafts that are still waiting.
+ */
+async function checkDraftDecisions(browser, sessionCookie, request) {
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 900 },
+    locale: "es-ES",
+  });
+  await context.addCookies([sessionCookie]);
+  const page = await context.newPage();
+  const card = page.locator('[data-testid="qa-draft"]');
+  const dialog = page.locator("dialog[open]");
+
+  const seeds = await decisionDrafts(request);
+  const missing = ["confirm", "reject"].filter((kind) => !seeds[kind]);
+  expect(
+    missing.length === 0,
+    `decide: the fixture's decision drafts are seeded (missing: ${missing.join(", ") || "none"})`,
+  );
+  if (missing.length > 0) {
+    console.log(
+      "[note] decide: run `docker compose exec -T api python /app/tests/tools/seed_agent_draft.py`",
+    );
+    await context.close();
+    return;
+  }
+
+  // --- 1. words create nothing ---------------------------------------------------
+  await openDraft(page, seeds.confirm.conversationId, card);
+  const before = await seeds.confirm.read();
+  const leavesBefore = await leaveRequestCount(request);
+  expect(before.draft.status === "proposed", `decide: the confirm draft starts proposed`);
+
+  await page.locator("#qa-question").fill("sí, confirma, adelante");
+  await page.locator("#qa-question").press("Enter");
+  // The chat answers that question (a policy answer over an empty corpus, or the "tell me
+  // what to draft" reply). What matters is what it did *not* do.
+  await page.waitForTimeout(3000);
+  await openDraft(page, seeds.confirm.conversationId, card);
+  const afterWords = await seeds.confirm.read();
+  expect(
+    afterWords.draft.status === "proposed",
+    `decide: a chat reply left the draft ${afterWords.draft.status}, not proposed`,
+  );
+  expect(
+    (await leaveRequestCount(request)) === leavesBefore,
+    `decide: a chat reply created a leave request (${leavesBefore} → ${await leaveRequestCount(request)})`,
+  );
+  ok("decide: a confirming-sounding message in the chat created nothing");
+
+  // --- 2. the button creates the document ---------------------------------------
+  await card.locator('[data-testid="qa-draft-confirm"]').click();
+  await dialog.waitFor({ state: "visible", timeout: 10000 });
+  const dialogText = (await dialog.innerText()).replace(/\s+/g, " ");
+  expect(
+    /a tu nombre/i.test(dialogText),
+    `decide: the dialog says the document will be in the employee's name`,
+  );
+  // **Still nothing, with the dialog open.** This is the assertion that separates "opening a
+  // dialog" from "committing": a dialog that posted on open would create the document here.
+  expect(
+    (await leaveRequestCount(request)) === leavesBefore,
+    "decide: opening the confirmation dialog already created something",
+  );
+  await page.screenshot({ path: join(OUT, "qa-draft-confirm-dialog-es.png"), fullPage: true });
+
+  await dialog.locator("button", { hasText: "Confirmar y enviar" }).last().click();
+  await page.locator('[data-testid="qa-draft-decided"]').waitFor({ timeout: 20000 });
+  const afterClick = await seeds.confirm.read();
+  expect(
+    afterClick.draft.status === "confirmed",
+    `decide: the click confirmed the draft (status ${afterClick.draft.status})`,
+  );
+  expect(
+    (await leaveRequestCount(request)) === leavesBefore + 1,
+    "decide: the click did not create exactly one leave request",
+  );
+  const entityType = afterClick.confirmedEntity?.type ?? null;
+  expect(
+    entityType === "leave_request",
+    `decide: the click recorded the entity it created (${entityType})`,
+  );
+  ok(`decide: the click created the ${entityType} and moved the row`);
+
+  // --- 3. the card says what happened, and the fields are read-only -------------
+  expect(
+    (await card.locator('[data-testid="qa-draft-status"]').innerText()).trim() === "Confirmado",
+    "decide: the card is redrawn as confirmed",
+  );
+  // **The heading stops saying "borrador".** The API's titles carry their state in the
+  // wording, and after the click the card is not a draft any more — a heading reading
+  // 「Solicitud de permiso (borrador)」 above a green "Documento enviado" panel tells the
+  // employee the opposite of what happened. This is the assertion that keeps them saying
+  // the same thing.
+  const decidedHeading = (await card.locator("h3").innerText()).trim();
+  expect(
+    !/\(borrador\)/i.test(decidedHeading),
+    `decide: the heading drops the draft suffix once it is a document ("${decidedHeading}")`,
+  );
+  expect(
+    /Solicitud de permiso/.test(decidedHeading),
+    `decide: and keeps the document's name ("${decidedHeading}")`,
+  );
+  const frozen = await card.evaluate((element) =>
+    [...element.querySelectorAll("form input, form select, form textarea")].filter(
+      (control) => control.disabled,
+    ).length,
+  );
+  expect(frozen > 0, `decide: a confirmed draft's fields are read-only (${frozen})`);
+  expect(
+    (await card.locator('[data-testid="qa-draft-entity-link"]').count()) === 1,
+    "decide: the card offers a way to the document it created",
+  );
+  // **And there is nothing left to press.** A disabled button at 50% opacity looks
+  // actionable on a phone (the 320px screenshot is what showed it), and a card whose own
+  // panel says "Documento enviado" above an enabled-looking "Confirmar y enviar" tells the
+  // employee two different things — so the controls are gone, and the note says what
+  // happened instead.
+  expect(
+    (await card.locator('[data-testid="qa-draft-confirm"]').count()) === 0 &&
+      (await card.locator('[data-testid="qa-draft-reject"]').count()) === 0,
+    "decide: an answered draft offers nothing left to answer",
+  );
+  expect(
+    /\S/.test(await card.locator('[data-testid="qa-draft-confirm-note"]').innerText()),
+    "decide: and the note says what happened",
+  );
+  await page.screenshot({ path: join(OUT, "qa-draft-confirmed-es.png"), fullPage: true });
+
+  // ...and it is the *server* that says so: the same conversation read answers `confirmed`,
+  // with the entity the click created, whatever the card on screen happens to be.
+  expect(
+    afterClick.confirmedEntity?.id && afterClick.draft.confirmed_at,
+    "decide: the conversation read carries the confirmation and the entity it created",
+  );
+
+  // --- 4. discarding creates nothing --------------------------------------------
+  await openDraft(page, seeds.reject.conversationId, card);
+  const rejectSeed = await seeds.reject.read();
+  expect(rejectSeed.draft.status === "proposed", "decide: the reject draft starts proposed");
+  await card.locator('[data-testid="qa-draft-reject"]').click();
+  await dialog.waitFor({ state: "visible", timeout: 10000 });
+  await page.screenshot({ path: join(OUT, "qa-draft-reject-dialog-es.png"), fullPage: true });
+
+  const leavesBeforeReject = await leaveRequestCount(request);
+  await dialog.locator('[data-testid="qa-draft-reject-action"]').click();
+  await page.locator('[data-testid="qa-draft-decided"]').waitFor({ timeout: 20000 });
+  const afterReject = await seeds.reject.read();
+  expect(
+    afterReject.draft.status === "rejected",
+    `decide: discarding recorded the decision (status ${afterReject.draft.status})`,
+  );
+  expect(
+    (await leaveRequestCount(request)) === leavesBeforeReject,
+    "decide: discarding created a document",
+  );
+  expect(!afterReject.confirmedEntity, "decide: a discarded draft names an entity");
+  ok("decide: discarding created nothing and said so");
+
+  // --- English, and the narrow widths: the answered state in the other language ----
+  await openDraft(page, seeds.reject.conversationId, card, "en");
+  const english = (await card.innerText()).replace(/\s+/g, " ");
+  expect(
+    /Discarded|No document was created/.test(english),
+    `decide en: the answered state is in English ("${english.slice(0, 80)}")`,
+  );
+  const englishHeading = (await card.locator("h3").innerText()).trim();
+  expect(
+    !/\(draft\)/i.test(englishHeading),
+    `decide en: the heading drops the draft suffix in English too ("${englishHeading}")`,
+  );
+  await page.screenshot({ path: join(OUT, "qa-draft-rejected-en.png"), fullPage: true });
+
+  for (const width of [320, 768]) {
+    await page.setViewportSize({ width, height: width === 320 ? 720 : 900 });
+    await openDraft(page, seeds.reject.conversationId, card, "es");
+    const overflow = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    expect(
+      overflow.scrollWidth <= overflow.clientWidth + 1,
+      `decide ${width}px: the answered card does not push the viewport`,
+    );
+    await page.screenshot({
+      path: join(OUT, `qa-draft-decided-${width}-es.png`),
+      fullPage: true,
+    });
+  }
+
+  await context.close();
+}
+
+/** A leave request count, as the API answers it — the "did anything get created" question. */
+async function leaveRequestCount(request) {
+  const response = await request.get(`${API}/api/v1/leave/requests?limit=200`);
+  if (!response.ok()) return -1;
+  return (await response.json()).total ?? 0;
+}
+
+/**
+ * The two drafts the decisions check answers, found by their conversation titles.
+ *
+ * Titles rather than questions because that is what the sidebar carries and what
+ * `answers.models.title_for` derived from the question the fixture filed them under. Each
+ * entry can `read()` its own conversation back, which is how the check sees the *server's*
+ * answer rather than the card it is looking at.
+ */
+async function decisionDrafts(request) {
+  const wanted = {
+    confirm: "Confirmame el permiso de la semana que viene",
+    reject: "Prepara un permiso que voy a descartar",
+  };
+  const list = await request.get(`${API}/api/v1/answers/conversations?limit=200`);
+  const items = list.ok() ? ((await list.json()).items ?? []) : [];
+  const found = {};
+  for (const [kind, question] of Object.entries(wanted)) {
+    const title = question.slice(0, 80);
+    const conversation = items.find((item) => item.title.startsWith(title.slice(0, 40)));
+    if (!conversation) continue;
+    const read = async () => {
+      const response = await request.get(
+        `${API}/api/v1/answers/conversations/${conversation.id}`,
+      );
+      const detail = response.ok() ? await response.json() : {};
+      const draft = detail.draft ?? {};
+      return {
+        draft,
+        draftId: draft.id ?? null,
+        // What the *audit row* says it became, not what the form was a draft of: the
+        // confirmation writes `resulting_entity_type` / `_id` onto `agent_actions`, and the
+        // conversation read hands that pair back (ticket 41).
+        confirmedEntity: draft.resulting_entity_id
+          ? { type: draft.resulting_entity_type, id: draft.resulting_entity_id }
+          : null,
+      };
+    };
+    found[kind] = { conversationId: conversation.id, read };
+  }
+  return found;
 }
 
 /**

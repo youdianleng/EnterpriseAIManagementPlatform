@@ -386,11 +386,17 @@ def _conversation_read(
 
 
 def _draft_read(draft: AgentAction) -> DraftRead:
-    """One recorded draft as the API answers it: the form, re-validated, and its dates.
+    """One recorded draft as the API answers it: the form, its dates, and what became of it.
 
     `PrefillForm.from_stored` rather than the raw JSONB, for the reason `_message_read`
     re-validates a stored citation: the column is the record and this is the contract, so a
     shape that drifted fails in the API rather than in a browser that cannot draw a field.
+
+    The three outcome fields come straight off the row ticket 41 writes: `confirmed_at` is the
+    instant a person answered (either way), and `resulting_entity_type` / `_id` are the
+    document a confirmation created — the pair the migration's 「要么都有要么都没有」 constraint
+    keeps together. They are what lets the card say "this is now a leave request" and link to
+    it without a second request or a client-side guess.
     """
     form = draft.form
     return DraftRead(
@@ -399,6 +405,9 @@ def _draft_read(draft: AgentAction) -> DraftRead:
         status=str(draft.status),
         created_at=draft.created_at,
         expires_at=draft.expires_at,
+        confirmed_at=draft.confirmed_at,
+        resulting_entity_type=draft.resulting_entity_type,
+        resulting_entity_id=draft.resulting_entity_id,
         prefill_form=(
             None
             if form is None

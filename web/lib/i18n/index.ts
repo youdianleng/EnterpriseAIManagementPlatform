@@ -1022,15 +1022,22 @@ export type Dictionary = {
       streaming: string;
     };
     /**
-     * The draft the assistant prepared (ticket 40).
+     * The draft the assistant prepared (ticket 40), and the confirmation point (ticket 41).
      *
      * The form's *content* — its title and every field label — comes from the API with the
-     * form, because the set of fields is the server's. What is typed here is the screen's
-     * own state around it: when the draft lapses, what an expired one means, and what the
-     * disabled confirmation is waiting for.
+     * form, because the set of fields is the server's. What is typed here is the screen's own
+     * state around it: the four statuses the card can be in, the dialogs a committing and a
+     * discarding action each open, and the words on the buttons.
+     *
+     * **The refusals are deliberately absent.** A failed confirmation is rendered from the
+     * API's `message_key` through `errors.*`, which already exists in both languages and is
+     * the same sentence every other endpoint's refusal uses — a second copy here would be the
+     * copy that drifts.
      */
     draft: {
       proposedBadge: string;
+      confirmedBadge: string;
+      rejectedBadge: string;
       expiredBadge: string;
       expiresAt: string;
       expiredAt: string;
@@ -1038,7 +1045,29 @@ export type Dictionary = {
       expiredBody: string;
       expiredAction: string;
       confirm: string;
+      reject: string;
       confirmNote: string;
+      answeredNote: string;
+      confirmedTitle: string;
+      confirmedBody: string;
+      rejectedTitle: string;
+      rejectedBody: string;
+      openDocument: string;
+      failedTitle: string;
+      failed: string;
+      cancel: string;
+      confirming: string;
+      rejecting: string;
+      confirmTitle: string;
+      confirmAction: string;
+      confirmBody: string;
+      confirmIdentity: string;
+      emptyValue: string;
+      rejectTitle: string;
+      rejectAction: string;
+      rejectBody: string;
+      rejectReasonLabel: string;
+      rejectReasonHint: string;
       factWorkingDays: string;
       factWeek: string;
       factProject: string;

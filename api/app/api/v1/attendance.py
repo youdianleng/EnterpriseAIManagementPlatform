@@ -252,6 +252,15 @@ class ApprovalRead(BaseModel):
     A correction that was returned, corrected and filed again is two rounds of one
     request, and both stay readable: the history is what explains the current state,
     and nothing mirrors it here.
+
+    **`initiated_by` and `confirmed_by_user_id` are the transparency annotation**
+    (ticket 41). §6.3's fifth requirement is that the document an approver reads says
+    「由助手起草、本人确认」 from an *API field* and never from a client-side guess, and
+    §3.4 already keeps exactly these two columns on `approval_requests`. A correction
+    filed through the ordinary form is `initiated_by="user"`; one the assistant drafted
+    and a person confirmed is `agent` with that person's user id. They travel on the
+    request *detail*, which is what an approver opens, so ticket 53 renders them rather
+    than inventing a second source for the same fact.
     """
 
     request_id: UUID
@@ -260,6 +269,10 @@ class ApprovalRead(BaseModel):
     submitted_at: datetime | None = None
     decided_at: datetime | None = None
     decisions: list[ApprovalDecisionRead] = Field(default_factory=list)
+    #: `user` | `agent` | `system`, straight from `approval_requests`.
+    initiated_by: str = "user"
+    #: Who confirmed an assistant-drafted request. Null for one a person filed directly.
+    confirmed_by_user_id: UUID | None = None
 
 
 class CorrectionDetail(CorrectionRead):
@@ -484,6 +497,10 @@ def _approval(state: ApprovalState | None) -> ApprovalRead | None:
         round=state.round,
         submitted_at=state.request.submitted_at,
         decided_at=state.decided_at,
+        # Ticket 41's transparency annotation: §3.4's two columns, read off the engine's own
+        # request rather than inferred from the caller or the document.
+        initiated_by=state.request.initiated_by,
+        confirmed_by_user_id=state.request.confirmed_by_user_id,
         decisions=[
             ApprovalDecisionRead(
                 level=decision.level,

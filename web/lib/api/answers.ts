@@ -130,6 +130,12 @@ export type PrefillForm = {
  * `proposed` is the only value that offers confirmation; `expired` means its 24 hours ran
  * out and the employee has to ask for a new one. The form still travels with an expired
  * draft: it is the record of what was proposed.
+ *
+ * `resulting_entity_*` and `confirmed_at` come from the same `agent_actions` row (ticket
+ * 41): a confirmation names the document it created, a rejection names nothing, and
+ * `confirmed_at` is when the person answered — either way. They are read back from the row
+ * the audit keeps rather than from a second source, which is what makes the card's "this is
+ * now a leave request" link the same fact as the audit entry.
  */
 export type Draft = {
   id: string;
@@ -137,6 +143,9 @@ export type Draft = {
   status: "proposed" | "confirmed" | "rejected" | "expired";
   created_at: string;
   expires_at: string;
+  confirmed_at: string | null;
+  resulting_entity_type: string | null;
+  resulting_entity_id: string | null;
   prefill_form: PrefillForm | null;
 };
 
@@ -209,6 +218,54 @@ export function renameConversation(id: string, title: string): Promise<Conversat
 
 export function deleteConversation(id: string): Promise<void> {
   return request<void>(`/api/v1/answers/conversations/${id}`, { method: "DELETE" });
+}
+
+/**
+ * What became of a draft the employee answered (ticket 41).
+ *
+ * `entity_type` and `entity_id` are `null` for a rejection and never null for a
+ * confirmation — the same "both or neither" the `agent_actions` constraint expresses in
+ * SQL, so a client can tell the two outcomes apart from one field rather than from the
+ * route it happened to call.
+ */
+export type DraftOutcome = {
+  id: string;
+  tool_name: string;
+  status: "confirmed" | "rejected";
+  confirmed_at: string | null;
+  entity_type: string | null;
+  entity_id: string | null;
+};
+
+/**
+ * Confirm a draft, **as an explicit click and never as a chat message**.
+ *
+ * DESIGN §6.3's second requirement, and the reason this function takes the *edited* form
+ * rather than the draft's id alone: every field is editable, so what is submitted is what
+ * the person confirmed. Omitted keys keep the assistant's values, so a caller that sends
+ * only what changed is correct.
+ *
+ * Nothing in `lib/api/answers.ts`'s streaming path calls this, and nothing can: a chat
+ * reply is a question to `POST /answers`, and the API's confirmation route has no other
+ * caller. That is the ticket's first line, and it is a property of the call graph rather
+ * than of a guard in this file.
+ */
+export function confirmDraft(
+  actionId: string,
+  fields: Record<string, string | number | null>,
+): Promise<DraftOutcome> {
+  return request<DraftOutcome>(`/api/v1/agent/actions/${actionId}/confirm`, {
+    method: "POST",
+    body: JSON.stringify({ fields }),
+  });
+}
+
+/** Discard a draft. **No document is created**, and the draft keeps the record of it. */
+export function rejectDraft(actionId: string, reason?: string): Promise<DraftOutcome> {
+  return request<DraftOutcome>(`/api/v1/agent/actions/${actionId}/reject`, {
+    method: "POST",
+    body: JSON.stringify({ reason: reason ?? null }),
+  });
 }
 
 /**

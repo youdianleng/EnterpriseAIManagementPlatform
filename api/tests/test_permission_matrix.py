@@ -1266,6 +1266,22 @@ HTTP_MATRIX: tuple[tuple[str, str, RouteAccess], ...] = (
     ("GET", "/api/v1/answers/conversations", Action.SESSION_READ_OWN),
     ("PATCH", "/api/v1/answers/conversations/{conversation_id}", Action.SESSION_READ_OWN),
     ("DELETE", "/api/v1/answers/conversations/{conversation_id}", Action.SESSION_READ_OWN),
+    # The agent's human-review point (ticket 41). Two rows, and the guard on both is
+    # `session.read_own` — the same action ticket 37's four conversation routes carry, for
+    # the same reason: a draft is conversation material, and this is a surface that answers
+    # about the caller (every role holds its own, and the ownership refusal is the row's own
+    # `WHERE user_id`, asserted by name in `test_agent_confirmation.py`).
+    #
+    # **The action that matters is not on this row**, and that is the documented shape
+    # rather than an omission: whether the caller may *file* the document the draft
+    # describes is `leave.request_own` / `attendance.correction_own` /
+    # `timesheet.write_own` + `timesheet.submit_own`, asked inside the handler against the
+    # entity the draft actually is — which the route cannot know before it has read the row.
+    # Both routes are outside `RESOURCE_FREE_ROUTES`: the draft id in the path is one this
+    # fixture never created, so an admitted caller reaches the handler's 404 and this layer
+    # asserts the guard, as it does for the two conversation rows above.
+    ("POST", "/api/v1/agent/actions/{action_id}/confirm", Action.SESSION_READ_OWN),
+    ("POST", "/api/v1/agent/actions/{action_id}/reject", Action.SESSION_READ_OWN),
 )
 
 
@@ -1506,6 +1522,14 @@ def http_payload(path: str, *, department: str, employee: str) -> dict:
         # path is one the matrix never created, so the permitted caller reaches the
         # handler's 404 rather than a 422 about the body.
         "/api/v1/answers/conversations/{conversation_id}": {"title": "Matriz"},
+        # The agent's human-review point (ticket 41). An empty body is the *honest* one:
+        # §6.3's click is "confirm the values as they stand", so `fields` is optional and
+        # the handler reads it as "the proposed values, unchanged". The action id in the
+        # path is one the matrix never created, so a permitted caller reaches the
+        # handler's 404 (an unknown draft) rather than a 422 about the body — which is
+        # what keeps this layer about the guard.
+        "/api/v1/agent/actions/{action_id}/confirm": {},
+        "/api/v1/agent/actions/{action_id}/reject": {},
     }[path]
 
 
@@ -1553,6 +1577,7 @@ async def test_the_http_matrix_for(platform: Platform, role: str) -> None:
             request_id=subject,
             record_id=subject,
             conversation_id=subject,
+            action_id=subject,
             code="no-such-type",
         )
         payload = (
@@ -1633,8 +1658,9 @@ async def test_the_http_matrix_for(platform: Platform, role: str) -> None:
     # rather than something that happens. Ticket 33 added the two retrieval routes — the
     # search and the debug view — and the count moved with them; ticket 34 adds the two
     # answer routes (the streamed question and the conversation read); ticket 37 adds the
-    # three the sidebar needs (the list, the rename and the delete).
-    assert checked == 81
+    # three the sidebar needs (the list, the rename and the delete); ticket 41 adds the
+    # agent's human-review point (confirm and reject).
+    assert checked == 83
     assert checked == len(HTTP_MATRIX)
     assert failures == [], "\n".join(failures)
 
@@ -1646,7 +1672,7 @@ async def test_an_unauthenticated_request_reaches_no_endpoint(platform: Platform
         path = template.format(
             subject=uuid4(), project=uuid4(), project_id=uuid4(), task_id=uuid4(),
             correction_id=uuid4(), request_id=uuid4(), record_id=uuid4(),
-            conversation_id=uuid4(), code="annual",
+            conversation_id=uuid4(), action_id=uuid4(), code="annual",
         )
         response = await platform.client.request(method, path)
         if (response.status_code, response.json()["error"]["code"]) != (

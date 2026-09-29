@@ -70,6 +70,7 @@ export function QaScreen({
   const closePanel = useQaStore((state) => state.closePanel);
   const ask = useQaStore((state) => state.ask);
   const retry = useQaStore((state) => state.retry);
+  const decideDraft = useQaStore((state) => state.decideDraft);
 
   // The server is the source of truth: a refresh, or the browser's own navigation,
   // replaces what is on screen.
@@ -241,7 +242,16 @@ export function QaScreen({
         )}
 
         {draft && draft.prefill_form && (
-          <DraftForm draft={draft} dict={dict} locale={locale} />
+          <DraftForm
+            draft={draft}
+            dict={dict}
+            locale={locale}
+            onDecide={(decision, fields, reason) =>
+              // The store owns the call and the re-read that follows it; the screen owns only
+              // which draft is on screen, which is where the id comes from.
+              decideDraft(selectedId!, draft.id, decision, fields, reason)
+            }
+          />
         )}
 
         {/* **Not while a draft is on screen.** The thread's empty state tells a reader how to

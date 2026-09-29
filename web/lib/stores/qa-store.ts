@@ -7,13 +7,16 @@ import {
   type Conversation,
   type DoneFrame,
   type Draft,
+  type DraftOutcome,
   type ErrorFrame,
   type RefusalFrame,
   type SourceNotice,
   type StartFrame,
   type StoredMessage,
+  confirmDraft,
   deleteConversation,
   readConversation,
+  rejectDraft,
   renameConversation,
   streamAnswer,
 } from "@/lib/api/answers";
@@ -106,6 +109,24 @@ type QaState = {
   retry: (turnKey: string) => Promise<void>;
   rename: (id: string, title: string) => Promise<Conversation>;
   remove: (id: string) => Promise<void>;
+  /**
+   * Answer a draft: confirm it into a document, or discard it (ticket 41).
+   *
+   * One method for both because the two share everything that matters here: the call, the
+   * error, and the **re-read of the conversation afterwards**. The re-read is the part that
+   * is not obvious. It is what makes the card say `confirmed` / `rejected` instead of
+   * redrawing a form the employee no longer has a draft for, and it is also how a *lapsed*
+   * draft becomes visible at all — the read is where `expired` is recorded
+   * (`GET /answers/conversations/{id}` → `AgentActionService.latest_draft`), so a screen that
+   * trusted its own copy would keep offering a button the server will refuse.
+   */
+  decideDraft: (
+    conversationId: string,
+    actionId: string,
+    decision: "confirm" | "reject",
+    fields?: Record<string, string | number | null>,
+    reason?: string,
+  ) => Promise<DraftOutcome>;
 };
 
 /** A client-side id for a turn whose message the server has not named yet. */
@@ -256,6 +277,17 @@ export const useQaStore = create<QaState>((set, get) => ({
         openCitation: null,
       };
     });
+  },
+
+  decideDraft: async (conversationId, actionId, decision, fields, reason) => {
+    const outcome =
+      decision === "confirm"
+        ? await confirmDraft(actionId, fields ?? {})
+        : await rejectDraft(actionId, reason);
+    // The server's answer, not this client's guess: the card is redrawn from the read, and a
+    // refusal that created nothing leaves the draft exactly as the server still describes it.
+    await readInto(set, conversationId);
+    return outcome;
   },
 }));
 

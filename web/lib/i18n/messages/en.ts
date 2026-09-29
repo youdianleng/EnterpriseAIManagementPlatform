@@ -923,10 +923,14 @@ export const en: Dictionary = {
       asking: "Asking…",
       streaming: "The answer is on its way.",
     },
-    // The draft the assistant prepared (ticket 40): the screen's own state beside the
-    // form's content, which the API sends with its labels.
+    // The draft the assistant prepared (ticket 40) and the confirmation point (ticket 41):
+    // the screen's own state and its own dialogs, beside the form's content, which the API
+    // sends with its labels. Refusals are not here: the API answers with a `message_key` and
+    // `dict.errors[key]` renders it.
     draft: {
       proposedBadge: "Waiting for you to confirm",
+      confirmedBadge: "Confirmed",
+      rejectedBadge: "Discarded",
       expiredBadge: "Expired",
       expiresAt: "You can confirm it until {date}.",
       expiredAt: "It expired on {date}.",
@@ -935,8 +939,35 @@ export const en: Dictionary = {
         "More than 24 hours have passed since it was prepared, so it can no longer be confirmed. Ask for another one and I will prepare it again with the current data.",
       expiredAction: "Ask for a new draft to continue.",
       confirm: "Confirm and submit",
+      reject: "Discard",
       confirmNote:
-        "Confirmation — the click that creates the document — arrives in the next delivery. Here you can review and change any value.",
+        "Nothing has been sent yet: the document is created when you confirm, and it is filed in your name through the approval route.",
+      answeredNote: "This draft is already settled. Ask for another one if you need more.",
+      confirmedTitle: "Document submitted",
+      confirmedBody:
+        "The document has been created in your name and is already in the approval chain: your manager first, then HR.",
+      rejectedTitle: "Draft discarded",
+      rejectedBody:
+        "No document was created. It is recorded that you discarded this draft.",
+      openDocument: "Open the submitted document",
+      failedTitle: "It could not be completed",
+      failed: "The operation could not be completed.",
+      cancel: "Cancel",
+      confirming: "Sending…",
+      rejecting: "Discarding…",
+      confirmTitle: "Confirm and submit?",
+      confirmAction: "Confirm and submit",
+      confirmBody:
+        "“{title}” will be created with the values you see and sent for approval. This is what will be recorded:",
+      confirmIdentity:
+        "The request is filed in your name. The audit notes that the assistant prepared the draft and that you confirmed it.",
+      emptyValue: "—",
+      rejectTitle: "Discard this draft?",
+      rejectAction: "Discard the draft",
+      rejectBody:
+        "“{title}” will be discarded. No document will be created and nothing will be sent for approval.",
+      rejectReasonLabel: "Reason (optional)",
+      rejectReasonHint: "For your own record when discarding it. It is not sent to anybody.",
       factWorkingDays: "Working days",
       factWeek: "Week",
       factProject: "Project",

@@ -930,12 +930,16 @@ export const es: Dictionary = {
       asking: "Preguntando…",
       streaming: "La respuesta está en camino.",
     },
-    // The draft the assistant prepared (ticket 40). The *field* labels and the form's own
-    // title come from the API — they are the form's content and the form's shape is the
-    // server's — while everything here is the screen's own state: when it lapses, what an
-    // expired one means, and what the disabled button is waiting for.
+    // The draft the assistant prepared (ticket 40), and the confirmation point (ticket 41).
+    // The *field* labels and the form's own title come from the API — they are the form's
+    // content and the form's shape is the server's — while everything here is the screen's
+    // own state and its own dialogs. The *refusals* are not here either: the API answers a
+    // failed confirmation with a `message_key`, and `dict.errors[key]` renders the reader's
+    // own sentence (`api/app/core/messages.py`).
     draft: {
       proposedBadge: "Pendiente de tu confirmación",
+      confirmedBadge: "Confirmado",
+      rejectedBadge: "Descartado",
       expiredBadge: "Caducado",
       expiresAt: "Puedes confirmarlo hasta el {date}.",
       expiredAt: "Caducó el {date}.",
@@ -944,8 +948,39 @@ export const es: Dictionary = {
         "Han pasado más de 24 horas desde que se preparó, así que ya no se puede confirmar. Pide otro y lo preparo de nuevo con los datos actualizados.",
       expiredAction: "Pide un borrador nuevo para continuar.",
       confirm: "Confirmar y enviar",
+      reject: "Descartar",
+      // The note beside the buttons, in each of the three states the card can be in.
       confirmNote:
-        "La confirmación —el clic que crea el documento— llega en la siguiente entrega. Aquí puedes revisar y cambiar cualquier valor.",
+        "Nada se ha enviado todavía: el documento se crea al confirmar, y queda a tu nombre en el circuito de aprobación.",
+      answeredNote:
+        "Este borrador ya está resuelto. Pide otro si necesitas preparar algo más.",
+      confirmedTitle: "Documento enviado",
+      confirmedBody:
+        "Se ha creado el documento a tu nombre y ya está en el circuito de aprobación: primero tu responsable, después Recursos Humanos.",
+      rejectedTitle: "Borrador descartado",
+      rejectedBody:
+        "No se ha creado ningún documento. Queda registrado que descartaste este borrador.",
+      openDocument: "Ver el documento enviado",
+      failedTitle: "No se ha podido completar",
+      failed: "No se ha podido completar la operación.",
+      cancel: "Cancelar",
+      confirming: "Enviando…",
+      rejecting: "Descartando…",
+      // The committing action's dialog: it names the document and says what will happen, so
+      // the click is informed rather than merely deliberate.
+      confirmTitle: "¿Confirmar y enviar?",
+      confirmAction: "Confirmar y enviar",
+      confirmBody:
+        "Se creará «{title}» con los valores que ves y se enviará a aprobación. Esto es lo que se registrará:",
+      confirmIdentity:
+        "La solicitud queda a tu nombre. Queda anotado en la auditoría que el borrador lo preparó el asistente y que lo confirmaste tú.",
+      emptyValue: "—",
+      rejectTitle: "¿Descartar este borrador?",
+      rejectAction: "Descartar el borrador",
+      rejectBody:
+        "Se descartará «{title}». No se creará ningún documento y no se enviará nada a aprobación.",
+      rejectReasonLabel: "Motivo (opcional)",
+      rejectReasonHint: "Para tu propio registro al descartarlo. No se envía a nadie.",
       factWorkingDays: "Días laborables",
       factWeek: "Semana",
       factProject: "Proyecto",

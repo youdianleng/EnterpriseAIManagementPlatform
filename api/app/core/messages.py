@@ -577,6 +577,25 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
             "Solo si el tipo de permiso lo exige; es la referencia del fichero guardado."
         ),
         "agent.draft.hint.minutes": "Minutos trabajados ese día en esa tarea.",
+        # --- the confirmation point (ticket 41, DESIGN §6.3's second and fifth points) ---
+        #
+        # The refusal an employee reads when the draft can no longer be confirmed. Three
+        # sentences and not one, because the three causes have three different next steps:
+        # a draft that lapsed is regenerated (「需重新生成」), a draft that was already
+        # answered is a screen somebody has open twice, and a draft whose *contents* are
+        # refused is "ask me again, the rules moved" rather than "edit this one".
+        "errors.agent_draft_not_found": (
+            "No encuentro ese borrador. Puede que pertenezca a otra conversación; pídeme "
+            "que lo prepare otra vez."
+        ),
+        "errors.agent_draft_not_confirmable": (
+            "Este borrador ya no está pendiente de confirmación. Pídeme que prepare uno "
+            "nuevo y lo confirmas desde ahí."
+        ),
+        "errors.agent_draft_confirmation_refused": (
+            "No he podido registrar el borrador: las condiciones han cambiado desde que "
+            "lo preparé. Pídeme que lo genere de nuevo para ver las cifras actuales."
+        ),
     },
     "en": {
         "errors.validation_failed": "The submitted data is not valid.",
@@ -1064,6 +1083,19 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
             "Only if the leave type requires one; it is the reference of the stored file."
         ),
         "agent.draft.hint.minutes": "Minutes worked that day on that task.",
+        # --- the confirmation point (ticket 41) ---
+        "errors.agent_draft_not_found": (
+            "I cannot find that draft. It may belong to another conversation; ask me to "
+            "prepare it again."
+        ),
+        "errors.agent_draft_not_confirmable": (
+            "That draft is no longer waiting for confirmation. Ask me to prepare a new "
+            "one and confirm it from there."
+        ),
+        "errors.agent_draft_confirmation_refused": (
+            "I could not register the draft: the conditions changed after I prepared it. "
+            "Ask me to draft it again so you can see the current figures."
+        ),
     },
 }
 

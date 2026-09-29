@@ -79,6 +79,19 @@ class AgentActionService:
         """How long a draft stands. §6.3's 「默认 24h」, as configured."""
         return self._ttl_hours
 
+    @property
+    def repository(self) -> PostgresAgentActionRepository:
+        """The repository this service writes through (ticket 41).
+
+        Exposed so the confirmation path runs its statements in **this service's
+        transaction** rather than opening a second one: the row lock
+        `PostgresAgentActionRepository.load_for_update` takes has to cover the entity
+        write that follows it, and a separate repository object on a separate session
+        would hold a lock nothing else could see. Reading is all a caller gets — the
+        service's own operations remain the only write surface it advertises.
+        """
+        return self._repository
+
     async def record_draft(
         self,
         *,

@@ -163,6 +163,106 @@ class PostgresAgentActionRepository:
         )
         return moved is not None
 
+    async def load_for_update(self, action_id: UUID) -> StoredAgentAction | None:
+        """One draft by id, **locked**, for the confirmation that is about to decide it.
+
+        `FOR UPDATE` rather than a second read, and the lock is the mechanism behind
+        §6.3's 「只有显式点击」 staying true when a browser double-submits or a client
+        retries: the second request blocks on this row until the first has committed its
+        new status, and then finds a draft that is no longer `proposed`. Without it, two
+        confirmations arriving together would both see `proposed` and one of them would
+        write the entity the other thought it was writing.
+
+        The row-lock is released by the commit that ends the transaction — the same
+        transaction the entity is created in, so the two facts land together.
+
+        **`expired` comes back with the row**, computed by the database in this same
+        statement, for the reason `newest_for_conversation` gives: the process clock and the
+        row's clock are two clocks, and the one that decides is the database's. Coming back
+        *with the locked read* is what makes the answer atomic with the lock — a second
+        comparison made a moment later could not see a change the lock is there to prevent.
+
+        No `user_id` in the WHERE, deliberately: ownership is asserted one level up by
+        `AgentActionService`/`ConfirmationService`, which read the row and compare it with
+        the principal — and a `WHERE user_id = …` here would answer "no such draft", which
+        is the *same* refusal the caller already gets for somebody else's row. Keeping the
+        comparison in one place keeps the two refusals impossible to tell apart by accident.
+        """
+        row = (
+            await self._session.execute(
+                text(
+                    f"""
+                    SELECT {COLUMNS}, (status = 'proposed' AND expires_at <= now()) AS expired
+                      FROM agent_actions
+                     WHERE id = :id
+                     FOR UPDATE
+                    """
+                ),
+                {"id": action_id},
+            )
+        ).mappings().one_or_none()
+        if row is None:
+            return None
+        return StoredAgentAction(action=_action(row), expired=bool(row["expired"]))
+
+    async def decide(
+        self,
+        action_id: UUID,
+        *,
+        status: DraftStatus,
+        resulting_entity_type: str | None = None,
+        resulting_entity_id: UUID | None = None,
+    ) -> AgentAction | None:
+        """Record what became of a draft, and return the row as it now reads.
+
+        **One statement, guarded, and the guard is the point.** The `WHERE` requires
+        `status = 'proposed'` and `expires_at > now()`, so this write cannot confirm a
+        draft that lapsed while the form was on screen, nor one whose confirmation
+        already happened — the same pair of conditions `mark_expired` covers from the
+        other side. `None` means the guard refused, which the service turns into
+        §6.3's 「需重新生成」 rather than retrying blindly.
+
+        **`confirmed_at` is written for both terminal statuses, and the column's own
+        constraint is the reason**: the migration's
+        `ck_agent_actions_proposed_is_open` says a non-`proposed` row carries the
+        instant, and `ck_agent_actions_confirmed_has_instant` says a `confirmed` one
+        must. A rejection is *also* a decision somebody made, and §3.6's column is where
+        "when did the human answer" lives whichever way they answered.
+
+        The instant is the *database's* `now()`, never this process's: the draft's
+        `created_at` and `expires_at` came from that clock, and a third instant from a
+        different one would be the row disagreeing with itself about the day it
+        describes.
+
+        The result columns move together — the entity's type and id only on a
+        confirmation — which is what the migration's 「要么都有要么都没有」 constraint asks
+        of them.
+        """
+        row = (
+            await self._session.execute(
+                text(
+                    f"""
+                    UPDATE agent_actions
+                       SET status = :status,
+                           confirmed_at = now(),
+                           resulting_entity_type = :entity_type,
+                           resulting_entity_id = :entity_id
+                     WHERE id = :id AND status = 'proposed' AND expires_at > now()
+                    RETURNING {COLUMNS}
+                    """
+                ),
+                {
+                    "id": action_id,
+                    "status": str(status),
+                    "entity_type": resulting_entity_type,
+                    "entity_id": resulting_entity_id,
+                },
+            )
+        ).mappings().one_or_none()
+        if row is None:
+            return None
+        return _action(row)
+
     async def commit(self) -> None:
         await self._session.commit()
 

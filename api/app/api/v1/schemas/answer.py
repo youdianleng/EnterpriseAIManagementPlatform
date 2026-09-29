@@ -223,6 +223,13 @@ class DraftRead(BaseModel):
     `expired` here, and the row itself is marked as expired when this read observes it
     (`domain/agent/service.py`). A client needs the difference — one offers "confirm", the
     other "generate it again" — and it is the database's clock that decides.
+
+    **`resulting_entity_type` and `resulting_entity_id` are the document it became** (ticket
+    41). §6.3's fourth requirement is that the audit carries the resulting entity, and these
+    are read back from that same row rather than kept anywhere else: after a confirmation the
+    employee sees a card that says so *and* a way to open what was created, and the id behind
+    that link is the one the `agent_actions` row recorded. Both stay null for a rejection —
+    「不产生任何单据」 as a fact about the response and not only about the row.
     """
 
     id: UUID
@@ -231,6 +238,12 @@ class DraftRead(BaseModel):
     created_at: datetime
     expires_at: datetime
     prefill_form: PrefillFormRead | None = None
+    #: The instant a person answered it, written by the database's clock. Null while
+    #: `proposed` — the row's own constraint says so, and this is the same fact.
+    confirmed_at: datetime | None = None
+    #: What it became: the entity's type and id, or nothing for a rejection.
+    resulting_entity_type: str | None = None
+    resulting_entity_id: UUID | None = None
 
 
 class ConversationRead(BaseModel):

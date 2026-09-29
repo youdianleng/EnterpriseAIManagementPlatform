@@ -287,6 +287,18 @@ class ApprovalRead(BaseModel):
     `decisions` spans **every** round: a week that was returned, corrected and filed
     again carries both the return and the second round's outcome, which is the
     历史提交记录 the ticket asks to keep.
+
+    **`initiated_by` and `confirmed_by_user_id` are the transparency annotation**
+    (ticket 41). §6.3's fifth requirement is that the request an approver reads says
+    「由助手起草、本人确认」 from an *API field* and never from a client-side guess, and
+    these are the two fields §3.4 already keeps on `approval_requests` for exactly this:
+    `initiated_by` is `user` for a request somebody filed through the ordinary screen and
+    `agent` for one the assistant proposed and a person confirmed, and
+    `confirmed_by_user_id` names that person. Neither is asked of the entity — a
+    hand-submitted week carries the same two columns with the same defaults, which is what
+    makes "the approver sees exactly what a hand-submitted document looks like" true
+    rather than approximately true. Ticket 53 renders them; nothing here decides the
+    wording.
     """
 
     request_id: UUID
@@ -296,6 +308,10 @@ class ApprovalRead(BaseModel):
     decided_at: datetime | None
     pending_level: int | None
     decisions: list[DecisionRead]
+    #: `user` | `agent` | `system`, straight from `approval_requests`.
+    initiated_by: str = "user"
+    #: Who confirmed an assistant-drafted request. Null for one a person filed directly.
+    confirmed_by_user_id: UUID | None = None
 
 
 class SheetStatusRead(BaseModel):
@@ -549,6 +565,10 @@ def approval_read(state: ApprovalState) -> ApprovalRead:
         submitted_at=state.request.submitted_at,
         decided_at=state.decided_at,
         pending_level=None if pending is None else pending.level,
+        # Ticket 41's transparency annotation: §3.4's two columns, read off the engine's own
+        # request rather than inferred from the caller or the entity.
+        initiated_by=state.request.initiated_by,
+        confirmed_by_user_id=state.request.confirmed_by_user_id,
         decisions=[
             DecisionRead(
                 level=decision.level,

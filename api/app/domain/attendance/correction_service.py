@@ -234,13 +234,21 @@ class CorrectionService:
         await self._repository.commit()
         return await self.get(correction_id)
 
-    async def submit(self, correction_id: UUID) -> CorrectionView:
+    async def submit(
+        self, correction_id: UUID, context: SubmitContext | None = None
+    ) -> CorrectionView:
         """Hand the draft to the approval engine, as the person who filed it.
 
         The requester is the document's own `requested_by_employee_id`, not whoever
         pressed the button: the engine resolves the route from the requester, and a
         colleague in HR filing on somebody's behalf is not the person the route was
         meant to be about.
+
+        **`context` is how a filing says who asked for it** (ticket 41), and it defaults
+        to `SubmitContext()` so the route keeps filing as a person did. It is the *only*
+        place the agent's confirmation differs from the hand-filed path: the same engine,
+        the same two levels, the same route resolution — with §3.4's two columns saying
+        the assistant proposed it and which human confirmed.
         """
         correction = await self._require(correction_id)
         await self._require_state(correction, CorrectionState.DRAFT, "filed")
@@ -250,7 +258,7 @@ class CorrectionService:
                 ENTITY_TYPE,
                 correction.id,
                 correction.requested_by_employee_id,
-                SubmitContext(),
+                context or SubmitContext(),
             )
         except DomainError as error:
             # The engine's refusal in this module's vocabulary: the client routes on

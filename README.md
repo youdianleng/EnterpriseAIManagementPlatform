@@ -155,13 +155,27 @@ the *product* produced rather than something a fixture may invent:
 
 ```bash
 docker compose exec -T api python /app/tests/tools/seed_timesheet_demo.py   # the week and the project
-docker compose exec -T api python /app/tests/tools/seed_agent_draft.py      # three drafts, one expired
+docker compose exec -T api python /app/tests/tools/seed_agent_draft.py      # three drafts, one expired, two to answer
 ```
 
-`seed_agent_draft.py` runs the three draft tools and records the rows through the platform's
-own service, in a conversation each; `seed-screens.ps1` calls it at the end. Without it,
+`seed_agent_draft.py` runs the draft tools and records the rows through the platform's own
+service, in a conversation each; `seed-screens.ps1` calls it at the end. Without it,
 `node scripts/visual-check.mjs` reports that the draft checks are skipped rather than failing
 on a screen that has nothing to draw.
+
+**Two of those drafts exist to be *answered*** (ticket 41): confirming one creates a real
+leave request and consumes the draft, so the confirmation check cannot share the drafts the
+form check draws. They are dated by searching for a past weekday the demo account has no live
+leave over, because the fixture's own previous run leaves a request behind;
+`EAM_DRAFT_DECISION_SEARCH_DAYS` (default 60) widens that search if a deployment has filled
+the window.
+
+**The confirmation check leaves data behind, and a later `seed_agent_draft.py` needs it gone
+from the way.** Confirming writes a leave request that is then live for its dates, so re-running
+the *form* checks against a fixed week can be refused by the fixture's own earlier document —
+which is what the search above fixes. If the seed still refuses an overlap after a run of
+`visual-check.mjs`, the leftover is a demo leave request for the dates it names: withdraw it
+from the leave screen (or re-run `seed-screens.ps1`, which resets that account's year).
 
 **Do not add `-q` to the pytest command.** `api/pyproject.toml` already sets
 `addopts = "-q"`, and a second one makes pytest quiet enough to drop its summary
