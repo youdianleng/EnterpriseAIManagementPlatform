@@ -63,6 +63,10 @@ const TITLE_KEYS: Record<string, keyof Dictionary["notifications"]["titles"]> = 
   "notifications.approval.rejected": "rejected",
   "notifications.approval.returned": "returned",
   "notifications.approval.withdrawn": "withdrawn",
+  // Ticket 44. The key is the event, so the row says *that a file exists* rather than what
+  // is in it: the payslip itself is where the figures are, and the notification reaches a
+  // table the payroll module's own policy does not cover.
+  "notifications.payslip.published": "payslipPublished",
 };
 
 /** The title of a notification, in the reader's language. */

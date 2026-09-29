@@ -25,16 +25,19 @@ export function Alert({
   children,
   role,
   className,
+  "data-testid": testId,
 }: {
   tone?: AlertTone;
   title?: string;
   children?: ReactNode;
   role?: "alert" | "status";
   className?: string;
+  /** Forwarded so a visual check can address one specific notice rather than any notice. */
+  "data-testid"?: string;
 }) {
   if (!role) {
     return (
-      <div className={cn("rounded p-4", TONE_CLASSES[tone], className)}>
+      <div className={cn("rounded p-4", TONE_CLASSES[tone], className)} data-testid={testId}>
         {title && <p className="font-medium">{title}</p>}
         {children}
       </div>
@@ -42,7 +45,12 @@ export function Alert({
   }
 
   return (
-    <div role={role} aria-live={role === "status" ? "polite" : undefined} className={cn("rounded p-4", TONE_CLASSES[tone], className)}>
+    <div
+      role={role}
+      aria-live={role === "status" ? "polite" : undefined}
+      className={cn("rounded p-4", TONE_CLASSES[tone], className)}
+      data-testid={testId}
+    >
       {title && <p className="font-medium">{title}</p>}
       {children}
     </div>

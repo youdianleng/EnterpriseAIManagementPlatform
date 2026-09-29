@@ -33,6 +33,8 @@ export type Dictionary = {
     attendance: string;
     /** The caller's own leave balances and requests. */
     leave: string;
+    /** Finance's monthly payslip upload and the two lists it answers with (ticket 44). */
+    payslips: string;
     /** Accessible name of the signed-in navigation landmark. */
     main: string;
   };
@@ -225,6 +227,8 @@ export type Dictionary = {
       rejected: string;
       returned: string;
       withdrawn: string;
+      /** Ticket 44: a month's payslip for this reader is available. */
+      payslipPublished: string;
       unknown: string;
     };
   };
@@ -1078,6 +1082,129 @@ export type Dictionary = {
       yes: string;
       no: string;
     };
+  };
+  /**
+   * The payslip upload (ticket 44).
+   *
+   * Its own section rather than keys under `documents`, for the reason the locale files
+   * give: this is Finance's monthly batch, and the sentences §6.3 is written about — the
+   * two lists presented together, the missing list made prominent because it is the
+   * screen's whole value, the unmatched files with their reasons, and the overwrite
+   * confirmation that names the count and the month — belong beside each other.
+   *
+   * `reasons` is the *whole* of the server's `UnmatchedReason`, plus an `unknown` for a
+   * token a newer server might send. A reason is what makes a refused file readable rather
+   * than dropped, so the vocabulary is translated in full rather than left to a fallback.
+   */
+  payslips: {
+    title: string;
+    intro: string;
+    upload: {
+      heading: string;
+      description: string;
+      monthLabel: string;
+      monthHint: string;
+      filesLabel: string;
+      filesHint: string;
+      /** How many files are selected; `{count}` is the number. */
+      selectedCount: string;
+      clear: string;
+      /** The per-file employee selector, with the filename interpolated. */
+      employeeLabel: string;
+      employeePlaceholder: string;
+      employeeHint: string;
+      submit: string;
+      submitting: string;
+      nothingSelected: string;
+      /** The per-batch ceiling, the same number the API refuses with. */
+      tooMany: string;
+      refused: string;
+    };
+    overwrite: {
+      title: string;
+      /** §6.3's sentence: how many employees, which month. Both numbers interpolated. */
+      body: string;
+      hint: string;
+      confirm: string;
+      cancel: string;
+      confirming: string;
+    };
+    attributed: {
+      heading: string;
+      description: string;
+      count: string;
+      employee: string;
+      number: string;
+      file: string;
+      size: string;
+      state: string;
+      replaced: string;
+      newFile: string;
+      previous: string;
+      empty: string;
+      emptyHint: string;
+    };
+    missing: {
+      heading: string;
+      description: string;
+      count: string;
+      noneInPeriod: string;
+      noneExpected: string;
+      /** How many people the derivation looked at; `{expected}` is the number. */
+      expectedNote: string;
+      employee: string;
+      number: string;
+      department: string;
+      since: string;
+      until: string;
+      open: string;
+      export: string;
+      exportHint: string;
+    };
+    unmatched: {
+      heading: string;
+      description: string;
+      count: string;
+      none: string;
+      file: string;
+      reason: string;
+      number: string;
+      detail: string;
+    };
+    reasons: {
+      no_employee_number: string;
+      unknown_employee_number: string;
+      ambiguous_employee_number: string;
+      not_a_pdf: string;
+      oversized_file: string;
+      empty_file: string;
+      duplicate_for_employee: string;
+      duplicate_file: string;
+      unknown: string;
+    };
+    outcome: {
+      filed: string;
+      replaced: string;
+      refused: string;
+      missing: string;
+      noticeKey: string;
+    };
+    history: {
+      heading: string;
+      period: string;
+      uploadedAt: string;
+      total: string;
+      success: string;
+      empty: string;
+    };
+    permission: {
+      title: string;
+      body: string;
+    };
+    loading: string;
+    error: string;
+    errorHint: string;
+    retry: string;
   };
   footer: {
     milestone: string;

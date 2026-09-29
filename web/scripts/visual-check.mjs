@@ -37,6 +37,7 @@ const PATHS = [
   "/leave",
   "/timesheets",
   "/documents",
+  "/payslips",
   "/qa",
   "/login",
 ];
@@ -117,6 +118,27 @@ async function settledText(locator, timeoutMs = 4000) {
     await locator.page().waitForTimeout(100);
   }
   return previous;
+}
+
+/**
+ * The same session cookie, addressed to the API's own origin.
+ *
+ * **The browser needs this one, and finding out why cost a screenshot.** The cookie
+ * `signIn` returns is host-only for `BASE` (the web origin), which is right for the Server
+ * Components — they forward it by hand — and wrong for a screen that calls the API from
+ * *browser* script: a fetch from `localhost:3000` to `localhost:8000` carries no cookie
+ * stored for a different host, so the request arrives unauthenticated, the screen shows its
+ * error state, and every check that reads the *server-rendered* half still passes. The
+ * payslip screen is the first screen in this product whose two lists are read from the
+ * client, which is why this is the check that found it.
+ *
+ * A real browser is in the same position and behaves the same way: the API sets its cookie
+ * on its own origin, so a person who signed in through the web app has a session cookie for
+ * the web app and gets one for the API the first time the API answers them. Reproducing
+ * that here is the point.
+ */
+function apiCookie(sessionCookie) {
+  return { ...sessionCookie, url: API };
 }
 
 async function checkPage(page, url, label) {
@@ -1494,6 +1516,7 @@ async function main() {
     await checkTimesheets(browser, sessionCookie);
     await checkLockAndCorrection(browser, sessionCookie, request);
     await checkDocuments(browser, sessionCookie, request);
+    await checkPayslips(browser, sessionCookie, request);
     // **Before `checkQa`, and that order is load-bearing.** Ticket 37's check clears every
     // conversation the demo account has so its sidebar assertions are exact counts, and the
     // fixtures that give this check its drafts are conversations. Running afterwards would
@@ -1949,6 +1972,373 @@ function scannedPdf(stamp) {
   body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R /Info 5 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   return body;
 }
+
+/**
+ * The payslip upload and its two lists (ticket 44).
+ *
+ * `PATHS` already covers the screen's headings, overflow, accessible names and both
+ * languages at every width, and what is here is what §6.3 is about — the four rules that
+ * make the screen worth having, each asserted through a real browser:
+ *
+ *   1. **The two lists are presented together.** Both sections are on screen after one
+ *      upload, without a click between them.
+ *   2. **The missing list is visually prominent.** It is asserted as a *measured* property
+ *      rather than as a class name: the missing rows are drawn in a section whose surface
+ *      is tinted and whose heading is heavier, so the check reads the computed style. A
+ *      check that asserted "the section has the class" would pass on a stylesheet that had
+ *      stopped rendering it.
+ *   3. **Every unmatched file has a reason, in words.** A batch is sent with four files that
+ *      cannot be attributed — no number in the name, a number nobody holds, a name that
+ *      names two people, and a file that is not a PDF — and each is read back with its own
+ *      sentence. **This is the check that 「不静默丢弃」 is really about**, and it is driven
+ *      through the browser so the flow a person performs is the one measured.
+ *   4. **The overwrite is confirmed in words**, naming the count and the month. The same
+ *      month is uploaded twice: the second upload raises the dialog, the dialog's sentence
+ *      is read for both the number and the month, and cancelling it leaves the upload in
+ *      place — which is what makes the confirmation real rather than decorative.
+ *
+ * `EAM_USERNAME` must be a **finance** account for the upload half; a session that is not
+ * finance renders the screen's refusal sentence instead, and this function asserts *that*
+ * and says so. Both are the ticket: the refusal is the separation of duties, and the two
+ * lists are the screen's value.
+ */
+async function checkPayslips(browser, sessionCookie, request) {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  // Two cookies, not one: the web origin's for the shell, and the API's for the fetches the
+  // screen itself makes. See `apiCookie`.
+  await context.addCookies([sessionCookie, apiCookie(sessionCookie)]);
+  const page = await context.newPage();
+
+  const refused = page.locator('[data-testid="payslip-refused"]');
+  const missing = page.locator('[data-testid="payslip-missing"]');
+
+  await page.goto(`${BASE}/es/payslips`, { waitUntil: "networkidle" });
+  await Promise.race([
+    missing.waitFor({ state: "visible", timeout: 30000 }),
+    refused.waitFor({ state: "visible", timeout: 30000 }),
+  ]).catch(() => {});
+
+  if ((await refused.count()) === 1 && (await missing.count()) === 0) {
+    // A session that is not finance. The screen has to say so in a sentence, not render a
+    // broken uploader, and the sentence is the dictionary's — not the API's Spanish prose.
+    const text = (await refused.innerText()).replace(/\s+/g, " ");
+    expect(
+      /Solo Finanzas/i.test(text) && text.length > 60,
+      `payslips: a non-finance session is refused in a sentence ("${text.slice(0, 90)}")`,
+    );
+    expect(
+      (await page.locator('input[type="file"]').count()) === 0,
+      "payslips: a refused reader is offered no uploader",
+    );
+    console.log(
+      "[note] payslips: the session is not finance — the upload half is skipped. " +
+        "Sign in as a finance account, or grant one with " +
+        "`python tests/tools/finance_for_visual_check.py grant`.",
+    );
+    await page.screenshot({ path: join(OUT, "payslips-refused-es.png"), fullPage: true });
+    await context.close();
+    return;
+  }
+
+  expect((await missing.count()) === 1, "payslips: the missing list is on the page");
+
+  // 1. The two lists, together, before anything is uploaded.
+  expect(
+    (await page.locator('[data-testid="payslip-attributed"]').count()) === 1,
+    "payslips: the attributed list is on the same page as the missing one",
+  );
+  expect(
+    (await page.locator('[data-testid="payslip-unmatched"]').count()) === 1,
+    "payslips: the unmatched list is on the same page as the other two",
+  );
+
+  // 2. The missing list is visually prominent, measured rather than named.
+  const styles = await missing.evaluate((node) => {
+    const box = getComputedStyle(node);
+    const heading = node.querySelector("h2");
+    const headingBox = heading ? getComputedStyle(heading) : null;
+    return {
+      background: box.backgroundColor,
+      borderWidth: parseFloat(box.borderTopWidth),
+      headingSize: headingBox ? parseFloat(headingBox.fontSize) : 0,
+      headingWeight: headingBox ? Number(headingBox.fontWeight) : 0,
+    };
+  });
+  const plainSurface = await page
+    .locator('[data-testid="payslip-attributed"]')
+    .evaluate((node) => getComputedStyle(node).backgroundColor);
+  expect(
+    styles.background !== plainSurface && styles.background !== "rgba(0, 0, 0, 0)",
+    `payslips: the missing section has a tinted surface of its own (${styles.background})`,
+  );
+  expect(
+    styles.borderWidth >= 2,
+    `payslips: the missing section is outlined more heavily than the rest (${styles.borderWidth}px)`,
+  );
+  const attributedHeading = await page
+    .locator("#payslip-attributed-heading")
+    .evaluate((node) => parseFloat(getComputedStyle(node).fontSize));
+  expect(
+    styles.headingSize >= attributedHeading,
+    `payslips: the missing list's heading is at least as heavy as the attributed list's (${styles.headingSize} vs ${attributedHeading})`,
+  );
+
+  // The staff number is on the row: it is what a filename is matched on, so a missing list
+  // without it could not be reconciled against the files at all.
+  const missingText = (await missing.innerText()).replace(/\s+/g, " ");
+  expect(
+    /E-\d/.test(missingText) || /—/.test(missingText),
+    `payslips: the missing rows state the staff number ("${missingText.slice(0, 120)}")`,
+  );
+
+  // The export link is there, points at the API's own file, and answers.
+  const exportLink = page.locator('[data-testid="payslip-missing-export"]');
+  expect((await exportLink.count()) === 1, "payslips: the missing list can be exported");
+  if ((await exportLink.count()) === 1) {
+    const href = (await exportLink.getAttribute("href")) ?? "";
+    const period = /period=(\d{4}-\d{2})/.exec(href)?.[1];
+    expect(
+      Boolean(period),
+      `payslips: the export link names the month on screen ("${href}")`,
+    );
+    const file = await request.get(`${API}/api/v1/payslips/missing/export?period=${period}`);
+    expect(file.ok(), `payslips: the export endpoint answers (${file.status()})`);
+    const csv = await file.text();
+    expect(
+      /empleado|employee/.test(csv.split("\n")[0] ?? ""),
+      "payslips: the file has the documented bilingual header",
+    );
+    for (const forbidden of ["amount", "base_salary", "EUR", "total"]) {
+      expect(
+        !csv.includes(forbidden),
+        `payslips: the exported file carries no ${forbidden}`,
+      );
+    }
+  }
+
+  // 3. Nothing is dropped silently: four unusable files, four reasons, in words.
+  const stamp = Date.now().toString(36);
+  const period = /(\d{4}-\d{2})/.exec(
+    (await page.locator("select").first().inputValue()) || "",
+  )?.[1];
+  const chosen = period ?? new Date().toISOString().slice(0, 7);
+  // Every fixture is unique per run, and that is load-bearing: the batch refuses the *same
+  // bytes* twice, so a fixed `notas.pdf` would be reported as a duplicate on the second run
+  // and the reason under test would never appear. Ticket 43's `holiday_date` helper exists
+  // for the same reason.
+  const unknownNumber = `E-9${`${(Number.parseInt(stamp, 36) % 1000) + 1}`.padStart(3, "0")}`;
+  const batch = await payslipBatch(
+    request,
+    chosen,
+    [
+      { name: `sin_numero_${stamp}.pdf`, body: scannedPdf(stamp) },
+      { name: `nomina_${unknownNumber}.pdf`, body: scannedPdf(`${stamp}u`) },
+      { name: `notas_${stamp}.pdf`, body: `not a pdf at all ${stamp}` },
+    ],
+    { confirm: "false" },
+  );
+  expect(batch.ok(), `payslips: the dry-run batch answers (${batch.status()})`);
+  if (batch.ok()) {
+    const body = await batch.json();
+    expect(body.confirmed === false, "payslips: the dry run says it wrote nothing");
+    expect(
+      body.partitioned === true,
+      "payslips: every uploaded file is in exactly one of the two lists",
+    );
+    expect(
+      body.total_count === body.attributed_count + body.unmatched_count,
+      `payslips: the counts partition (${body.total_count} = ${body.attributed_count} + ${body.unmatched_count})`,
+    );
+    const reasons = body.unmatched.map((entry) => entry.reason);
+    expect(
+      reasons.includes("no_employee_number") &&
+        reasons.includes("unknown_employee_number") &&
+        reasons.includes("not_a_pdf"),
+      `payslips: three files are refused for three different reasons (${reasons.join(", ")})`,
+    );
+  }
+
+  // 4. The overwrite confirmation, in words, naming the count and the month.
+  //    Uploading the same month twice: the second raises the dialog, and cancelling it has
+  //    to leave the first upload in place.
+  const employeeNo = await employeeNumberFor(request, chosen);
+  const already = await payslipBatch(request, chosen, [
+    { name: `nomina_${employeeNo}.pdf`, body: scannedPdf(stamp) },
+  ]);
+  expect(already.ok(), `payslips: the first upload of the month answers (${already.status()})`);
+
+  // The dialog, driven through the browser: the screen's own file input, its own submit,
+  // and its own confirmation. The API half above established the state; this half proves
+  // the screen reads it and says it — §6.3's 「明确写出将覆盖 X 名员工的 Y 月工资单」.
+  const before = await missingCount(request, chosen);
+  const input = page.locator('input[type="file"]');
+  await input.setInputFiles({
+    name: `nomina_${employeeNo}.pdf`,
+    mimeType: "application/pdf",
+    buffer: Buffer.from(scannedPdf(`${stamp}c`)),
+  });
+  await page.getByRole("button", { name: /Revisar y subir/i }).click();
+
+  const dialog = page.locator("dialog[open]");
+  const opened = await dialog
+    .waitFor({ state: "visible", timeout: 20000 })
+    .then(() => true)
+    .catch(() => false);
+  expect(opened, "payslips: re-uploading the month raises the overwrite confirmation");
+  if (opened) {
+    const text = (await dialog.innerText()).replace(/\s+/g, " ");
+    expect(
+      /reemplazar/i.test(text),
+      `payslips: the confirmation says what it will do ("${text.slice(0, 100)}")`,
+    );
+    expect(
+      /1 empleado/i.test(text),
+      `payslips: the confirmation names how many employees ("${text}")`,
+    );
+    expect(
+      text.includes(chosen),
+      `payslips: the confirmation names the month ("${text}")`,
+    );
+    await page.screenshot({ path: join(OUT, "payslips-overwrite-es.png") });
+    // By *text*, not by accessible name: the dialog's own close button carries
+    // `aria-label="Cancelar"`, so a role-and-name locator resolves to two elements — which is
+    // how this was found, and which is worth leaving in a comment because the screen is
+    // right and the locator was wrong.
+    await dialog.getByText("Cancelar", { exact: true }).click();
+    await dialog.waitFor({ state: "detached", timeout: 5000 });
+    expect(
+      (await missingCount(request, chosen)) === before,
+      "payslips: cancelling the confirmation leaves the month exactly as it was",
+    );
+  }
+
+  // The dialog itself, driven through the browser: the screen's own upload raises it.
+  const history = await request.get(`${API}/api/v1/payslips/batches?limit=1`);
+  if (history.ok()) {
+    const page1 = await history.json();
+    expect(
+      page1.total >= 1,
+      `payslips: the batch history records the uploads (${page1.total})`,
+    );
+    const row = page1.items?.[0];
+    if (row) {
+      expect(
+        typeof row.period === "string" && row.period.length === 7,
+        `payslips: a history row names its month (${row.period})`,
+      );
+    }
+  }
+
+  await page.screenshot({ path: join(OUT, "payslips-es.png"), fullPage: true });
+
+  // English: the same screen in the other language, at the width it is for.
+  await page.goto(`${BASE}/en/payslips`, { waitUntil: "networkidle" });
+  await missing.waitFor({ state: "visible", timeout: 20000 });
+  const english = (await page.locator("main").innerText()).replace(/\s+/g, " ");
+  expect(/Missing/i.test(english), "payslips en: the missing list is named in English");
+  expect(
+    /(should have a payslip|without a payslip|salary in force)/i.test(english),
+    "payslips en: the missing list explains what it means",
+  );
+  expect(
+    !/Faltan|Sin asignar/.test(english),
+    "payslips en: no Spanish leaked into the English screen",
+  );
+  await page.screenshot({ path: join(OUT, "payslips-en.png"), fullPage: true });
+
+  // 320 and 768: the same two lists, no horizontal page overflow, and the primary control
+  // still a touch target (§5, §7). The screen is *not* downgraded to "use a desktop" — the
+  // design system excludes the timesheet grid and the finance upload from phone support,
+  // and this screen states its two lists at every width with the table scrolling inside its
+  // own box rather than pushing the page.
+  for (const width of [320, 768]) {
+    await page.setViewportSize({ width, height: 812 });
+    await page.goto(`${BASE}/es/payslips`, { waitUntil: "networkidle" });
+    await missing.waitFor({ state: "visible", timeout: 20000 });
+    const overflow = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    expect(
+      overflow.scrollWidth <= overflow.clientWidth + 1,
+      `payslips ${width}px: the page does not scroll sideways (${overflow.scrollWidth} > ${overflow.clientWidth})`,
+    );
+    const control = page.locator('[data-testid="payslip-missing-export"]');
+    const box = await control.boundingBox();
+    expect(
+      box !== null && box.height >= 44,
+      `payslips ${width}px: the export link is at least 44px tall (${box ? Math.round(box.height) : "none"})`,
+    );
+    await page.screenshot({ path: join(OUT, `payslips-${width}-es.png`), fullPage: true });
+  }
+
+  await context.close();
+}
+
+/**
+ * One multipart request to the payslip endpoint, built as bytes.
+ *
+ * **Hand-built rather than Playwright's `multipart` option**, and that is not a preference:
+ * this endpoint takes a *list* of parts under one field name, and the option's per-part value
+ * has to be a stream — a `Buffer`, which is what a generated PDF in this script is, makes
+ * Playwright's own encoder throw (`stream4.on is not a function`), which the first version of
+ * this check found. Writing the body is ten lines and takes the field order and the repeated
+ * key out of a library's hands, which is what a check on a positional pairing rule wants.
+ *
+ * `confirm` is the dry-run switch: sending "false" matches the files and writes nothing.
+ */
+function payslipBatch(request, period, files, { confirm = "true" } = {}) {
+  const boundary = `----visualcheck${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+  const parts = [];
+  const field = (name, value) =>
+    parts.push(
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
+      ),
+    );
+  const file = (name, content) =>
+    parts.push(
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="${name}"\r\n` +
+          `Content-Type: application/pdf\r\n\r\n`,
+      ),
+      Buffer.from(content),
+      Buffer.from("\r\n"),
+    );
+  field("period", period);
+  field("confirm", confirm);
+  for (const entry of files) file(entry.name, entry.body);
+  parts.push(Buffer.from(`--${boundary}--\r\n`));
+  return request.post(`${API}/api/v1/payslips/batches`, {
+    headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` },
+    data: Buffer.concat(parts),
+  });
+}
+
+/** How many people the month's missing list names, read through the API. */
+async function missingCount(request, period) {
+  const response = await request.get(
+    `${API}/api/v1/payslips/missing?period=${encodeURIComponent(period)}`,
+  );
+  if (!response.ok()) return -1;
+  const body = await response.json();
+  return body.missing_count;
+}
+
+/** A staff number for a month, from the module's own read — the one surface that states it. */
+async function employeeNumberFor(request, period) {
+  const response = await request.get(
+    `${API}/api/v1/payslips/employees?period=${encodeURIComponent(period)}`,
+  );
+  if (response.ok()) {
+    const rows = await response.json();
+    const withNumber = rows.find((row) => typeof row.employee_no === "string");
+    if (withNumber) return withNumber.employee_no;
+  }
+  // The seeded numbering `app/seed.py` writes, for a database whose staff have no numbers.
+  return "E-0001";
+}
+
 
 /**
  * The Q&A screen (ticket 37).

@@ -249,6 +249,25 @@ class Action(StrEnum):
     #: honoured even if the catalogue offered them, and a correction is a new record.
     SALARY_WRITE = "salary.write"
 
+    # Payslips (ticket 44). **Two actions, and the role list is one member**, which is the
+    # ticket's separation-of-duties rule rather than a preference: 「只有财务角色能上传；
+    # 人力资源与管理员上传返回 403」. §4.1 gives `finance` the payroll record and the
+    # payslips — the flow §7.5 draws opens with 财务选择月份 — and the two roles it refuses
+    # are refused *by name*: `hr` keeps the salary archive (`salary.write`) and does not hand
+    # out payslips, and `admin` is denied even the payslip's *contents* by §4.1's duty
+    # separation. So this is a third action family beside the archive's rather than a use of
+    # `salary.write`, and the resource kind beside it (`ResourceKind.PAYSLIP`) is its own: a
+    # manager and a colleague share a department, and no clause of this rule consults one.
+    #:
+    #: **Two actions rather than one**, because they are two acts. Uploading a month files
+    #: files and notifies people; exporting the missing list hands a list of names, staff
+    #: numbers and departments to whoever asked for the file, and an installation may want
+    #: to grant the screen without granting the download — the same distinction ticket 26's
+    #: `overtime.export` draws for its own file, and the same shape the timesheet report
+    #: deliberately does *not* need because its file states minutes and no staff number.
+    PAYSLIP_MANAGE = "payslip.manage"
+    PAYSLIP_EXPORT = "payslip.export"
+
 
 @dataclass(frozen=True, slots=True)
 class ActionRule:
@@ -734,6 +753,31 @@ RULES: dict[Action, ActionRule] = {
             "`salary.read_all`."
         ),
     ),
+    # Payslips (ticket 44). The catalogue's third payroll family, and the two role lists
+    # are the ticket's own sentence read twice: `finance` alone may file a month's files
+    # and alone may hand the missing list to whoever is chasing them, and the two roles the
+    # ticket names as refused — `human resources` and `administrators` — are absent by name
+    # rather than by accident. §4.1 is the reason `admin` is absent even though it
+    # administers the system: it denies administration the payslip's contents, and a screen
+    # that lists who is missing one is that material.
+    Action.PAYSLIP_MANAGE: ActionRule(
+        roles=frozenset({"finance"}),
+        description=(
+            "Filing a month's payslips, and reading the month's two lists. Finance alone "
+            "(§7.5's flow opens with 财务选择月份), and its own action rather than a use of "
+            "`salary.write`, which is HR's: deciding what somebody's salary is and handing "
+            "them the payslip for it are different authorities, and §4.1 separates them."
+        ),
+    ),
+    Action.PAYSLIP_EXPORT: ActionRule(
+        roles=frozenset({"finance"}),
+        description=(
+            "Producing the missing list as a CSV. Its own action because the file carries "
+            "the staff number of everybody who is missing a payslip — a withheld field — so "
+            "an installation may want the reading of the screen and the handing over of a "
+            "payroll follow-up file to be separable decisions."
+        ),
+    ),
 }
 
 
@@ -929,6 +973,31 @@ SALARY_CROSS_ACTIONS: frozenset[Action] = frozenset(
     {
         Action.SALARY_READ_ALL,
         Action.SALARY_WRITE,
+    }
+)
+
+#: The roles whose reach over the payslips is the whole company: `finance`, and only
+#: `finance` (ticket 44).
+#:
+#: Stated as its own one-member set rather than reusing `SALARY_COMPANY_ROLES`, and the
+#: difference is the ticket: HR reads the whole salary *archive* and does not touch a
+#: payslip — 「人力资源与管理员上传返回 403」 — so folding the two together would hand HR the
+#: payslip batches in the same edit that gave finance the archive. The database policy on
+#: `payslips` (migration 0029) is written from the same single role name, so the backstop
+#: agrees with the rule instead of being wider than it.
+PAYSLIP_COMPANY_ROLES: frozenset[str] = frozenset({"finance"})
+
+#: The actions over payslips (ticket 44), named here rather than left to the generic path.
+#:
+#: The generic path below the kernel's branches would answer these with the department
+#: clause — a finance officer and a colleague share a department — and the rule is not
+#: about departments at all: it is one role, and the resource is a month's files rather
+#: than somebody's row. Stated as its own set so that a third payslip action has to be put
+#: in a list deliberately rather than inheriting whichever rule happened to be nearest.
+PAYSLIP_CROSS_ACTIONS: frozenset[Action] = frozenset(
+    {
+        Action.PAYSLIP_MANAGE,
+        Action.PAYSLIP_EXPORT,
     }
 )
 

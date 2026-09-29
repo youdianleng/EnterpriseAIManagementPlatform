@@ -495,6 +495,22 @@ class ErrorCode(StrEnum):
     SALARY_RECORD_OVERLAPS = "ERR_PAY_003"
     SALARY_RECORD_INITIAL_EXISTS = "ERR_PAY_004"
 
+    # Payslips (ticket 44). Five codes, and the boundary between them is what a client
+    # shows. The month is unusable or the batch is empty (`PAYSLIP_PERIOD_INVALID`,
+    # `PAYSLIP_BATCH_EMPTY`) — a 422 the caller fixes by sending something else. The file
+    # the caller chose is not a payslip at all (`PAYSLIP_FILE_EMPTY`,
+    # `PAYSLIP_FILE_NOT_PDF`) — a 422 about the *file*, and the two codes exist for the
+    # surfaces that take one file; the batch upload reports them per file in its result
+    # instead, which is 「不静默丢弃」 rather than an error. And the row names a file the
+    # storage root has lost (`PAYSLIP_FILE_MISSING`) — a 404 whose code says it is a data
+    # error rather than "no such payslip", the same distinction `document.file_missing`
+    # draws.
+    PAYSLIP_PERIOD_INVALID = "ERR_PAY_005"
+    PAYSLIP_BATCH_EMPTY = "ERR_PAY_006"
+    PAYSLIP_FILE_EMPTY = "ERR_PAY_007"
+    PAYSLIP_FILE_NOT_PDF = "ERR_PAY_008"
+    PAYSLIP_FILE_MISSING = "ERR_PAY_009"
+
     # Cross-cutting.
     INTERNAL_ERROR = "ERR_INTERNAL_001"
     SERVICE_UNAVAILABLE = "ERR_INTERNAL_002"
@@ -881,6 +897,15 @@ ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
     ErrorCode.SALARY_RECORD_INITIAL_EXISTS: ErrorDefinition(
         409, "errors.salary_record_initial_exists"
     ),
+    # Payslips (ticket 44). 422 for the four the caller fixes by sending something else —
+    # a `YYYY-MM` month, at least one file, and files that are actual PDFs — and 404 for
+    # the one data error, whose code says which incident it is rather than leaving the
+    # client to guess between "no such payslip" and "the file is gone".
+    ErrorCode.PAYSLIP_PERIOD_INVALID: ErrorDefinition(422, "errors.payslip_period_invalid"),
+    ErrorCode.PAYSLIP_BATCH_EMPTY: ErrorDefinition(422, "errors.payslip_batch_empty"),
+    ErrorCode.PAYSLIP_FILE_EMPTY: ErrorDefinition(422, "errors.payslip_file_empty"),
+    ErrorCode.PAYSLIP_FILE_NOT_PDF: ErrorDefinition(422, "errors.payslip_file_not_pdf"),
+    ErrorCode.PAYSLIP_FILE_MISSING: ErrorDefinition(404, "errors.payslip_file_missing"),
     ErrorCode.INTERNAL_ERROR: ErrorDefinition(500, "errors.internal_error", expose_detail=False),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorDefinition(
         503, "errors.service_unavailable", expose_detail=False

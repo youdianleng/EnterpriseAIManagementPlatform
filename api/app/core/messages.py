@@ -620,6 +620,31 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.salary_record_initial_exists": (
             "Esta persona ya tiene un registro inicial; lo que procede es un ajuste."
         ),
+        # --- payslips (ticket 44) ---
+        #
+        # Five refusals, and the two halves of the family read differently on purpose: the
+        # four that are the caller's to fix say *what to send instead*, and the last one is
+        # an operator's incident rather than something the caller did. The batch upload
+        # rarely reaches them — an unattributable file is reported in the result with a
+        # reason rather than failing the request (「不静默丢弃」) — so these are the sentences
+        # for the surfaces that take one file, and for the client that sends a month with
+        # no files at all.
+        "errors.payslip_period_invalid": (
+            "El mes debe indicarse como AAAA-MM (por ejemplo, 2026-03)."
+        ),
+        "errors.payslip_batch_empty": (
+            "No se ha recibido ningún archivo: selecciona las nóminas del mes antes de subirlas."
+        ),
+        "errors.payslip_file_empty": (
+            "Uno de los archivos está vacío. Comprueba la exportación antes de volver a subirla."
+        ),
+        "errors.payslip_file_not_pdf": (
+            "Las nóminas deben ser archivos PDF. Convierte el archivo y vuelve a subirlo."
+        ),
+        "errors.payslip_file_missing": (
+            "El archivo de esta nómina ya no está en el almacén. Avisa a quien administra el "
+            "sistema y vuelve a subir el mes."
+        ),
     },
     "en": {
         "errors.validation_failed": "The submitted data is not valid.",
@@ -1136,6 +1161,23 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         ),
         "errors.salary_record_initial_exists": (
             "This person already has an opening record; what is needed is an adjustment."
+        ),
+        # --- payslips (ticket 44). See the Spanish catalogue's entry. ---
+        "errors.payslip_period_invalid": (
+            "The month must be written as YYYY-MM (for example, 2026-03)."
+        ),
+        "errors.payslip_batch_empty": (
+            "No file arrived: choose the month's payslips before uploading them."
+        ),
+        "errors.payslip_file_empty": (
+            "One of the files is empty. Check the export before uploading it again."
+        ),
+        "errors.payslip_file_not_pdf": (
+            "Payslips have to be PDF files. Convert the file and upload it again."
+        ),
+        "errors.payslip_file_missing": (
+            "This payslip's file is no longer in the store. Tell whoever administers the "
+            "system and upload the month again."
         ),
     },
 }

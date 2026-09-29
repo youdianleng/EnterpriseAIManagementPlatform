@@ -16,6 +16,7 @@ from app.models.notification import Notification, NotificationDelivery
 from app.models.org import Department
 from app.models.overtime import OvertimeEntry, OvertimeRecord, OvertimeRequest
 from app.models.payroll import SalaryRecord
+from app.models.payslip import Payslip, PayslipBatch
 from app.models.personnel import PersonnelChange
 from app.models.project import Project, ProjectTask
 from app.models.schedule import (
@@ -52,6 +53,8 @@ __all__ = [
     "OvertimeEntry",
     "OvertimeRecord",
     "OvertimeRequest",
+    "Payslip",
+    "PayslipBatch",
     "PersonnelChange",
     "Project",
     "ProjectTask",

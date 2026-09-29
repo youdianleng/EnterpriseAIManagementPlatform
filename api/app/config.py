@@ -85,6 +85,16 @@ class Settings(BaseSettings):
     document_parse_runner_enabled: bool | None = None
     document_parse_interval_seconds: int = 2
 
+    # --- payslips (ticket 44) ------------------------------------------------
+    # Where a month's payslip files are kept, **and it is deliberately not the document
+    # root**. A payslip is not a document: it produces no chunks, enters no corpus, and is
+    # reachable by no retrieval path — see `app/models/payslip.py` for the SQL reason a
+    # flag on `documents` cannot express "not even its owner may retrieve this". Keeping
+    # the two filesystems apart is the physical half of that: nothing that walks
+    # `document_storage_path` can reach a payslip, whatever a future query is written to
+    # believe. Compose mounts a volume here; the directory is created on the first upload.
+    payslip_storage_path: str = "/data/payslips"
+
     # --- embeddings (ticket 32) ---------------------------------------------
     # Which adapter produces the vectors. Three values, and the default is *derived*
     # from the environment for the reason the parsing loop above is:

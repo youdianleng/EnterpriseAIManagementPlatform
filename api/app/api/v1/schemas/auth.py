@@ -37,3 +37,10 @@ class SessionRead(BaseModel):
     #: When true the client must route to the change-password screen; every other
     #: endpoint answers 403 with `errors.password_change_required` until it is done.
     must_change_password: bool
+    #: The roles this account holds, so a shell can decide what to *advertise* without a
+    #: second request — ticket 44's payslip screen is Finance's alone, and §4.1's rule that
+    #: an interface shows no entry its reader cannot open is the reason the list travels
+    #: here. It is not an authority: every route still asks the kernel, and a client that
+    #: ignored this field would simply be refused by the API it called. Sorted, so two
+    #: responses for one account are one string.
+    roles: list[str] = []

@@ -68,6 +68,8 @@ from app.domain.access.permissions import (
     LEAVE_CROSS_ACTIONS,
     OVERTIME_COMPANY_ROLES,
     OVERTIME_CROSS_ACTIONS,
+    PAYSLIP_COMPANY_ROLES,
+    PAYSLIP_CROSS_ACTIONS,
     PROJECT_ADMIN_ROLES,
     SALARY_COMPANY_ROLES,
     SALARY_CROSS_ACTIONS,
@@ -310,6 +312,16 @@ DESIGN_GRANTS: dict[Action, frozenset[str]] = {
     Action.SALARY_READ_OWN: EVERYONE,
     Action.SALARY_READ_ALL: frozenset({"hr", "finance"}),
     Action.SALARY_WRITE: frozenset({"hr"}),
+    # Payslips (ticket 44). §4.1 and §7.5 read as one role and two refusals by name:
+    # `finance` files the month and hands over the missing list (财务按月份批量上传), and the
+    # two roles the ticket refuses are **absent** rather than merely unlikely — `hr`, which
+    # keeps the salary archive and does not hand out payslips, and `admin`, which §4.1
+    # denies even the payslip's contents. `compliance` is absent for the reason it is absent
+    # from the archive: its row is the audit trail, which is where "who filed March" is
+    # answered. Two actions rather than one because filing and exporting are two acts, the
+    # second of which hands a list of staff numbers to whoever asked for the file.
+    Action.PAYSLIP_MANAGE: frozenset({"finance"}),
+    Action.PAYSLIP_EXPORT: frozenset({"finance"}),
 }
 
 #: The resource each action acts on. A document is decided by §4.2 whatever the
@@ -416,6 +428,12 @@ KIND_FOR_ACTION: dict[Action, ResourceKind] = {
     Action.SALARY_READ_OWN: ResourceKind.SALARY_RECORD,
     Action.SALARY_READ_ALL: ResourceKind.SALARY_RECORD,
     Action.SALARY_WRITE: ResourceKind.SALARY_RECORD,
+    # Payslips (ticket 44). A month's files rather than a person's row, so the kind is its
+    # own — `ResourceKind.PAYSLIP` — and the kernel's branch for it is a role check and
+    # nothing else: a manager and a colleague share a department, and no clause of this rule
+    # consults one.
+    Action.PAYSLIP_MANAGE: ResourceKind.PAYSLIP,
+    Action.PAYSLIP_EXPORT: ResourceKind.PAYSLIP,
 }
 
 #: Actions the catalogue decides by role alone, with no resource clause to apply.
@@ -596,6 +614,14 @@ def design_says(role: str, action: Action, shape: tuple[str | None, str | None] 
             return bool(held_for_salary & DESIGN_GRANTS[Action.SALARY_WRITE])
         return bool(held_for_salary & SALARY_COMPANY_ROLES)
 
+    # Payslips (ticket 44). One role and nothing else, and the generated resource is empty:
+    # the acts this kind decides are about a *month*, so there is no row for the department
+    # or clearance clause to be about. Written as its own block because the salary block
+    # above would answer it with the archive's two-role set — HR would file the payslips,
+    # which is precisely what the ticket refuses.
+    if KIND_FOR_ACTION[action] is ResourceKind.PAYSLIP:
+        return bool(frozenset({role, "employee"}) & PAYSLIP_COMPANY_ROLES)
+
     held = frozenset({role, "employee"})
     clearance, department = shape
 
@@ -674,7 +700,7 @@ def test_the_generated_matrix_covers_every_dimension() -> None:
     # citation, so a second action for the file would be a second rule to keep in step
     # with §4.2. The count is therefore unchanged, and `test_documents.py` asserts what
     # the endpoints do with the reach those actions produce.
-    assert len(cases) == 7 * 60 * 13
+    assert len(cases) == 7 * 62 * 13
     assert 0 < permitted < len(cases), "the expectation answers the same way everywhere"
 
     discriminating = [
@@ -710,6 +736,25 @@ def test_the_design_table_describes_every_action_and_its_resource() -> None:
     assert SALARY_CROSS_ACTIONS.isdisjoint(
         ATTENDANCE_CROSS_ACTIONS | LEAVE_CROSS_ACTIONS | OVERTIME_CROSS_ACTIONS
         | TIMESHEET_CROSS_ACTIONS
+    )
+    # Ticket 44's set, and the assertion that says what is different about it: **one role**,
+    # where the archive's has two. That is the ticket's separation of duties read as data —
+    # `hr` keeps the salary archive and does not hand out payslips — and a widening of this
+    # frozenset is the edit that would quietly give HR the payslip batches.
+    assert PAYSLIP_CROSS_ACTIONS == frozenset(
+        {Action.PAYSLIP_MANAGE, Action.PAYSLIP_EXPORT}
+    )
+    assert PAYSLIP_COMPANY_ROLES == frozenset({"finance"})
+    assert PAYSLIP_COMPANY_ROLES < SALARY_COMPANY_ROLES
+    assert PAYSLIP_CROSS_ACTIONS.isdisjoint(
+        ATTENDANCE_CROSS_ACTIONS | LEAVE_CROSS_ACTIONS | OVERTIME_CROSS_ACTIONS
+        | TIMESHEET_CROSS_ACTIONS | SALARY_CROSS_ACTIONS
+    )
+    assert PAYSLIP_COMPANY_ROLES == frozenset({"finance"})
+    assert PAYSLIP_COMPANY_ROLES < SALARY_COMPANY_ROLES
+    assert PAYSLIP_CROSS_ACTIONS.isdisjoint(
+        ATTENDANCE_CROSS_ACTIONS | LEAVE_CROSS_ACTIONS | OVERTIME_CROSS_ACTIONS
+        | TIMESHEET_CROSS_ACTIONS | SALARY_CROSS_ACTIONS
     )
 
 
@@ -1358,6 +1403,21 @@ HTTP_MATRIX: tuple[tuple[str, str, RouteAccess], ...] = (
     ("GET", "/api/v1/salary/records", Action.SALARY_READ_ALL),
     ("GET", "/api/v1/salary/records/as-of", Action.SALARY_READ_OWN),
     ("POST", "/api/v1/salary/records", Action.SALARY_WRITE),
+    # Payslips (ticket 44). Four rows, and each carries the catalogue action the *route*
+    # names rather than a role test: filing a month and reading its two lists are
+    # `payslip.manage`, and handing the follow-up file over is `payslip.export`. The four
+    # refusals the ticket names — HR's and an administrator's are the ones it states in as
+    # many words — are asserted here for every role, and by name in `test_payslips.py`.
+    #
+    # `missing/export` is in `RESOURCE_FREE_ROUTES` below: an empty month exports a header
+    # and nothing else, which is an answer this layer can check exactly. The upload is not
+    # — a `POST` with a valid body would *file* a payslip, and this matrix is about guards
+    # — so it is asserted for the refusal only, which is what the rows above do for every
+    # other write.
+    ("GET", "/api/v1/payslips/missing", Action.PAYSLIP_MANAGE),
+    ("GET", "/api/v1/payslips/missing/export", Action.PAYSLIP_EXPORT),
+    ("GET", "/api/v1/payslips/batches", Action.PAYSLIP_MANAGE),
+    ("POST", "/api/v1/payslips/batches", Action.PAYSLIP_MANAGE),
 )
 
 
@@ -1387,6 +1447,12 @@ MATRIX_WEEK_START = date(2027, 1, 4)
 #: answer is an empty chain rather than a figure — the cheapest admitted answer, and the
 #: one this layer can assert exactly.
 MATRIX_SALARY_DAY = date(2019, 6, 1)
+
+#: The month the payslip reads ask about (ticket 44). Fixed for the reason
+#: `MATRIX_SALARY_DAY` is, and far from every month the suite files, so the answer is an
+#: empty list and an export with a header and no rows — the cheapest admitted answer, and
+#: the one this layer can assert exactly.
+MATRIX_PAYSLIP_MONTH = "2019-06"
 
 
 #: The routes whose body the matrix can make genuinely valid, so a permitted caller
@@ -1439,6 +1505,14 @@ RESOURCE_FREE_ROUTES: frozenset[str] = frozenset(
         # created and the append names one that may have no account.
         "/api/v1/salary/records/me",
         "/api/v1/salary/records/as-of",
+        # Ticket 44. The missing list and the export both answer over an empty month — no
+        # rows and a header — which is an answer this layer can assert exactly, and the
+        # export is the one route whose *own* action (`payslip.export`) has to be exercised
+        # through HTTP for 403-versus-200 to mean anything. The upload is deliberately not
+        # here: a permitted call would file a payslip, and `test_payslips.py` owns what an
+        # upload does.
+        "/api/v1/payslips/missing",
+        "/api/v1/payslips/missing/export",
     }
 )
 
@@ -1634,6 +1708,15 @@ def http_payload(path: str, *, department: str, employee: str) -> dict:
             "change_reason_type": "initial",
             "change_reason": "Matriz",
         },
+        # Payslips (ticket 44). **Deliberately not a valid multipart body**, and the reason
+        # is that a valid one would *file a payslip*: this layer is about whether the guard
+        # is wired to the catalogue, and a request that also wrote a row would make the
+        # matrix a test of the handler. So the body is a JSON object where the endpoint
+        # wants multipart, which the framework refuses with a 422 — after the guard has
+        # already decided. A refused caller is stopped at the guard and gets a 403, and a
+        # permitted one reaches the framework's 422, which this layer does not count as a
+        # failure. What a permitted caller gets with a real body is `test_payslips.py`'s.
+        "/api/v1/payslips/batches": {"period": "2026-03"},
     }[path]
 
 
@@ -1711,6 +1794,11 @@ async def test_the_http_matrix_for(platform: Platform, role: str) -> None:
             # request without one — a 422 the matrix would report as an unwired endpoint.
             # The day is fixed and far from anything the suite writes.
             params = {"as_of": MATRIX_SALARY_DAY.isoformat()}
+        elif "/payslips/" in path:
+            # Payslips (ticket 44). Both reads are about a month and refuse the request
+            # without one, so the month travels the way `as_of` does — a fixed one, far
+            # from anything the suite files, so the answer is an empty list.
+            params = {"period": MATRIX_PAYSLIP_MONTH}
         response = (
             await actor.call(method, path, json=payload, params=params)
             if payload is not None
@@ -1770,7 +1858,7 @@ async def test_the_http_matrix_for(platform: Platform, role: str) -> None:
     # three the sidebar needs (the list, the rename and the delete); ticket 41 adds the
     # agent's human-review point (confirm and reject); ticket 43 adds the salary
     # archive's four (your own chain, the company's, the day in force, and the append).
-    assert checked == 87
+    assert checked == 91
     assert checked == len(HTTP_MATRIX)
     assert failures == [], "\n".join(failures)
 

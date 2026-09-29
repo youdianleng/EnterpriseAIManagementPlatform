@@ -138,6 +138,25 @@ class AuditAction(StrEnum):
     #: `compliance`.
     SALARY_RECORD_WRITTEN = "salary.record_written"  # 43
     PAYSLIP_UPLOADED = "payslip.uploaded"  # 44
+    #: One entry per month filed (ticket 44), and the shape is the ticket's own sentence:
+    #: 「写入审计（记录上传人、月份、份数）」. The **actor** is the request context's login, the
+    #: **month** is the period, and the **count** is three numbers that mean different
+    #: things and are all recorded: how many files the request carried, how many were
+    #: attributed, and how many were refused. The last two are the pair that makes the
+    #: entry worth having — a batch that attributed nine of eleven files is a fact about
+    #: which payslips exist, and one that attributed eleven is a different fact.
+    #:
+    #: **No amount, no currency and no employee's pay**, for the reason
+    #: `salary.record_written` records: `audit_log` is append-only, kept four years and
+    #: read by `compliance`, while the figures live in `salary_records` behind a narrower
+    #: policy. A payslip has no figure in this module at all, so there is nothing here to
+    #: leak — and the entry states that rather than leaving it to be inferred.
+    #:
+    #: **No filename either**, and that one is a deliberate omission rather than an
+    #: oversight: the batch row carries the unmatched files and their reasons
+    #: (`payslip_batches.unmatched`), which is where a reviewer looks for "which file was
+    #: refused", and copying a hundred names into the trail would put a payroll bureau's
+    #: naming convention — which contains staff numbers — into the wider of the two tables.
     PAYSLIP_DOWNLOADED = "payslip.downloaded"  # 45
     PAYSLIP_WITHDRAWN = "payslip.withdrawn"  # 46
     #: A second attempt at an event that was already raised. Recorded rather than

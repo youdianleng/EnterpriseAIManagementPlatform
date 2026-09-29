@@ -35,6 +35,7 @@ export function SiteHeader({
   identity,
   pathWithoutLocale,
   unreadCount,
+  roles = [],
 }: {
   locale: Locale;
   dict: Dictionary;
@@ -47,6 +48,14 @@ export function SiteHeader({
    * "nobody asked", a hidden badge at zero means "there is nothing waiting".
    */
   unreadCount?: number | null;
+  /**
+   * The session's roles, for the one entry that is not offered to everybody.
+   *
+   * Defaulted to empty rather than assumed: a shell that forgot to pass them draws no
+   * finance-only entry, which is the fail-closed direction. The API refuses the screen
+   * either way — this only decides what is advertised.
+   */
+  roles?: readonly string[];
 }) {
   // A badge at zero is noise: the count is drawn only when there is something to
   // read, and the accessible name carries the number for anyone who cannot see it.
@@ -73,6 +82,13 @@ export function SiteHeader({
    *   every role may ask, and `GET /answers/conversations` answers with the caller's *own*
    *   conversations and nothing else. **There is deliberately no entry for anybody else's
    *   conversations** — §5.3 gives that read to compliance, and its screen is ticket 48's;
+   * * the payslip upload (ticket 44) is the one entry that is **not** offered to every role,
+   *   and it is filtered below rather than shown-and-refused. §4.1 is explicit that finance
+   *   files the payslips and that HR and administration do not, so an entry every reader
+   *   would be turned away from is the thing the rule above forbids — which makes this the
+   *   first entry that needs to know who is looking. The refusal itself is still the API's:
+   *   this decides whether to *advertise* the screen, and `payslip.manage` decides whether
+   *   the screen works. The two cannot disagree about much, because both read §4.1.
    * * `badge` marks the notification centre, which is the only entry that carries a count.
    */
   const links: Array<{ href: string; label: string; badge?: boolean }> = [
@@ -83,6 +99,12 @@ export function SiteHeader({
     { href: `/${locale}/timesheets`, label: dict.nav.timesheets },
     { href: `/${locale}/documents`, label: dict.nav.documents },
     { href: `/${locale}/qa`, label: dict.nav.qa },
+    // Only for finance. `roles` is the session's own list, so this is the same fact the API
+    // will decide on — and a reader who is not finance never sees an entry that would refuse
+    // them. An employee who reaches the URL anyway gets the screen's refusal, not a 403 page.
+    ...(roles.includes("finance")
+      ? [{ href: `/${locale}/payslips`, label: dict.nav.payslips }]
+      : []),
     { href: `/${locale}/notifications`, label: dict.nav.notifications, badge: true },
     { href: `/${locale}/style-guide`, label: dict.nav.styleGuide },
   ];

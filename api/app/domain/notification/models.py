@@ -41,6 +41,13 @@ class NotificationType(StrEnum):
     #: The morning reminder to the employee about their own outstanding punches of
     #: the day before (ticket 23). Raised by the same module, one per anomaly.
     ATTENDANCE_ANOMALY_REMINDER = "attendance.anomaly_reminder"
+    #: Your payslip for a month is available (ticket 44). Raised once per person whose
+    #: file was filed, keyed on the batch — see `domain/payslip/service.py::_publish`. The
+    #: payload is the period and nothing else: a notification is a *pointer*, and the file
+    #: the employee opens is where the figures are. There is deliberately no amount in it,
+    #: which is also what keeps a payslip's contents out of `notifications`, a table the
+    #: centre's own read serves without the payroll module's policy.
+    PAYSLIP_PUBLISHED = "payslip.published"
 
 
 #: The bilingual key each type renders as. One table, so the backend, the
@@ -55,6 +62,10 @@ TITLE_KEY_OF: dict[NotificationType, str] = {
     NotificationType.ATTENDANCE_ANOMALY_REMINDER: (
         "notifications.attendance.anomaly_reminder"
     ),
+    # Ticket 44. The key names the *event* rather than the screen: "your payslip is
+    # available", because what the row announces is that a file exists, and the file is
+    # what the employee opens (ticket 45).
+    NotificationType.PAYSLIP_PUBLISHED: "notifications.payslip.published",
 }
 
 #: What the morning digest carries (ticket 20), named here rather than in the job

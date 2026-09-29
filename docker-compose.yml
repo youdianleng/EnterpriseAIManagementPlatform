@@ -96,6 +96,13 @@ services:
       # scheduler, and this stays off there.
       DOCUMENT_PARSE_RUNNER_ENABLED: ${DOCUMENT_PARSE_RUNNER_ENABLED:-true}
       DOCUMENT_PARSE_INTERVAL_SECONDS: ${DOCUMENT_PARSE_INTERVAL_SECONDS:-2}
+      # Where a month's payslip files are kept (ticket 44). **A different root from the
+      # document store on purpose**, and the separation is half of the ticket's rule that
+      # a payslip never enters the corpus: nothing that walks the document root can reach
+      # a payslip, whatever a future query is written to believe. See
+      # `app/models/payslip.py` for the SQL reason the corpus's own flag cannot express
+      # "not even its owner may retrieve this".
+      PAYSLIP_STORAGE_PATH: ${PAYSLIP_STORAGE_PATH:-/data/payslips}
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
@@ -104,6 +111,7 @@ services:
       # they are not source code, and a bind mount inside the API's own tree would put
       # hundreds of uploaded files where a `git status` has to look at them.
       - document_storage:/data/documents
+      - payslip_storage:/data/payslips
     depends_on:
       postgres:
         condition: service_healthy
@@ -166,5 +174,8 @@ volumes:
   # The uploaded originals. A volume rather than a bind mount so `down -v` is the one
   # command that removes them and nothing in the source tree has to know they exist.
   document_storage:
+  # The payslip files (ticket 44). Its own volume for the reason its own root exists:
+  # `down -v` removes both, and nothing in the source tree has to know either exists.
+  payslip_storage:
   web_node_modules:
   web_next_cache:

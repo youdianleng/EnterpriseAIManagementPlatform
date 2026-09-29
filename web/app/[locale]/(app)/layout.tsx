@@ -62,6 +62,7 @@ export default async function SignedInLayout({
         dict={dict}
         pathWithoutLocale=""
         unreadCount={unreadCount}
+        roles={session.roles ?? []}
         identity={{
           // The session carries the name, so the header costs no second request;
           // an account whose employee has no name falls back to the username.

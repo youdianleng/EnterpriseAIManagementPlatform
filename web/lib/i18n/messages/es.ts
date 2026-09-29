@@ -18,6 +18,7 @@ export const es: Dictionary = {
     clock: "Fichaje",
     attendance: "Mi asistencia",
     leave: "Vacaciones",
+    payslips: "Nóminas",
     main: "Navegación principal",
   },
   backend: {
@@ -202,6 +203,8 @@ export const es: Dictionary = {
       rejected: "Tu solicitud ha sido rechazada",
       returned: "Tu solicitud se ha devuelto para corrección",
       withdrawn: "Has retirado tu solicitud",
+      /** Ticket 44: your payslip for a month is available. */
+      payslipPublished: "Ya tienes tu nómina disponible",
       unknown: "Tienes una notificación nueva",
     },
   },
@@ -991,6 +994,135 @@ export const es: Dictionary = {
       yes: "Sí",
       no: "No",
     },
+  },
+  /**
+   * La pantalla de nóminas (ticket 44).
+   *
+   * Vive aparte de `documents` a propósito: esto no es el gestor documental, es la carga
+   * mensual de Finanzas, y lo que la distingue — las dos listas, los motivos de los archivos
+   * sin atribuir y la confirmación de sobrescritura — no tiene nada que ver con el catálogo
+   * de documentos. La sección `reasons` es el vocabulario cerrado del servidor
+   * (`UnmatchedReason`), traducido entero: un archivo que no se atribuye **siempre** lleva un
+   * motivo, y una pantalla que no supiera decirlo dejaría una línea en blanco donde tiene que
+   * haber una frase.
+   */
+  payslips: {
+    title: "Nóminas",
+    intro:
+      "Sube de una vez todas las nóminas de un mes. El sistema dice qué archivos ha asignado a quién, quién se queda sin nómina y qué archivos no ha podido asignar, con el motivo.",
+    upload: {
+      heading: "Subir las nóminas del mes",
+      description:
+        "Elige el mes y los archivos. La asignación se hace por el número de empleado del nombre del archivo; si un archivo no lleva número, puedes indicar la persona antes de subirlo.",
+      monthLabel: "Mes",
+      monthHint:
+        "El mes al que pertenecen las nóminas, no la fecha de subida. Volver a subir el mismo mes reemplaza lo que ya hubiera.",
+      filesLabel: "Archivos PDF",
+      filesHint:
+        "Puedes seleccionar varios a la vez. Solo se aceptan PDF; un archivo que no se pueda asignar aparecerá abajo con su motivo.",
+      selectedCount: "{count} archivo(s) seleccionado(s).",
+      clear: "Quitar la selección",
+      employeeLabel: "Empleado de {filename}",
+      employeePlaceholder: "Sin indicar — se usa el nombre del archivo",
+      employeeHint:
+        "Solo hace falta para un archivo cuyo nombre no lleve el número de empleado.",
+      submit: "Revisar y subir",
+      submitting: "Revisando…",
+      nothingSelected: "Selecciona al menos un archivo del mes.",
+      tooMany: "Un lote admite como máximo {max} archivos.",
+      refused: "No se ha podido subir el lote.",
+    },
+    overwrite: {
+      title: "¿Reemplazar nóminas ya subidas?",
+      body: "Se van a reemplazar las nóminas de {count} empleado(s) de {period}.",
+      hint: "Solo se reemplaza el archivo de esa persona para ese mes: se guarda el nuevo y el anterior deja de estar disponible.",
+      confirm: "Sí, reemplazar y subir",
+      cancel: "Cancelar",
+      confirming: "Subiendo…",
+    },
+    attributed: {
+      heading: "Asignadas",
+      description:
+        "Cada archivo con la persona a la que se ha asignado. Las que llevan «reemplazada» sustituyen a una nómina que ya estaba subida.",
+      count: "{count} de {total} archivo(s).",
+      employee: "Empleado",
+      number: "Número",
+      file: "Archivo",
+      size: "Tamaño",
+      state: "Estado",
+      replaced: "Reemplazada",
+      newFile: "Nueva",
+      previous: "Sustituye al archivo con huella {sha}",
+      empty: "Todavía no se ha asignado ninguna nómina este mes.",
+      emptyHint: "Elige el mes y sube los archivos para ver aquí lo que se ha asignado.",
+    },
+    missing: {
+      heading: "Faltan",
+      description:
+        "Empleados que deberían tener nómina este mes — estaban de alta y tenían retribución vigente — y no la tienen. No depende de lo que acabas de subir: sale del archivo de retribuciones.",
+      count: "{count} empleado(s) sin nómina de {period}.",
+      noneInPeriod: "No hay nadie sin nómina en {period}.",
+      noneExpected: "Nadie tenía retribución vigente en {period}, así que no falta ninguna nómina.",
+      expectedNote: "{expected} empleado(s) con retribución vigente en el mes.",
+      employee: "Empleado",
+      number: "Número",
+      department: "Departamento",
+      since: "Retribución vigente desde",
+      until: "hasta",
+      open: "sin fecha de fin",
+      export: "Descargar la lista (CSV)",
+      exportHint:
+        "El archivo lleva el número de empleado, el nombre, el departamento y el periodo. No lleva importes.",
+    },
+    unmatched: {
+      heading: "Sin asignar",
+      description:
+        "Archivos que no se han podido asignar a nadie. No se ha guardado ninguno: están aquí con el motivo para que puedas corregirlos y volver a subirlos.",
+      count: "{count} archivo(s).",
+      none: "Todos los archivos se han podido asignar.",
+      file: "Archivo",
+      reason: "Motivo",
+      number: "Número del nombre",
+      detail: "Detalle",
+    },
+    reasons: {
+      no_employee_number:
+        "El nombre del archivo no lleva ningún número de empleado, y no se ha indicado la persona.",
+      unknown_employee_number:
+        "El número del nombre no corresponde a ninguna persona de la plantilla.",
+      ambiguous_employee_number:
+        "El nombre lleva dos números de empleado distintos, así que el archivo es de una de las dos personas. Indica cuál antes de subirlo.",
+      not_a_pdf: "El archivo no es un PDF.",
+      oversized_file: "El archivo supera el tamaño máximo admitido para una nómina.",
+      empty_file: "El archivo está vacío.",
+      duplicate_for_employee:
+        "Ya hay otro archivo para esta persona en esta misma subida: solo se admite una nómina por persona y mes.",
+      duplicate_file: "Estos mismos bytes ya venían antes en esta subida.",
+      unknown: "No se ha podido asignar este archivo.",
+    },
+    outcome: {
+      filed: "Se han subido {attributed} de {total} archivo(s) de {period}.",
+      replaced: " Se han reemplazado {count}.",
+      refused: " {count} archivo(s) sin asignar, con su motivo más abajo.",
+      missing: " Quedan {count} empleado(s) sin nómina este mes.",
+      noticeKey: "Notificaciones enviadas a las personas incluidas.",
+    },
+    history: {
+      heading: "Subidas anteriores",
+      period: "Mes",
+      uploadedAt: "Subida",
+      total: "Archivos",
+      success: "Asignados",
+      empty: "Todavía no se ha subido ninguna nómina.",
+    },
+    permission: {
+      title: "Solo Finanzas sube las nóminas",
+      body: "Esta pantalla es de Finanzas: es quien emite las nóminas y quien responde de que lleguen. Recursos Humanos mantiene el archivo de retribuciones y la administración del sistema no accede al contenido de las nóminas. Si crees que deberías poder subirlas, habla con Finanzas.",
+    },
+    loading: "Consultando el mes…",
+    error: "No se ha podido consultar el mes.",
+    errorHint: "Vuelve a intentarlo; si sigue fallando, avisa a quien administra el sistema.",
+    retry: "Reintentar",
   },
   footer: {
     milestone: "Hito 0 — base del proyecto",

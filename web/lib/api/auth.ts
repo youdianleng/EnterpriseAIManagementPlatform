@@ -24,6 +24,16 @@ export type AuthSession = {
   employee_full_name: string;
   /** While true the API refuses everything but the change-password flow. */
   must_change_password: boolean;
+  /**
+   * The roles this account holds, for the shell's one role-dependent navigation entry
+   * (ticket 44's payslip screen is Finance's).
+   *
+   * Not an authority: the API decides every request through the kernel, and this only
+   * decides what is *advertised*. Optional with a default because a session served by an
+   * older API has no such field, and a shell that fell over on that would be a shell that
+   * cannot sign in after a partial deploy.
+   */
+  roles?: string[];
 };
 
 /** The account's own profile, used for the display name. */

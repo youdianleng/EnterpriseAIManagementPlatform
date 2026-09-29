@@ -18,6 +18,7 @@ export const en: Dictionary = {
     clock: "Clock",
     attendance: "My attendance",
     leave: "Leave",
+    payslips: "Payslips",
     main: "Main navigation",
   },
   backend: {
@@ -828,6 +829,8 @@ export const en: Dictionary = {
       rejected: "Your request was rejected",
       returned: "Your request was returned for correction",
       withdrawn: "You withdrew your request",
+      /** Ticket 44: your payslip for a month is available. */
+      payslipPublished: "Your payslip is available",
       unknown: "You have a new notification",
     },
   },
@@ -978,6 +981,133 @@ export const en: Dictionary = {
       yes: "Yes",
       no: "No",
     },
+  },
+  /**
+   * The payslip screen (ticket 44).
+   *
+   * Separate from `documents` on purpose: this is Finance's monthly upload, not the document
+   * manager, and what makes it that — the two lists, the reasons a file was not attributed,
+   * and the overwrite confirmation — has nothing to do with a document catalogue. The
+   * `reasons` section is the server's closed vocabulary (`UnmatchedReason`), translated in
+   * full: a file that is not attributed **always** carries a reason, and a screen that could
+   * not say it would leave a blank line where a sentence belongs.
+   */
+  payslips: {
+    title: "Payslips",
+    intro:
+      "Upload a whole month's payslips in one go. The system says which file went to whom, who is still without a payslip, and which files it could not place — with the reason.",
+    upload: {
+      heading: "Upload the month's payslips",
+      description:
+        "Pick the month and the files. Attribution is by the employee number in the filename; when a filename carries none, name the person before uploading.",
+      monthLabel: "Month",
+      monthHint:
+        "The month the payslips belong to, not the upload date. Uploading the same month again replaces what was already there.",
+      filesLabel: "PDF files",
+      filesHint:
+        "You can select several at once. Only PDFs are accepted; a file that cannot be attributed appears below with its reason.",
+      selectedCount: "{count} file(s) selected.",
+      clear: "Clear the selection",
+      employeeLabel: "Employee for {filename}",
+      employeePlaceholder: "Not stated — the filename is used",
+      employeeHint: "Only needed for a file whose name carries no employee number.",
+      submit: "Review and upload",
+      submitting: "Reviewing…",
+      nothingSelected: "Choose at least one file for the month.",
+      tooMany: "One batch holds at most {max} files.",
+      refused: "The batch could not be uploaded.",
+    },
+    overwrite: {
+      title: "Replace payslips that are already uploaded?",
+      body: "This will replace the payslips of {count} employee(s) for {period}.",
+      hint: "Only that person's file for that month is replaced: the new one is stored and the previous one is no longer available.",
+      confirm: "Yes, replace and upload",
+      cancel: "Cancel",
+      confirming: "Uploading…",
+    },
+    attributed: {
+      heading: "Attributed",
+      description:
+        "Every file with the person it was assigned to. The ones marked “replaced” overwrite a payslip that was already uploaded.",
+      count: "{count} of {total} file(s).",
+      employee: "Employee",
+      number: "Number",
+      file: "File",
+      size: "Size",
+      state: "State",
+      replaced: "Replaced",
+      newFile: "New",
+      previous: "Replaces the file with checksum {sha}",
+      empty: "No payslip has been attributed for this month yet.",
+      emptyHint: "Pick the month and upload the files to see what was attributed here.",
+    },
+    missing: {
+      heading: "Missing",
+      description:
+        "Employees who should have a payslip this month — they were on the books and had a salary in force — and do not. It does not depend on what you just uploaded: it comes from the salary archive.",
+      count: "{count} employee(s) without a payslip for {period}.",
+      noneInPeriod: "Nobody is missing a payslip for {period}.",
+      noneExpected: "Nobody had a salary in force in {period}, so no payslip is outstanding.",
+      expectedNote: "{expected} employee(s) with a salary in force this month.",
+      employee: "Employee",
+      number: "Number",
+      department: "Department",
+      since: "Salary in force from",
+      until: "to",
+      open: "no end date",
+      export: "Download the list (CSV)",
+      exportHint:
+        "The file carries the employee number, the name, the department and the period. It carries no amounts.",
+    },
+    unmatched: {
+      heading: "Not attributed",
+      description:
+        "Files that could not be assigned to anybody. None of them was stored: they are here with the reason, so you can correct them and upload them again.",
+      count: "{count} file(s).",
+      none: "Every file was attributed.",
+      file: "File",
+      reason: "Reason",
+      number: "Number in the name",
+      detail: "Detail",
+    },
+    reasons: {
+      no_employee_number:
+        "The filename carries no employee number, and no person was named for it.",
+      unknown_employee_number:
+        "The number in the name does not match anybody on the staff list.",
+      ambiguous_employee_number:
+        "The name carries two different employee numbers, so the file belongs to one of two people. Say which one before uploading it.",
+      not_a_pdf: "The file is not a PDF.",
+      oversized_file: "The file is over the maximum size a payslip may be.",
+      empty_file: "The file is empty.",
+      duplicate_for_employee:
+        "Another file for this person is already in this upload: one payslip per employee and month.",
+      duplicate_file: "These same bytes appeared earlier in this upload.",
+      unknown: "This file could not be attributed.",
+    },
+    outcome: {
+      filed: "Uploaded {attributed} of {total} file(s) for {period}.",
+      replaced: " {count} replaced.",
+      refused: " {count} file(s) not attributed, with the reason below.",
+      missing: " {count} employee(s) are still without a payslip this month.",
+      noticeKey: "Notifications sent to the people included.",
+    },
+    history: {
+      heading: "Earlier uploads",
+      period: "Month",
+      uploadedAt: "Uploaded",
+      total: "Files",
+      success: "Attributed",
+      empty: "No payslip has been uploaded yet.",
+    },
+    permission: {
+      title: "Only Finance uploads payslips",
+      body: "This screen belongs to Finance: it issues the payslips and answers for them reaching people. HR keeps the salary archive, and system administration does not reach a payslip's contents. If you believe you should be able to upload them, ask Finance.",
+    },
+    loading: "Reading the month…",
+    error: "The month could not be read.",
+    errorHint: "Try again; if it keeps failing, tell whoever administers the system.",
+    retry: "Retry",
   },
   footer: {
     milestone: "Milestone 0 — project skeleton",

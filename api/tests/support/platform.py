@@ -89,6 +89,14 @@ CLEANUP_TABLES = (
     # not merely be stale data — the exclusion constraint would refuse the *next* test's
     # window for an employee id it reuses.
     "salary_records",
+    # The payslips (ticket 44). Named for the reason the salary archive is: `TRUNCATE …
+    # CASCADE` would reach them through `employees`, but being on the list is what makes
+    # "does anything survive a wipe" a decision rather than a hope. A leftover row here
+    # would be worse than stale data — the unique `(employee_id, period)` would make the
+    # next test's upload a *replacement* of a payslip it never filed, and its `replaced`
+    # answer would be true for a reason that has nothing to do with the test.
+    "payslips",
+    "payslip_batches",
     "personnel_changes",
     "approval_decisions",
     "approval_steps",

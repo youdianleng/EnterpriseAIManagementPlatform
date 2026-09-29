@@ -52,6 +52,14 @@ os.environ["DATABASE_URL"] = (
 os.environ["APP_DATABASE_URL"] = (
     f"postgresql+psycopg://eam_app:eam_app_dev_password@postgres:5432/{TEST_DATABASE_NAME}"
 )
+# The payslip files (ticket 44) go somewhere of this run's own.
+#
+# Derived from the database name rather than left at the container's `/data/payslips`, so
+# two scratch runs — and a run beside the development stack — never share a storage root.
+# It matters more here than for documents because the *file* is the artifact: two runs
+# sharing a root would let one run's payslip satisfy another's "the bytes are on disk"
+# check, and the suite would pass while proving nothing about the code that wrote them.
+os.environ["PAYSLIP_STORAGE_PATH"] = f"/tmp/eam-payslips/{TEST_DATABASE_NAME}"
 os.environ.setdefault("APP_ENV", "test")
 
 from app.config import Settings, get_settings, to_libpq_dsn  # noqa: E402

@@ -142,6 +142,13 @@ def _session_read(account: UserAccount) -> SessionRead:
         employee_id=account.employee_id,
         employee_full_name=account.employee_full_name,
         must_change_password=account.must_change_password,
+        # The account's *held* roles, which is what the shell needs to decide what to
+        # advertise (ticket 44's payslip entry is Finance's alone). It is not an authority:
+        # every route asks the kernel, which adds the effective `manager` role the snapshot
+        # derives from a held position — and a client that advertised on this field alone
+        # would be offering an entry the API then refuses, which is the direction §4.1's
+        # rule fails safe in.
+        roles=sorted(account.roles),
     )
 
 

@@ -22,6 +22,7 @@ from app.api.v1 import holidays as holidays_v1
 from app.api.v1 import leave as leave_v1
 from app.api.v1 import notifications as notifications_v1
 from app.api.v1 import overtime as overtime_v1
+from app.api.v1 import payslips as payslips_v1
 from app.api.v1 import personnel as personnel_v1
 from app.api.v1 import positions as positions_v1
 from app.api.v1 import projects as projects_v1
@@ -169,6 +170,7 @@ def create_app() -> FastAPI:
     app.include_router(notifications_v1.router, prefix=API_PREFIX)
     app.include_router(overtime_v1.router, prefix=API_PREFIX)
     app.include_router(personnel_v1.router, prefix=API_PREFIX)
+    app.include_router(payslips_v1.router, prefix=API_PREFIX)
     app.include_router(projects_v1.router, prefix=API_PREFIX)
     app.include_router(retrieval_v1.router, prefix=API_PREFIX)
     app.include_router(salary_v1.router, prefix=API_PREFIX)

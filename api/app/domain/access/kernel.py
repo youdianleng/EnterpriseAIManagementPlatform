@@ -34,6 +34,8 @@ from app.domain.access.permissions import (
     LEAVE_CROSS_ACTIONS,
     OVERTIME_COMPANY_ROLES,
     OVERTIME_CROSS_ACTIONS,
+    PAYSLIP_COMPANY_ROLES,
+    PAYSLIP_CROSS_ACTIONS,
     PROJECT_ADMIN_ROLES,
     SALARY_COMPANY_ROLES,
     SALARY_CROSS_ACTIONS,
@@ -106,6 +108,16 @@ class ResourceKind(StrEnum):
     #: team's figures. Its own kind also makes the audit trail say "salary" rather than
     #: guess at a person.
     SALARY_RECORD = "salary_record"
+    #: A payslip, or a month's batch of them (ticket 44). Its own kind rather than
+    #: `SALARY_RECORD`, and the difference is not the sensitivity — both are payroll
+    #: material — but the *shape of the rule*. A salary record is reached by ownership and
+    #: by a company-wide remit, and by nothing else; a payslip is reached by one role for
+    #: the company as a whole and by nobody for a single row, because the act this kind
+    #: decides is 「file this month」 rather than 「read that figure」. Giving the two one kind
+    #: would mean one branch answering two questions, which is one edit away from handing
+    #: the payslip batches to whoever the archive rule happens to admit — and the two role
+    #: sets are in fact different: HR reads the whole archive and may not touch a payslip.
+    PAYSLIP = "payslip"
 
 
 @dataclass(slots=True, frozen=True)
@@ -489,6 +501,14 @@ def _can_on_resource(principal: Principal, action: Action, resource: Resource) -
     if action in SALARY_CROSS_ACTIONS:
         return _can_on_salary(principal, action, resource)
 
+    # The payslips (ticket 44), decided before the generic path for the reason the two
+    # blocks above are — and here the generic path is wrong in a *second* way as well as the
+    # department clause: those actions name no subject at all, so "which row is this" is not
+    # a question the decision can answer, and a branch that tried would be reading a
+    # resource the route never built.
+    if action in PAYSLIP_CROSS_ACTIONS:
+        return _can_on_payslip(principal, action, resource)
+
     reasons: list[Reason] = [Reason.ROLE_PERMITS]
 
     # Ownership always grants read access to one's own material, whatever the
@@ -679,6 +699,39 @@ def _can_on_salary(principal: Principal, action: Action, resource: Resource) -> 
         (Reason.NOT_PAYROLL_ROLE,),
         f"{action} reaches the whole archive; subject="
         f"{resource.owner_employee_id or 'unset'}, caller={principal.employee_id}, "
+        f"roles={sorted(principal.roles)}",
+    )
+
+
+def _can_on_payslip(principal: Principal, action: Action, resource: Resource) -> Decision:
+    """A month's payslips: `finance`, and nobody else (ticket 44).
+
+    **The whole rule is one role check, and that is the ticket's separation of duties.**
+    「只有财务角色能上传；人力资源与管理员上传返回 403」 names both the grant and the two
+    refusals: `hr` holds the salary archive (`salary.write`) and holds nothing here, and
+    `admin` configures the system and is denied even the payslip's contents by §4.1.
+
+    **The row is deliberately not consulted.** Unlike `_can_on_salary`, this branch does not
+    read `owner_employee_id`: the action decides a *month*, not a person's row, and the
+    route builds no subject-shaped resource. That is why the refusal below reports the
+    reason it does rather than "not your row" — the caller was never being asked about a
+    row.
+
+    **`compliance` is absent too**, for the reason the archive's branch gives: its row is
+    the audit trail, which is where "who filed March, and who exported the shortfall" is
+    answered. Reading the audit and reading the payslips it names are two authorities.
+    """
+    if bool(principal.roles & PAYSLIP_COMPANY_ROLES):
+        return Decision(
+            True,
+            (Reason.IS_PRIVILEGED,),
+            f"{sorted(principal.roles & PAYSLIP_COMPANY_ROLES)} files the payslips",
+        )
+
+    return Decision(
+        False,
+        (Reason.NOT_PAYROLL_ROLE,),
+        f"{action} is finance's alone; caller={principal.employee_id}, "
         f"roles={sorted(principal.roles)}",
     )
 
@@ -969,6 +1022,30 @@ def filter_for(principal: Principal, kind: ResourceKind) -> FilterSpec:
             department_ids=frozenset(),
             clearance_levels=frozenset(CLEARANCE_RANK),
             own_employee_id=principal.employee_id,
+            include_company_kb=False,
+        )
+
+    if kind is ResourceKind.PAYSLIP:
+        # The payslips (ticket 44). Two clauses and both say the same thing: finance, or
+        # nobody. `allow_all` is `PAYSLIP_COMPANY_ROLES` — one role — and `own_employee_id`
+        # is deliberately **unset**: unlike the salary archive, there is no per-row reach
+        # for a payslip through this kind, because the acts it decides are a month's files
+        # and a month's shortfall rather than somebody's row. Ticket 45's self-service read
+        # is the *other* half of the feature and it is deliberately not this: an employee
+        # reading their own payslip will be a new action with its own rule, and folding
+        # ownership in here would make "finance files the month" and "I download mine" one
+        # decision.
+        #
+        # `department_ids` is empty for the reason the archive's is — a colleague shares a
+        # department — and it matters less here only because the role check has already
+        # refused everybody but finance.
+        return FilterSpec(
+            _token=_FILTER_TOKEN,
+            kind=kind,
+            allow_all=bool(principal.roles & PAYSLIP_COMPANY_ROLES),
+            department_ids=frozenset(),
+            clearance_levels=frozenset(CLEARANCE_RANK),
+            own_employee_id=None,
             include_company_kb=False,
         )
 
