@@ -10,8 +10,9 @@ than half-migrating, so the mapping between the design's tree and this one is:
     DESIGN §1            this tree
     ai/providers/   →    api/app/domain/answer/chat.py          (ticket 34)
     ai/rag/         →    api/app/domain/retrieval/ + document/  (tickets 31-35)
-    ai/agents/      →    api/app/ai/agents/                     (this ticket)
-    ai/tools/       →    api/app/ai/tools/                      (empty; tickets 39-40)
+    ai/agents/      →    api/app/ai/agents/                     (ticket 38)
+    ai/tools/       →    api/app/ai/tools/                      (ticket 39 registers §6.2's
+                                                                read-only half; 40 the draft half)
     ai/observability/ →  api/app/ai/observability/              (ticket 42)
 
 `providers/` and `rag/` are the two entries that are *already built* elsewhere, which is why

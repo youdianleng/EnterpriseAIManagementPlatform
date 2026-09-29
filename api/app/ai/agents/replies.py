@@ -22,10 +22,12 @@ refusal here carries:
 * `es` and `en`, and `text` — the two sentences and the block they form, so the graph can
   return the whole refusal the way §5.2's `refusal` event does, with no second lookup.
 
-**The placeholders are not copy, they are scaffolding, and they say which ticket fills
-them.** Tickets 39-41 add the read-only tools, the draft tools and the human confirmation;
-until then a branch that would call a tool says so in a sentence that names the ticket, and
-a test asserts that sentence rather than leaving a reader to infer the branch is unfinished.
+**The draft placeholder is not copy, it is scaffolding, and it says which ticket fills
+it.** Ticket 40 adds the draft tools and ticket 41 the human confirmation; until then a
+branch that would call a tool says so in a sentence that names the ticket, and a test
+asserts that sentence rather than leaving a reader to infer the branch is unfinished.
+The read-only branch had the same placeholder until ticket 39, and it is gone because the
+branch now calls a tool: what a caller reads there is the tool's own values.
 """
 
 from dataclasses import dataclass
@@ -140,14 +142,6 @@ SMALL_TALK_REPLY = (
     "attendance and leave data, or draft a request for you to confirm."
 )
 
-#: 只读数据查询's branch, until ticket 39 registers the tools of §6.2's read-only half.
-NO_READ_ONLY_TOOL = (
-    "The graph routed this to the read-only tool branch, but no read-only tool is "
-    "registered yet: ticket 39 adds get_my_attendance, get_my_leave_balance, "
-    "get_my_timesheets, get_colleague_contact, get_team_attendance_summary and "
-    "search_policy. Nothing was queried."
-)
-
 #: 待办操作's branch, until ticket 40 registers the draft tools.
 NO_DRAFT_TOOL = (
     "The graph routed this to the draft tool branch, but no draft tool is registered yet: "
@@ -155,6 +149,13 @@ NO_DRAFT_TOOL = (
     "each producing a PrefillForm rather than writing anything. Nothing was drafted and "
     "nothing was written."
 )
+
+#: 只读数据查询's branch no longer has a placeholder here. Ticket 39 registered §6.2's
+#: read-only tools, so the branch calls one and the sentence a caller reads is rendered
+#: from the tool's own values (`app/ai/tools/render.py`) — the answers, the "no registered
+#: tool" reply and the "could not fetch that data" reply all live in
+#: `app/core/messages.py` under `agent.tool.`, the one place this project keeps user-facing
+#: wording. `NO_READ_ONLY_TOOL` was deleted with the placeholder it described.
 
 #: What the interruption is waiting for. **This is a placeholder payload, and it says so.**
 #: DESIGN §6.3 requires the real one to be a complete, editable PrefillForm whose
@@ -176,7 +177,6 @@ __all__ = [
     "CONFIRMATION_PENDING",
     "DATABASE_WRITE_KEY",
     "NO_DRAFT_TOOL",
-    "NO_READ_ONLY_TOOL",
     "PERFORMANCE_OR_PROMOTION_ADVICE_KEY",
     "REFUSALS",
     "SALARY_OF_ANOTHER_KEY",

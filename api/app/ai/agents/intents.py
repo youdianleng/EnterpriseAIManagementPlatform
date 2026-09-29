@@ -130,12 +130,69 @@ _DATABASE_TARGET = _group(
 _OWN = _group(
     r"\bmi\b", r"\bmis\b", r"\bme\b", r"\btengo\b", r"\bquedan\b", r"\bmy\b", r"\bmine\b",
     r"我的", r"我有", r"我还", r"查一下我", r"本人",
+    # Ticket 39. Two gaps ticket 38's vocabulary left, both of them in the ticket's own
+    # examples of what an employee asks:
+    #  * Spanish marks "how many hours have I worked" with the auxiliary `he`, not with a
+    #    possessive — 「¿cuántas horas he fichado este mes?」 matched nothing at all;
+    #  * Chinese marks the subject with a bare 我 rather than with a possessive, and the
+    #    ticket's example is 「昨天我几点下的班」. The pattern is 我 + a *time or quantity*
+    #    word rather than 我 alone: 「我同事的年假」 also starts with 我, and a rule that
+    #    matched it would read a colleague's question as the caller's own record.
+    r"\bhe\b", r"我(?:几|昨|今|上|这|本|下)",
 )
 
 _OWN_DATA = _group(
     r"asistencia", r"fichaj", r"jornada", r"horas", r"vacaci", r"permiso", r"saldo",
     r"d[íi]as", r"n[óo]min", r"attendance", r"leave", r"balance", r"timesheet",
     r"holiday", r"overtime", r"考勤", r"假期", r"年假", r"工时", r"余额", r"加班", r"工资条",
+    # Ticket 39: the words the ticket's own example uses. 班 alone rather than 上班/下班,
+    # because Chinese puts 的 between them — 「昨天我几点下的班」 is a clock-out time and
+    # contains neither. 班 is safe here: this group only ever combines with `_OWN`, and a
+    # question about somebody else's shifts is refused by `_ANOTHER_PERSON` first.
+    r"班", r"打卡",
+)
+
+#: 通讯录 (ticket 39). A contact detail and the person it belongs to, as two groups, so
+#: that 「¿cuál es el correo de Recursos Humanos?」 reaches the directory tool while a
+#: *policy* question that merely mentions a channel ("¿a qué correo escribo para pedir
+#: vacaciones?") does not: the second group needs a person, and `_ANOTHER_PERSON` is the
+#: vocabulary ticket 38 already wrote for "somebody who is not the asker".
+_CONTACT_DETAIL = _group(
+    r"correo", r"\bemail\b", r"\be-mail\b", r"contacto", r"tel[ée]fono",
+    r"\bextensi[óo]n\b", r"联系方式", r"邮箱", r"邮件", r"电话",
+)
+
+#: The person a contact question is about, as `_ANOTHER_PERSON` (ticket 38's vocabulary
+#: for "somebody who is not the asker") plus three *positions* a name is addressed from:
+#: after a Spanish particle, before an English possessive, and before the Chinese word for
+#: a contact detail.
+#:
+#: **Positions rather than capital letters, and that is forced by `classify`.** This module
+#: matches against the lowercased question — which is what makes every other rule
+#: case-insensitive — so a `[A-Z]`-anchored proper-name pattern could never fire. The
+#: selector (`app/ai/tools/selection.py`) reads the *raw* question instead and does use
+#: capitals, which is why it can name the person this rule only detects the shape of.
+_PERSON: Group = (
+    *_ANOTHER_PERSON,
+    re.compile(r"\bde(?:l)?\s+[a-záéíóúüñ]{2,}"),
+    re.compile(r"'s\s+(?:correo|email|e-mail|contacto|tel[ée]fono)"),
+    re.compile(r"的(?:联系方式|邮箱|邮件|电话)"),
+)
+
+#: 我的团队 (ticket 39): a manager asking about their own reports. Two groups again —
+#: the team, and a *data* word — so 「¿cuál es la política de mi equipo?」 stays a policy
+#: question. The data vocabulary is attendance-and-timesheet-shaped and deliberately has
+#: no leave words: §6.2 has no team leave tool, and a rule that matched one would route
+#: the question to a branch that cannot answer it.
+_TEAM = _group(
+    r"\bmi(?:s)?\s+equipo", r"\bmi(?:s)?\s+(?:emplead|subordinad|report)",
+    r"\bmy\s+(?:team|reports|staff)\b", r"\bteam\s+(?:hours|attendance|summary)\b",
+    r"团队", r"下属", r"我的组", r"我的小组", r"我带的",
+)
+
+_TEAM_DATA = _group(
+    r"horas", r"fichaj", r"jornada", r"asistencia", r"resumen", r"\bsummary\b",
+    r"\bhours\b", r"attendance", r"timesheet", r"工时", r"考勤", r"打卡", r"汇总",
 )
 
 _WANT = _group(
@@ -202,9 +259,18 @@ FORBIDDEN_RULES: Final[tuple[Rule, ...]] = (
 #: not another: prohibited first, then the caller's own data (before "things to do", so
 #: 「quiero saber cuántos días me quedan」 is a query rather than a request), then requests,
 #: then the broad knowledge-base rule, then a greeting.
+#:
+#: `team_data_query` and `contact_query` are ticket 39's two additions, both routed to
+#: `Intent.READ_ONLY_QUERY` because both are data the caller may read through §6.2's tools
+#: — a manager's own reports, and the published directory. They sit after `own_data_query`
+#: so that a question about the caller's *own* record is never taken for one about a
+#: colleague, and they are narrow (two groups each, see above) so that a policy question
+#: mentioning a team or an email address stays a policy question.
 RULES: Final[tuple[Rule, ...]] = (
     *FORBIDDEN_RULES,
     Rule("own_data_query", Intent.READ_ONLY_QUERY, (_OWN, _OWN_DATA)),
+    Rule("team_data_query", Intent.READ_ONLY_QUERY, (_TEAM, _TEAM_DATA)),
+    Rule("contact_query", Intent.READ_ONLY_QUERY, (_CONTACT_DETAIL, _PERSON)),
     Rule("pending_action", Intent.PENDING_ACTION, (_WANT, _ACTION_SUBJECT)),
     Rule("policy_question", Intent.POLICY_QUESTION, (_POLICY_SUBJECT,)),
     Rule("greeting", Intent.SMALL_TALK, (_GREETING,)),

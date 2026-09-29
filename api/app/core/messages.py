@@ -415,8 +415,9 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         ),
         "errors.forbidden_attendance_of_another": (
             "No puedo consultar el registro de jornada de otra persona. Puedo mostrarte el "
-            "tuyo; si gestionas un equipo, el resumen de tu equipo es una función de la "
-            "aplicación con sus propios permisos, no algo que yo pueda abrir aquí."
+            "tuyo y, si tienes personas a tu cargo, el resumen de tu equipo; el detalle de "
+            "otra persona concreta es una función de la aplicación con sus propios "
+            "permisos."
         ),
         "errors.forbidden_performance_or_promotion_advice": (
             "No puedo evaluar el desempeño de nadie ni recomendar ascensos, promociones o "
@@ -432,6 +433,80 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         ),
         "errors.internal_error": "Se produjo un error interno. Inténtalo de nuevo más tarde.",
         "errors.service_unavailable": "El servicio no está disponible en este momento.",
+        # The read-only tools (ticket 39). Two kinds of sentence live here and the
+        # difference matters: the ones with `{placeholders}` are **formatted from the
+        # values the tool read** (`app/ai/tools/render.py`), and the three without are
+        # constants a tool's failure, a refusal or an unknown name produce.
+        #
+        # 「工具调用失败时…回退为"无法获取该数据"，不编造数值」 is why
+        # `agent.tool.unavailable` and `agent.tool.unknown` contain no digits at all:
+        # a sentence with a figure in it would be a figure nobody read, and the test
+        # that pins the rule asserts exactly that — no character of the answer is a
+        # digit.
+        "agent.tool.unavailable": (
+            "No he podido obtener ese dato, así que no tengo ninguna cifra que darte. "
+            "Vuelve a intentarlo o consúltalo en la pantalla correspondiente."
+        ),
+        "agent.tool.unknown": (
+            "No puedo consultar ese dato: o no tengo ninguna herramienta registrada "
+            "para él, o no me queda claro cuál de tus datos me pides. Puedo mostrarte "
+            "tu jornada, tus vacaciones, tus horas o el contacto de una persona."
+        ),
+        "agent.tool.not_permitted": (
+            "El resumen del equipo es para quien tiene personas a su cargo. Puedo "
+            "mostrarte tus propios datos de jornada, vacaciones y horas."
+        ),
+        "agent.tool.my_attendance": (
+            "De {from_date} a {to_date} has fichado {worked_minutes} minutos en "
+            "{worked_days} días. Tu último fichaje de salida fue el {last_out}."
+        ),
+        "agent.tool.my_attendance.open": (
+            "De {from_date} a {to_date} has fichado {worked_minutes} minutos en "
+            "{worked_days} días. Tienes una jornada abierta sin fichaje de salida."
+        ),
+        "agent.tool.my_attendance.empty": (
+            "No hay ningún fichaje tuyo entre {from_date} y {to_date}."
+        ),
+        "agent.tool.my_leave_balance": (
+            "En {year} te quedan {remaining_days} días de {leave_type_es} (de "
+            "{entitled_days} días de derecho, {used_days} usados y {pending_days} "
+            "pendientes)."
+        ),
+        "agent.tool.my_leave_balance.none": (
+            "No tienes ningún tipo de permiso con cargo al cupo anual en {year}."
+        ),
+        "agent.tool.my_timesheets": (
+            "Tienes {weeks} semanas de horas registradas. De las {listed} últimas: "
+            "{approved} aprobadas, {pending} pendientes, {draft} en borrador y "
+            "{rejected} rechazadas."
+        ),
+        "agent.tool.my_timesheets.empty": (
+            "Todavía no tienes ninguna semana de horas registrada."
+        ),
+        # The contact sentence states the email only when the projection granted it, and
+        # says nothing at all when it did not: `domain/employee/visibility.py` drops the
+        # key rather than nulling it precisely so that "withheld" cannot be read as "not
+        # recorded", and a sentence that announced the omission would put that
+        # distinction back.
+        "agent.tool.colleague_contact": (
+            "He encontrado a {full_name}: {details}. Coincidencias: {match_count}."
+        ),
+        "agent.tool.colleague_contact.no_details": (
+            "He encontrado a {full_name}. Coincidencias: {match_count}."
+        ),
+        "agent.tool.colleague_contact.not_found": (
+            "No he encontrado a nadie con ese nombre en el directorio."
+        ),
+        "agent.tool.team_attendance": (
+            "Tu equipo ({people} personas) ha fichado {worked_minutes} minutos entre "
+            "{from_date} y {to_date}."
+        ),
+        # One sentence for both "you have no reports" and "your reports have no record
+        # in this period": the ticket requires a non-report to be indistinguishable
+        # from nothing to show, and one template is the strongest way to say that.
+        "agent.tool.team_attendance.empty": (
+            "Tu equipo no tiene datos de jornada en ese periodo."
+        ),
     },
     "en": {
         "errors.validation_failed": "The submitted data is not valid.",
@@ -799,8 +874,9 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         ),
         "errors.forbidden_attendance_of_another": (
             "I cannot look up another person's attendance or clock records. I can show you "
-            "your own; if you manage a team, the team summary is a feature of the "
-            "application with its own permissions, not something I can open here."
+            "your own and, if you have people reporting to you, your team's summary; one "
+            "specific other person's record is a feature of the application with its own "
+            "permissions."
         ),
         "errors.forbidden_performance_or_promotion_advice": (
             "I cannot assess anyone's performance or recommend promotions or dismissals: "
@@ -815,6 +891,62 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         ),
         "errors.internal_error": "An internal error occurred. Please try again later.",
         "errors.service_unavailable": "The service is unavailable right now.",
+        # The read-only tools (ticket 39). See the Spanish block: the templated sentences
+        # are formatted from the values the tool read, and the three constants carry no
+        # digits at all because a failure must never state a figure.
+        "agent.tool.unavailable": (
+            "I could not fetch that data, so I have no figure for you. Try again, or "
+            "look it up on the matching screen."
+        ),
+        "agent.tool.unknown": (
+            "I cannot look that up: either I have no registered tool for it, or I "
+            "cannot tell which of your data you mean. I can show you your attendance, "
+            "your leave, your timesheets or a person's contact details."
+        ),
+        "agent.tool.not_permitted": (
+            "The team summary is for whoever has people reporting to them. I can show "
+            "you your own attendance, leave and timesheet data."
+        ),
+        "agent.tool.my_attendance": (
+            "Between {from_date} and {to_date} you clocked {worked_minutes} minutes on "
+            "{worked_days} days. Your last clock-out was {last_out}."
+        ),
+        "agent.tool.my_attendance.open": (
+            "Between {from_date} and {to_date} you clocked {worked_minutes} minutes on "
+            "{worked_days} days. You have a shift still open with no clock-out."
+        ),
+        "agent.tool.my_attendance.empty": (
+            "There are no punches of yours between {from_date} and {to_date}."
+        ),
+        "agent.tool.my_leave_balance": (
+            "In {year} you have {remaining_days} days of {leave_type_en} left (of "
+            "{entitled_days} days, {used_days} used and {pending_days} pending)."
+        ),
+        "agent.tool.my_leave_balance.none": (
+            "You have no leave type charged against the annual allowance in {year}."
+        ),
+        "agent.tool.my_timesheets": (
+            "You have {weeks} timesheet weeks on record. Of the latest {listed}: "
+            "{approved} approved, {pending} pending, {draft} in draft and {rejected} "
+            "rejected."
+        ),
+        "agent.tool.my_timesheets.empty": "You have no timesheet weeks on record yet.",
+        "agent.tool.colleague_contact": (
+            "I found {full_name}: {details}. Matches: {match_count}."
+        ),
+        "agent.tool.colleague_contact.no_details": (
+            "I found {full_name}. Matches: {match_count}."
+        ),
+        "agent.tool.colleague_contact.not_found": (
+            "I found nobody with that name in the directory."
+        ),
+        "agent.tool.team_attendance": (
+            "Your team ({people} people) clocked {worked_minutes} minutes between "
+            "{from_date} and {to_date}."
+        ),
+        "agent.tool.team_attendance.empty": (
+            "Your team has no attendance data in that period."
+        ),
     },
 }
 

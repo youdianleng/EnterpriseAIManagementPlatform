@@ -24,7 +24,7 @@ defaulting.
 
     Intent.FORBIDDEN          → refuse            (D23: refused in code, no model call)
     Intent.POLICY_QUESTION    → answer_policy     (ticket 34's pipeline, forwarded)
-    Intent.READ_ONLY_QUERY    → read_only_tools   (placeholder: ticket 39 registers them)
+    Intent.READ_ONLY_QUERY    → read_only_tools   (ticket 39's tools, called as the caller)
     Intent.PENDING_ACTION     → draft_tools       (placeholder: ticket 40) → await_confirmation
     Intent.SMALL_TALK         → small_talk        (a fixed reply)
 

@@ -37,7 +37,6 @@ from app.ai.agents.intents import (
 from app.ai.agents.records import ALLOWED_FIELDS, NodeRecord, node_names, records_of
 from app.ai.agents.replies import (
     NO_DRAFT_TOOL,
-    NO_READ_ONLY_TOOL,
     REFUSALS,
     SMALL_TALK_REPLY,
     NotAForbiddenRule,
@@ -57,7 +56,6 @@ __all__ = [
     "FORBIDDEN_RULES",
     "NODES",
     "NO_DRAFT_TOOL",
-    "NO_READ_ONLY_TOOL",
     "REFUSALS",
     "ROUTES",
     "RULES",

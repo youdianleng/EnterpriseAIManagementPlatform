@@ -52,7 +52,6 @@ from app.ai.agents import (
     CONFIRMATION_NODE,
     DRAFT_BRANCH,
     NO_DRAFT_TOOL,
-    NO_READ_ONLY_TOOL,
     NODES,
     REFUSALS,
     ROUTES,
@@ -613,35 +612,7 @@ async def test_the_refusal_record_carries_the_decision_and_none_of_the_copy(
     assert "compañero" not in serialised, "the question leaked into a record"
 
 
-# --- 1 & the scope boundary: the branches with no tool yet -------------------
-
-
-async def test_the_read_only_branch_says_no_tool_is_registered(platform: Platform, cast) -> None:
-    """只读数据查询 routes to a named placeholder: ticket 39 registers the tools.
-
-    The registry is empty and the branch says so, in a sentence that names the ticket. A
-    test asserting the sentence is what stops "the branch exists" from being read as "the
-    feature exists".
-    """
-    assert registered() == ()
-    assert registered(ToolKind.READ_ONLY) == ()
-    assert registered(ToolKind.DRAFT) == ()
-
-    actor = cast.uploader
-    async with pipeline(platform) as answers, agent(
-        answers, await principal_of(platform, actor)
-    ) as running:
-        state = await running.run(QUESTIONS[Intent.READ_ONLY_QUERY])
-        records = records_of(state)
-
-    assert state["intent"] == str(Intent.READ_ONLY_QUERY)
-    assert state["notice"] == NO_READ_ONLY_TOOL
-    assert "ticket 39" in state["notice"]
-    assert state["tools_registered"] == 0
-    assert node_names(state) == ["classify", "read_only_tools"]
-    assert records[1]["counts"] == {"tools_registered": 0}
-    assert answers.model.calls == []
-    assert await platform.scalar("SELECT count(*) FROM rag_conversations") == 0
+# --- 1 & the scope boundary: the branches' tool sets --------------------------
 
 
 async def test_the_draft_branch_says_no_tool_is_registered_and_pauses(
@@ -649,12 +620,18 @@ async def test_the_draft_branch_says_no_tool_is_registered_and_pauses(
 ) -> None:
     """待办操作 routes to draft tools (ticket 40) and then to the human confirmation (41).
 
-    The run pauses rather than completing: that pause is the mechanism this ticket delivers,
-    and the payload names both tickets so that a reader of an interrupted thread can see
-    what is missing rather than guessing.
+    The read-only half of the registry is no longer empty — ticket 39 registered §6.2's
+    five read-only tools and owns that branch's tests in
+    `tests/test_agent_readonly_tools.py` — so this test asserts the *draft* half is still a
+    placeholder, and that the run pauses rather than completing: that pause is the
+    mechanism this ticket delivers, and the payload names both tickets that will finish it.
     """
+    assert registered(ToolKind.READ_ONLY), "the read-only half is registered by ticket 39"
+    assert registered(ToolKind.DRAFT) == ()
+
+    actor = cast.uploader
     async with pipeline(platform) as answers, agent(
-        answers, await principal_of(platform, cast.uploader)
+        answers, await principal_of(platform, actor)
     ) as running:
         state = await running.run(QUESTIONS[Intent.PENDING_ACTION])
 

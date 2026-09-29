@@ -10,7 +10,7 @@ list at the provider boundary. This module is the other half: the record is *con
 from safe material, so a filter has almost nothing to remove.
 
 **How a record can be trusted rather than merely reviewed.** `recorded()` builds the record
-out of four things and nothing else:
+out of five things and nothing else:
 
 1. the node's declared **input key names** (`reads=`), which are literals in the decorator;
 2. the node's returned **output key names**, taken from the update dict's keys — names, not
@@ -18,11 +18,16 @@ out of four things and nothing else:
 3. **counts**, from a declared `(label, state key)` list, reduced with `len()` or taken
    as an integer;
 4. the **decision**, read from one declared state key, which by contract holds an enum
-   value such as `Intent.FORBIDDEN` — a constant, not a string a person typed.
+   value such as `Intent.FORBIDDEN` — a constant, not a string a person typed;
+5. the **tool name** (ticket 39), read from one declared state key, which by contract holds
+   a key of the tool registry — again a constant. §10.1 lists `tool_name` among the fields
+   a trace may carry and `tool_input`/`tool_output` among the fields it may not, so what a
+   tool call leaves behind is *which* tool ran and never what it was asked or returned.
 
 A node therefore cannot leak a passage into its record by accident: there is no code path
-that copies a value into the record. The one place a value *is* read — the decision — is a
-key whose value the graph's own nodes set from an enum.
+that copies a value into the record. The two places a value *is* read — the decision and
+the tool name — are keys whose values the graph's own nodes set from an enum and from a
+registry.
 
 **Why the failure record is a log line and not state.** A node that raises does not return,
 so its state update is never applied and the checkpointer stores nothing: there is no
@@ -57,9 +62,12 @@ RECORD_KEY = "records"
 
 #: The fields a record may carry, and the whole of what ticket 42's filter may pass on.
 #: Written out so a reader comparing this module with DESIGN §10.1 can see that the set is
-#: a subset of `ALLOWED_TRACE_FIELDS` and shares none of `FORBIDDEN`.
+#: a subset of `ALLOWED_TRACE_FIELDS` and shares none of `FORBIDDEN`. `tool_name` joined
+#: the set in ticket 39, when the read-only branch began calling tools: it is the one
+#: thing §10.1 lets a trace say about a tool call.
 ALLOWED_FIELDS: tuple[str, ...] = (
     "node_name",
+    "tool_name",
     "decision",
     "input_keys",
     "output_keys",
@@ -78,9 +86,13 @@ class NodeRecord:
     field names are the whole of it — `{"question"}` says a node read the question without
     saying what it was. `counts` carries `question_chars: 41` for the same reason: a
     length is an operational fact, and the text is not.
+
+    `tool_name` is the registry key a tool-calling node used, or `None`; never the call's
+    arguments and never its result. See the module docstring.
     """
 
     node_name: str
+    tool_name: str | None = None
     decision: str | None = None
     input_keys: tuple[str, ...] = ()
     output_keys: tuple[str, ...] = ()
@@ -93,6 +105,7 @@ class NodeRecord:
         """JSON-serialisable, because the checkpointer stores it with the rest of state."""
         return {
             "node_name": self.node_name,
+            "tool_name": self.tool_name,
             "decision": self.decision,
             "input_keys": list(self.input_keys),
             "output_keys": list(self.output_keys),
@@ -113,14 +126,16 @@ def recorded(
     reads: Sequence[str] = (),
     counts: Sequence[tuple[str, str]] = (),
     decision_key: str | None = None,
+    tool_key: str | None = None,
 ) -> Callable[[Node], Node]:
     """Wrap a node so that every execution leaves a record. See the module docstring.
 
     `reads` names the state fields the node uses; `counts` is a list of
     `(label, state key)` pairs, where the key may address a nested mapping as
     `"answer.delta_count"`; `decision_key` names the state key whose value *is* the node's
-    decision. A declared count whose key the node did not produce is skipped rather than
-    raising: the nodes return different shapes on different branches, and a record is
+    decision; `tool_key` names the state key holding the registry name of the tool the
+    node called. A declared count whose key the node did not produce is skipped rather
+    than raising: the nodes return different shapes on different branches, and a record is
     observability, not a contract the graph must satisfy to run.
     """
 
@@ -146,7 +161,8 @@ def recorded(
                 raise
             record = NodeRecord(
                 node_name=node_name,
-                decision=_decision(result, decision_key),
+                tool_name=_constant(result, tool_key),
+                decision=_constant(result, decision_key),
                 input_keys=tuple(reads),
                 output_keys=tuple(sorted(key for key in result if key != RECORD_KEY)),
                 counts=_counts(result, state, counts),
@@ -176,14 +192,17 @@ def _elapsed_ms(started: float) -> int:
     return int((time.perf_counter() - started) * 1000)
 
 
-def _decision(result: Mapping[str, Any], decision_key: str | None) -> str | None:
-    """The decision, as its value. `str()` of an enum member is not its value — hence
-    `getattr(..., 'value', ...)`, so an `Intent` records `"forbidden"` rather than
-    `"Intent.FORBIDDEN"`. The key may address a nested mapping, as `counts` may.
+def _constant(result: Mapping[str, Any], key: str | None) -> str | None:
+    """A declared constant the node produced — its decision, or the tool it called.
+
+    `str()` of an enum member is not its value — hence `getattr(..., 'value', ...)`, so an
+    `Intent` records `"forbidden"` rather than `"Intent.FORBIDDEN"`. The key may address a
+    nested mapping, as `counts` may. Both keys this serves are constants by contract: an
+    enum member the classifier chose, or a key of the tool registry.
     """
-    if decision_key is None:
+    if key is None:
         return None
-    value = _lookup(result, decision_key)
+    value = _lookup(result, key)
     if value is None:
         return None
     return str(getattr(value, "value", value))

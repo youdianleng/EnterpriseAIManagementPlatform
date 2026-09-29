@@ -4,14 +4,14 @@ DESIGN §6.1's shape, in this file:
 
     classify ─┬─ forbid   (D23, refused in code, no model call)
               ├─ answer   (the ticket 34 pipeline, streamed through unchanged)
-              ├─ read     (ticket 39's read-only tools — registered: none)
+              ├─ read     (ticket 39's read-only tools — registered, called as the caller)
               ├─ draft    (ticket 40's draft tools — registered: none) → confirm
               └─ small    (a fixed reply)
 
 Each node is wrapped in `records.recorded`, which is what puts a content-free record of its
-input names, output names, counts, decision and duration into the state. The wrapper is not
-decoration: it is the mechanism behind the checklist line about records, and the only place
-in this package that writes one.
+input names, output names, counts, decision, tool name and duration into the state. The
+wrapper is not decoration: it is the mechanism behind the checklist line about records, and
+the only place in this package that writes one.
 
 **The refusal branch constructs no model call, structurally.** `refuse_node` reads the
 classifier's rule name and returns the bilingual constant for it. It does not touch
@@ -25,14 +25,19 @@ ticket 34 service yields is handed to `runtime.stream_writer` as it arrives, and
 returns a summary. A node that accumulated the deltas and returned them would break §5.2's
 first-token budget and would put a second copy of the answer text in the checkpoint.
 
-**The two tool branches state that they have no tool.** They ask `app.ai.tools` what is
-registered — today, nothing — and return `replies.NO_READ_ONLY_TOOL` / `NO_DRAFT_TOOL`, each
-of which names the ticket that fills the branch. Ticket 40's `PrefillForm` and ticket 41's
+**The read-only branch calls a tool, and the tool's values become the answer.**
+`read_only_tools_node` resolves a name through the registry, runs it with the caller's
+principal and the caller's period, and hands the *result* to `tools.render.render` — so the
+figures in the answer are the figures the query returned and there is no step at which a
+model could round, convert or invent one. A name that is not registered, or a question no
+tool answers, produces the "no registered tool" reply with no figure in it at all; a query
+that raises produces 「无法获取该数据」, likewise. Ticket 40's `PrefillForm` and ticket 41's
 confirm/reject handling are deliberately absent: `await_confirmation_node` pauses on
 `interrupt()` with a payload that says what is missing, and on resume records only that *an*
 answer arrived, by type, so that the human's words never become a record.
 """
 
+from datetime import UTC, date, datetime
 from uuid import UUID
 
 from langgraph.runtime import Runtime
@@ -43,13 +48,25 @@ from app.ai.agents.records import recorded
 from app.ai.agents.replies import (
     CONFIRMATION_PENDING,
     NO_DRAFT_TOOL,
-    NO_READ_ONLY_TOOL,
     SMALL_TALK_REPLY,
     refusal_for,
 )
 from app.ai.agents.state import AgentContext, AgentState
-from app.ai.tools import ToolKind, registered
+from app.ai.tools import (
+    ToolCall,
+    ToolContext,
+    ToolKind,
+    ToolOutcome,
+    ToolResult,
+    UnknownTool,
+    arguments_for,
+    invoke,
+    registered,
+    render,
+    select_tool,
+)
 from app.domain.answer.models import AnswerEvent, EventKind
+from app.domain.attendance.business_day import madrid_today
 
 
 @recorded(
@@ -138,19 +155,60 @@ async def answer_policy_node(state: AgentState, runtime: Runtime[AgentContext]) 
 
 @recorded(
     "read_only_tools",
-    reads=("question",),
-    counts=(("tools_registered", "tools_registered"),),
+    reads=("question", "rule", "tool", "tool_arguments"),
+    counts=(
+        ("tools_registered", "tools_registered"),
+        # How many fields the result carried — a count, never the result. §10.1 keeps
+        # `tool_output` out of every record, and this is the record saying "there was one"
+        # without saying what it was.
+        ("result_fields", "tool_result"),
+    ),
+    decision_key="tool_outcome",
+    tool_key="tool",
 )
 async def read_only_tools_node(state: AgentState, runtime: Runtime[AgentContext]) -> dict:
-    """只读数据查询: §6.2's read-only tools, which ticket 39 registers.
+    """只读数据查询: DESIGN §6.2's read-only tools, **called as the caller**.
 
-    The registry is asked rather than assumed, so the sentence this returns is a statement
-    about the code and not a promise about it — and so that whatever ticket 39 adds is
-    visible here the moment it is added.
+    Ticket 38 left this branch saying that no tool was registered. It now calls one, and
+    the four facts that make the call safe are all visible from here:
+
+    * **the identity is the context's.** Every implementation reads
+      `runtime.context.principal`; nothing in this node, and no parameter in the
+      registry's closed vocabulary, could name a second person.
+    * **the name goes through the whitelist.** `invoke` looks the tool up in
+      `app.ai.tools.REGISTRY`, so a name from the classifier, from a caller or from a
+      model that is not registered raises `UnknownTool` and nothing runs.
+    * **the period is the caller's too.** The lexical selector fills the defaults
+      (this month, this year, all statuses) and a caller may override them with
+      `tool_arguments`; a period is a date range, never a subject.
+    * **the figures are the tool's.** The node renders the result
+      (`tools.render.render`) rather than composing a sentence, so the numbers in
+      `tool_answer` are the ones in `tool_result`, which are the ones the query returned.
+
+    A question the classifier routed here that no tool answers — the caller's own
+    payslip, say, which §6.2 has no tool for — is answered with the "no registered tool"
+    reply rather than by guessing at a neighbour: a guess would read data nobody asked
+    about, and the answer says no figure at all.
+
+    **`UNKNOWN` names nothing, and that is deliberate.** `tool_name` is the one thing
+    §10.1 lets a record say about a tool call, and `records.py`'s contract is that its
+    value is a key of the registry. A name the model invented is neither, so when nothing
+    ran this node stores `tool=None` and `tool_arguments={}` rather than the string it was
+    handed — a trace field must not become a place model output can be written to.
     """
+    context = runtime.context
+    today = context.today or madrid_today(datetime.now(UTC))
+    call = _tool_call(state, today)
+    result = await _run(call, context, today)
+    ran = result.outcome is not ToolOutcome.UNKNOWN
     return {
-        "notice": NO_READ_ONLY_TOOL,
+        "tool": result.tool if ran else None,
+        "tool_arguments": dict(call.arguments) if ran and call is not None else {},
+        "tool_result": dict(result.data) or None,
+        "tool_answer": render(result).as_dict(),
+        "tool_outcome": str(result.outcome),
         "tools_registered": len(registered(ToolKind.READ_ONLY)),
+        "notice": None,
         "pending_action": None,
     }
 
@@ -213,6 +271,57 @@ async def small_talk_node(state: AgentState, runtime: Runtime[AgentContext]) -> 
 
 
 # --- internals ----------------------------------------------------------------
+
+
+def _tool_call(state: AgentState, today: date) -> ToolCall | None:
+    """The call this run makes: a name the caller gave, or the one the question selects.
+
+    A caller may name a tool and its arguments (`state["tool"]` / `state["tool_arguments"]`)
+    — that is the seam a model's function call arrives through in ticket 42, and what a
+    test uses to exercise one tool without writing a sentence the lexical selector would
+    have to happen to read. Otherwise `selection.select_tool` decides, and `None` means
+    the question is a data question no registered tool answers.
+
+    An arguments mapping a *named* tool cannot use returns `None` too, rather than an empty
+    one: `get_colleague_contact` without a name would otherwise be a directory dump.
+    """
+    named = state.get("tool")
+    if not named:
+        return select_tool(state["question"], today=today)
+    arguments = state.get("tool_arguments") or arguments_for(
+        named, state["question"], today=today
+    )
+    if arguments is None:
+        return None
+    return ToolCall(name=named, arguments=arguments)
+
+
+async def _run(
+    call: ToolCall | None, context: AgentContext, today: date
+) -> ToolResult:
+    """Run the call, or state that there was nothing to run.
+
+    Three ways to end up with no result, and they are one outcome because they are one
+    fact — nothing was read: no tool was selected, the named tool is not registered
+    (the whitelist's refusal, which is why `UnknownTool` is caught here and answered
+    rather than propagated), or the context carries no session, which is a wiring bug
+    and raises rather than pretending to be a refusal.
+    """
+    if call is None:
+        return ToolResult(tool="", outcome=ToolOutcome.UNKNOWN)
+    if context.session is None:
+        raise RuntimeError(
+            f"{call.name} needs a session: the read-only branch reads through "
+            "AgentContext.session, and a context built without one cannot answer a "
+            "data question"
+        )
+    context_for_tools = ToolContext(
+        principal=context.principal, session=context.session, today=today
+    )
+    try:
+        return await invoke(call, context_for_tools)
+    except UnknownTool:
+        return ToolResult(tool=call.name, outcome=ToolOutcome.UNKNOWN)
 
 
 def _conversation_id(state: AgentState, context: AgentContext) -> UUID | None:
