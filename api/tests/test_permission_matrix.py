@@ -69,6 +69,8 @@ from app.domain.access.permissions import (
     OVERTIME_COMPANY_ROLES,
     OVERTIME_CROSS_ACTIONS,
     PROJECT_ADMIN_ROLES,
+    SALARY_COMPANY_ROLES,
+    SALARY_CROSS_ACTIONS,
     SELF_ONLY_ACTIONS,
     TIMESHEET_COMPANY_ROLES,
     TIMESHEET_CROSS_ACTIONS,
@@ -294,6 +296,20 @@ DESIGN_GRANTS: dict[Action, frozenset[str]] = {
     # ticket asks for it to be 仅授权角色可见, so "everyone who may search" is exactly the
     # reading it refuses.
     Action.RETRIEVAL_DEBUG: frozenset({"admin", "hr"}),
+    # Salary records (ticket 43). §4.1 read as three authorities and two absences:
+    # `employee` holds the own read (every account does, and `SELF_ONLY_ACTIONS` below is
+    # what makes it self-only), `hr` and `finance` hold the company read — 员工档案全量 and
+    # 薪酬档案 — and `hr` alone holds the write, because reading the payroll record to pay
+    # from it and deciding what somebody's salary is are different authorities.
+    #:
+    #: **`manager` and `admin` are absent from all three**, and that is the ticket's
+    #: sentence rather than an oversight: 经理看不到下属薪资 is a manager's absence stated by
+    #: name, and 系统管理员默认也看不到 is §4.1's duty separation — administration is denied
+    #: even the payslip's *contents*. `compliance` is absent too: its row is the audit
+    #: trail, which is where "who looked at this salary" is answered.
+    Action.SALARY_READ_OWN: EVERYONE,
+    Action.SALARY_READ_ALL: frozenset({"hr", "finance"}),
+    Action.SALARY_WRITE: frozenset({"hr"}),
 }
 
 #: The resource each action acts on. A document is decided by §4.2 whatever the
@@ -393,6 +409,13 @@ KIND_FOR_ACTION: dict[Action, ResourceKind] = {
     # catalogues are. Its "resource" is therefore the catalogue-shaped one, and the kernel's
     # generic path decides it by role and nothing else.
     Action.RETRIEVAL_DEBUG: ResourceKind.ACCOUNT,
+    # Salary records (ticket 43). A person's archive, carrying the subject's employee id
+    # as its owner — the same shape the attendance and leave actions use — and its own
+    # kind, because the rule is not the employee rule: a salary record is reached by
+    # ownership and by a company-wide remit, and by nothing else.
+    Action.SALARY_READ_OWN: ResourceKind.SALARY_RECORD,
+    Action.SALARY_READ_ALL: ResourceKind.SALARY_RECORD,
+    Action.SALARY_WRITE: ResourceKind.SALARY_RECORD,
 }
 
 #: Actions the catalogue decides by role alone, with no resource clause to apply.
@@ -557,6 +580,22 @@ def design_says(role: str, action: Action, shape: tuple[str | None, str | None] 
     if action in TIMESHEET_CROSS_ACTIONS:
         return bool(frozenset({role, "employee"}) & TIMESHEET_COMPANY_ROLES)
 
+    # Salary records (ticket 43). Two reaches and nothing else, and this expectation is
+    # written as a *strategy* for the whole salary surface rather than for the cross-action
+    # set — because the self-only read is in it too, and the generic path below would
+    # answer it with the department clause: a manager and a colleague share one, and
+    # 经理看不到下属薪资 is exactly that clause refused. So every salary action is answered
+    # here: the own read is a refusal for a resource that is somebody else's (ownership is
+    # the whole rule), the company read is the two roles, and the write is the two roles'
+    # narrower one. No department and no reporting relationship enters at all.
+    if KIND_FOR_ACTION[action] is ResourceKind.SALARY_RECORD:
+        if action is Action.SALARY_READ_OWN:
+            return False
+        held_for_salary = frozenset({role, "employee"})
+        if action is Action.SALARY_WRITE:
+            return bool(held_for_salary & DESIGN_GRANTS[Action.SALARY_WRITE])
+        return bool(held_for_salary & SALARY_COMPANY_ROLES)
+
     held = frozenset({role, "employee"})
     clearance, department = shape
 
@@ -621,6 +660,9 @@ def test_the_generated_matrix_covers_every_dimension() -> None:
     # as one action, and HR's), ticket 33 adds one for the retrieval debug view
     # (`retrieval.debug`, counted here by this same literal because the assertion is
     # about the catalogue as a whole rather than about one ticket's contribution), and
+    # ticket 43 adds three for the salary archive — the employee's own read, the company
+    # read HR and finance hold, and HR's append, which is a *write* because the table is
+    # append-only in the database and a `salary.update` could not be honoured — and
     # the sum is asserted literally so that a fifth arriving as a failing test rather
     # than as extra coverage.
     #
@@ -632,7 +674,7 @@ def test_the_generated_matrix_covers_every_dimension() -> None:
     # citation, so a second action for the file would be a second rule to keep in step
     # with §4.2. The count is therefore unchanged, and `test_documents.py` asserts what
     # the endpoints do with the reach those actions produce.
-    assert len(cases) == 7 * 57 * 13
+    assert len(cases) == 7 * 60 * 13
     assert 0 < permitted < len(cases), "the expectation answers the same way everywhere"
 
     discriminating = [
@@ -652,6 +694,23 @@ def test_the_design_table_describes_every_action_and_its_resource() -> None:
     nothing at all, silently."""
     assert sorted(DESIGN_GRANTS, key=str) == list(ACTIONS)
     assert sorted(KIND_FOR_ACTION, key=str) == list(ACTIONS)
+    # The two sets beside the catalogue that decide *rows* rather than roles, stated here
+    # so that widening one of them is a failing test rather than a quiet reach. Ticket 43's
+    # is the pair §4.1 gives the payroll record, and it is deliberately not any of the
+    # three personnel-record sets above it: finance is not a company-wide reader of
+    # attendance or leave, and compliance is not one of the salary archive's readers.
+    assert SALARY_CROSS_ACTIONS == frozenset(
+        {Action.SALARY_READ_ALL, Action.SALARY_WRITE}
+    )
+    assert SALARY_COMPANY_ROLES == frozenset({"hr", "finance"})
+    # The half of that set which is *not* shared with the personnel-record sets is the
+    # whole reason it exists: finance reads the payroll record and not the company's
+    # attendance, leave or hours.
+    assert SALARY_COMPANY_ROLES - COMPANY_RECORD_ROLES == frozenset({"finance"})
+    assert SALARY_CROSS_ACTIONS.isdisjoint(
+        ATTENDANCE_CROSS_ACTIONS | LEAVE_CROSS_ACTIONS | OVERTIME_CROSS_ACTIONS
+        | TIMESHEET_CROSS_ACTIONS
+    )
 
 
 @pytest.mark.parametrize("role", sorted(SYSTEM_ROLES))
@@ -1282,6 +1341,23 @@ HTTP_MATRIX: tuple[tuple[str, str, RouteAccess], ...] = (
     # asserts the guard, as it does for the two conversation rows above.
     ("POST", "/api/v1/agent/actions/{action_id}/confirm", Action.SESSION_READ_OWN),
     ("POST", "/api/v1/agent/actions/{action_id}/reject", Action.SESSION_READ_OWN),
+    # Salary records (ticket 43). Three reads and one write, and the row each carries is
+    # the action the *route* names — which for the two subject-shaped reads is the
+    # caller's own, because this layer calls them without naming anybody (the path
+    # substitution below gives a self-only route the actor's own id). The manager's and
+    # the administrator's refusals, HR's and finance's reach, and the 403 an employee gets
+    # for somebody else's figure are asserted by name in `test_salary_records.py`, as is
+    # the fact that every one of these reads writes an audit entry.
+    #
+    # `records/as-of` is in `RESOURCE_FREE_ROUTES`: it answers 200 with an empty chain for
+    # a caller whose archive has nothing in it, which is an answer this layer can check
+    # exactly. `records/me` likewise. The company read is *not* — it names an employee the
+    # matrix never created, so a permitted caller reaches the handler's empty page and the
+    # refused one is stopped at the guard, which is the convention the other rows use.
+    ("GET", "/api/v1/salary/records/me", Action.SALARY_READ_OWN),
+    ("GET", "/api/v1/salary/records", Action.SALARY_READ_ALL),
+    ("GET", "/api/v1/salary/records/as-of", Action.SALARY_READ_OWN),
+    ("POST", "/api/v1/salary/records", Action.SALARY_WRITE),
 )
 
 
@@ -1305,6 +1381,12 @@ def holiday_date(suffix: str) -> date:
 #: about which week they mean — the failure a computed date would produce is a 400
 #: that reads like a permission problem.
 MATRIX_WEEK_START = date(2027, 1, 4)
+
+#: The day the salary archive's "what was in force" row asks about (ticket 43). Fixed for
+#: the reason `MATRIX_WEEK_START` is, and far from every window the suite writes, so the
+#: answer is an empty chain rather than a figure — the cheapest admitted answer, and the
+#: one this layer can assert exactly.
+MATRIX_SALARY_DAY = date(2019, 6, 1)
 
 
 #: The routes whose body the matrix can make genuinely valid, so a permitted caller
@@ -1351,6 +1433,12 @@ RESOURCE_FREE_ROUTES: frozenset[str] = frozenset(
         # delete name a conversation the matrix never created, so a 404 there proves the
         # guard let the caller through and says nothing about the handler.
         "/api/v1/answers/conversations",
+        # Ticket 43. The two reads that answer about the caller with no parameters have
+        # an answer this layer can assert exactly — an empty chain, because the matrix
+        # never enters a salary record — while the company read names an employee it never
+        # created and the append names one that may have no account.
+        "/api/v1/salary/records/me",
+        "/api/v1/salary/records/as-of",
     }
 )
 
@@ -1530,6 +1618,22 @@ def http_payload(path: str, *, department: str, employee: str) -> dict:
         # what keeps this layer about the guard.
         "/api/v1/agent/actions/{action_id}/confirm": {},
         "/api/v1/agent/actions/{action_id}/reject": {},
+        # Salary records (ticket 43). The body names an employee the matrix has just
+        # created for this purpose — `accountless`, so the append cannot collide with an
+        # account — and the window is a 2024 one, far from any row the other tests write.
+        # A permitted caller therefore reaches the handler's 201 rather than a 422 about
+        # the body, which is what keeps this layer about the guard.
+        "/api/v1/salary/records": {
+            "employee_id": employee,
+            "effective_from": "2024-01-01",
+            "effective_to": "2024-12-31",
+            "base_salary": "33000.00",
+            "currency": "EUR",
+            "pay_period": "monthly",
+            "components": [],
+            "change_reason_type": "initial",
+            "change_reason": "Matriz",
+        },
     }[path]
 
 
@@ -1602,6 +1706,11 @@ async def test_the_http_matrix_for(platform: Platform, role: str) -> None:
                 "from_date": MATRIX_WEEK_START.isoformat(),
                 "to_date": (MATRIX_WEEK_START + timedelta(days=6)).isoformat(),
             }
+        elif "/salary/records/as-of" in path:
+            # The `as_of` question has no meaning without a day, so the route refuses the
+            # request without one — a 422 the matrix would report as an unwired endpoint.
+            # The day is fixed and far from anything the suite writes.
+            params = {"as_of": MATRIX_SALARY_DAY.isoformat()}
         response = (
             await actor.call(method, path, json=payload, params=params)
             if payload is not None
@@ -1659,8 +1768,9 @@ async def test_the_http_matrix_for(platform: Platform, role: str) -> None:
     # search and the debug view — and the count moved with them; ticket 34 adds the two
     # answer routes (the streamed question and the conversation read); ticket 37 adds the
     # three the sidebar needs (the list, the rename and the delete); ticket 41 adds the
-    # agent's human-review point (confirm and reject).
-    assert checked == 83
+    # agent's human-review point (confirm and reject); ticket 43 adds the salary
+    # archive's four (your own chain, the company's, the day in force, and the append).
+    assert checked == 87
     assert checked == len(HTTP_MATRIX)
     assert failures == [], "\n".join(failures)
 

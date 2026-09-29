@@ -55,6 +55,7 @@ from app.repositories.account import PostgresAccountRepository
 from app.repositories.approval import PostgresApprovalRepository
 from app.repositories.employee import PostgresEmployeeRepository
 from app.repositories.org import PostgresDepartmentRepository
+from app.repositories.payroll import PostgresSalaryRepository
 from app.repositories.personnel import PostgresPersonnelChangeRepository
 
 logger = get_logger(__name__)
@@ -72,6 +73,11 @@ def build_service(session: AsyncSession) -> PersonnelChangeService:
     ends its sessions in the same transaction. Neither commits by itself — the
     account repository never does, and the revoker writes to Redis, which is not
     part of this transaction and does not need to be.
+
+    The salary archive is passed for the same kind of reason (ticket 43): a `salary`
+    change's second half is the row it appends to `salary_records`, and a service built
+    without the repository would apply the change and leave the archive empty —
+    silently, on the one day it matters.
     """
     return PersonnelChangeService(
         repository=PostgresPersonnelChangeRepository(session),
@@ -87,6 +93,7 @@ def build_service(session: AsyncSession) -> PersonnelChangeService:
         departments=PostgresDepartmentRepository(session),
         accounts=PostgresAccountRepository(session),
         revoker=RedisSessionRevoker(),
+        salary=PostgresSalaryRepository(session),
     )
 
 

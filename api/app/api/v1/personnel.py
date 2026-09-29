@@ -53,6 +53,7 @@ from app.repositories.approval import PostgresApprovalRepository
 from app.repositories.employee import PostgresEmployeeRepository
 from app.repositories.notification import PostgresNotificationRepository
 from app.repositories.org import PostgresDepartmentRepository
+from app.repositories.payroll import PostgresSalaryRepository
 from app.repositories.personnel import PostgresPersonnelChangeRepository
 
 router = APIRouter(prefix="/personnel-changes", tags=["personnel"])
@@ -110,6 +111,11 @@ def _service(session: AsyncSession) -> PersonnelChangeService:
         departments=PostgresDepartmentRepository(session),
         accounts=PostgresAccountRepository(session),
         revoker=RedisSessionRevoker(),
+        # A `salary` change's second half (ticket 43): applying one appends the archive
+        # row, and the router builds the same service the applier job does so that
+        # `POST /personnel-changes/{id}/apply` and the cron pass cannot disagree about
+        # what a salary change writes.
+        salary=PostgresSalaryRepository(session),
     )
 
 

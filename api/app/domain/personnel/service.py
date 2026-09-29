@@ -48,7 +48,7 @@ behind the leaver, silently, on the one day it matters.
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -73,6 +73,15 @@ from app.domain.employee.repository import EmployeeRepository
 from app.domain.employee.service import EmployeeService
 from app.domain.errors import DomainError
 from app.domain.org.repository import DepartmentRepository
+from app.domain.payroll.models import (
+    RecordInput,
+    SalaryRecord,
+    parse_amount,
+    parse_components,
+    parse_currency,
+    parse_pay_period,
+    parse_reason,
+)
 from app.domain.personnel.approver_coverage import ApproverGap, describe
 from app.domain.personnel.errors import PersonnelErrorCode
 from app.domain.personnel.models import (
@@ -90,6 +99,27 @@ from app.domain.personnel.models import (
 )
 from app.domain.personnel.repository import PersonnelChangeRepository
 
+
+class SalaryArchive(Protocol):
+    """The slice of the archive this module drives (ticket 43).
+
+    A protocol rather than the concrete repository, and its two methods are the two
+    questions a salary change asks: *has this person a record already* — which decides
+    whether this is the opening one or an adjustment — and *append this record*. Neither
+    reads a figure back and neither writes one that was not on the approved document.
+
+    A protocol rather than an import of `PostgresSalaryRepository` because the admissibility
+    rule this module keeps is about *direction*: the personnel applier drives the archive,
+    and the archive knows nothing about personnel changes. Naming the two methods here is
+    what keeps that one-way — and what lets `test_personnel_changes.py` hand the module a
+    recorder instead of a database when the subject is the change and not the row.
+    """
+
+    async def has_any(self, employee_id: UUID) -> bool: ...
+
+    async def append(self, data: RecordInput) -> SalaryRecord: ...
+
+
 #: The entity type the approval engine files these under (DESIGN §3.4). The
 #: engine stores it and never interprets it; this module is the only reader.
 ENTITY_TYPE = "personnel_change"
@@ -98,6 +128,20 @@ ENTITY_TYPE = "personnel_change"
 #: and every other amount in the system is in euros; a payload that means
 #: something else says so.
 DEFAULT_CURRENCY = "EUR"
+
+#: The pay period a salary change states when it names none, and the reason an applied
+#: change leaves an archive entry rather than nothing (ticket 43). Monthly is the
+#: ordinary Spanish payroll period and the archive's own default vocabulary starts
+#: there; a change that means a fortnightly or weekly period says so, and the archive
+#: stores whichever it was told. **Nothing converts between them** — a period is a label
+#: on a figure, not a factor to multiply by.
+DEFAULT_PAY_PERIOD = "monthly"
+
+#: The change reason an applied salary change records when the document states none. The
+#: archive requires one — a figure nobody can explain is the thing the field exists to
+#: prevent — and the honest sentence for a figure that arrived through the approval
+#: chain is that it arrived through the approval chain.
+DEFAULT_SALARY_REASON = "Aplicado desde un documento de cambio de personal aprobado"
 
 #: The applier is not a person, so its published principal names no user. The
 #: employee id it carries is the one on the change, which is what makes the write
@@ -135,6 +179,7 @@ class PersonnelChangeService:
         departments: DepartmentRepository,
         accounts: AccountRepository,
         revoker: SessionRevoker,
+        salary: SalaryArchive,
     ) -> None:
         self._repository = repository
         self._session = session
@@ -146,6 +191,11 @@ class PersonnelChangeService:
         self._employees = employees
         self._directory = directory
         self._departments = departments
+        # The archive a `salary` change writes into (ticket 43). Required, for the
+        # reason the accounts half below is: a service built without it would apply a
+        # salary change and leave no record in the archive, silently, which is exactly
+        # the state this ticket exists to end.
+        self._salary = salary
         # The account half of a termination (ticket 18). Required, not optional:
         # applying a termination without them would leave a working login behind a
         # leaver, and that is not a configuration this module should be able to be
@@ -426,7 +476,7 @@ class PersonnelChangeService:
         if change.change_type in (ChangeType.TRANSFER, ChangeType.PROMOTION):
             return await self._apply_move(change)
         if change.change_type is ChangeType.SALARY:
-            return self._apply_salary(change)
+            return await self._apply_salary(change)
         return await self._apply_termination(change)
 
     async def _apply_join(self, change: PersonnelChange) -> _Applied:
@@ -525,22 +575,68 @@ class PersonnelChangeService:
             }
         )
 
-    def _apply_salary(self, change: PersonnelChange) -> _Applied:
-        """Record the agreed figure — in this change's own record.
+    async def _apply_salary(self, change: PersonnelChange) -> _Applied:
+        """Record the agreed figure — in the change's own record **and in the archive**.
 
-        There is no salary table yet: `salary_records` arrives with ticket 43, and
-        inventing one here would put a second, unofficial payroll record next to
-        the official one that is coming. So the agreed values are applied to the
-        change's own record — its payload states them and `applied_values` stamps
-        what took effect — and the audit carries the before/after pair. Ticket 43
-        writes the `salary_records` row from the same payload; nothing else has to
-        change when it does.
+        Ticket 17 wrote this method when `salary_records` did not exist, and recorded
+        that the agreed figure lived in the change's `payload`/`applied_values` "until
+        ticket 43 exists; nothing else has to change when it does". This is that ticket,
+        and nothing else did change: the values still land on the change, the audit still
+        carries the before/after pair, and this method now *also* appends the archive row
+        from the same payload inside the same transaction.
+
+        **Two records, two questions, and neither is a copy of the other.** The change is
+        the *approval* — who asked, what was agreed, when it may take effect — and
+        `applied_values` says what the applier wrote. The archive row is the *salary
+        history*: a window, a figure in force, an allowance breakdown, and a chain that
+        answers "what applied on this day". Deleting either one would lose a question the
+        other does not answer.
+
+        **The effective date is the change's own**, which is the day the change takes
+        effect — not the day it was applied, and not the day it was approved. `effective_to`
+        is left open: the record in force has no stated end, and the *next* change's start
+        is what closes it, which is the same "hash the new row, never rewrite the old one"
+        shape the archive enforces with an exclusion constraint.
+
+        The reason type is decided by the archive itself rather than by the caller: a
+        salary change applied to somebody with no record *is* the opening one. Written as
+        a query rather than as a field on the payload because the payload must not have to
+        know the archive's history to state a raise.
         """
         values = change.values
+        employee_id = _subject_of(change)
+        # Through the archive's own parsers rather than straight from the payload, and
+        # that is the no-cent-lost rule rather than tidiness: a figure with three decimal
+        # places would be *silently rounded* by `numeric(14, 2)` if it were handed to the
+        # column, and a reason nobody can read would be stored as a blank. The archive
+        # refuses both, so the change fails loudly and can be corrected.
+        amount = parse_amount(values["base_salary"])
+        currency = parse_currency(values.get("currency"))
+        period = parse_pay_period(values.get("pay_period") or DEFAULT_PAY_PERIOD)
+        lines = parse_components(values.get("components"))
+        reason = parse_reason(values.get("change_reason") or DEFAULT_SALARY_REASON)
+        opening = not await self._salary.has_any(employee_id)
+        await self._salary.append(
+            RecordInput(
+                employee_id=employee_id,
+                effective_from=change.effective_date,
+                effective_to=None,
+                base_salary=amount,
+                currency=currency,
+                pay_period=period,
+                components=lines,
+                change_reason_type="initial" if opening else "adjustment",
+                change_reason=reason,
+                # The applier is not a person: `created_by_user_id` stays NULL, and the
+                # audit entry this write produces names the system. Attributing it to
+                # whoever approved the change would be a lie the trail tells about itself.
+                created_by_user_id=None,
+            )
+        )
         return _Applied(
             values={
-                "base_salary": f"{values['base_salary']:.2f}",
-                "currency": values.get("currency", DEFAULT_CURRENCY),
+                "base_salary": f"{amount:.2f}",
+                "currency": currency,
             }
         )
 

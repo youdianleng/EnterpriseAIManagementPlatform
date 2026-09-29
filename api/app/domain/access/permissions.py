@@ -221,6 +221,34 @@ class Action(StrEnum):
     #: asks for a view that is *authorised* (仅授权角色可见).
     RETRIEVAL_DEBUG = "retrieval.debug"
 
+    # Salary records (ticket 43). **Three actions, and the pair the ticket names is the
+    # first two**: 人力资源、财务、员工本人 — an own-action and a company-action, rather
+    # than a role test inside a route. §4.1 gives HR 员工档案全量 and finance 薪酬档案, so
+    # the company-wide read is two roles; and the two roles §4.1 *denies* are the reason
+    # this is a new pair rather than a wider `employee.read`: a manager reaches their
+    # reports' attendance, leave and hours and reaches nothing here (经理看不到下属薪资),
+    # and `admin` sees nothing either, because §4.1 separates the duties and denies an
+    # administrator even the payslip's *contents*.
+    #:
+    #: Neither is folded into the attendance/leave/overtime cross-action sets. Those sets
+    #: share a company-role list with each other and this one does not: finance is not in
+    #: `COMPANY_RECORD_ROLES`, and HR is not alone here — which is exactly the shape
+    #: `OVERTIME_COMPANY_ROLES` exists to record one domain over.
+    SALARY_READ_OWN = "salary.read_own"
+    #: The company's salary archive. Its own action because "I may see my own salary"
+    #: and "I may see the company's" must be separable: an installation that wanted an
+    #: employee's own figure visible without opening the archive to a new role can take
+    #: this one away and leave the other. `SALARY_CROSS_ACTIONS` below is what names the
+    #: resource rule, and the department is deliberately not part of it.
+    SALARY_READ_ALL = "salary.read_all"
+    #: Entering a record. HR alone, and its own action rather than part of the read
+    #: because writing the archive and reading it are different authorities: finance
+    #: reads the payroll record to pay from it and does not decide what somebody's
+    #: salary is. There is no `salary.update` and no `salary.delete` — the table is
+    #: append-only in the database (migration 0028), so those actions could not be
+    #: honoured even if the catalogue offered them, and a correction is a new record.
+    SALARY_WRITE = "salary.write"
+
 
 @dataclass(frozen=True, slots=True)
 class ActionRule:
@@ -665,6 +693,47 @@ RULES: dict[Action, ActionRule] = {
             "the reranker's contribution and the candidates that were dropped."
         ),
     ),
+    # Salary records (ticket 43). §4.1 read as the two reaches the ticket names and the
+    # two it denies, recorded rather than left to the reader:
+    #
+    # * `employee` holds the own action — the same "their own data" every other
+    #   self-service surface states, and self-only through `SELF_ONLY_ACTIONS` below, so
+    #   no role reaches somebody else's figure through it;
+    # * `hr` and `finance` hold the company action, which is §4.1's 员工档案全量 and
+    #   薪酬档案 respectively;
+    # * **`manager` and `admin` hold neither**, and that is the ticket's句 rather than an
+    #   oversight: 经理看不到下属薪资 is a manager's absence stated by name, and 系统管理员
+    #   默认也看不到 is §4.1's duty separation, which denies administration even the
+    #   payslip's contents.
+    Action.SALARY_READ_OWN: ActionRule(
+        roles=frozenset({"employee"}),
+        description=(
+            "Reading your own salary archive. Self-only through `SELF_ONLY_ACTIONS`: "
+            "§4.1 gives an employee their own data, and nobody reads somebody else's "
+            "figure through this action — not a manager for their report, not HR for "
+            "the company, which reaches it through `salary.read_all` instead."
+        ),
+    ),
+    Action.SALARY_READ_ALL: ActionRule(
+        roles=frozenset({"hr", "finance"}),
+        description=(
+            "Reading anybody's salary archive. HR keeps the personnel file and finance "
+            "owns the payroll record (§4.1), and the resource rule is "
+            "`SALARY_CROSS_ACTIONS` below rather than the department: a manager and a "
+            "colleague share one, and 经理看不到下属薪资 is the escalation the generic "
+            "path would have allowed."
+        ),
+    ),
+    Action.SALARY_WRITE: ActionRule(
+        roles=frozenset({"hr"}),
+        description=(
+            "Entering a salary record. HR maintains the archive "
+            "(人力资源能维护每位员工的薪酬档案) and finance does not: reading the payroll "
+            "record to pay from it and deciding what somebody's salary is are two "
+            "authorities, which is why this is a third action rather than a use of "
+            "`salary.read_all`."
+        ),
+    ),
 }
 
 
@@ -711,6 +780,11 @@ SELF_ONLY_ACTIONS: frozenset[Action] = frozenset(
         # else's overtime, and there is no retroactive entry for anybody to file.
         Action.OVERTIME_REQUEST_OWN,
         Action.OVERTIME_READ_OWN,
+        # Ticket 43's own read: your own salary archive. Self-only for the reason the
+        # ticket gives in as many words — 员工只能看自己的 — and the reason it is not the
+        # privileged-role path: HR and finance read somebody's figure through
+        # `salary.read_all`, and the person themselves through this one.
+        Action.SALARY_READ_OWN,
     }
 )
 
@@ -826,6 +900,37 @@ OVERTIME_COMPANY_ROLES: frozenset[str] = frozenset({"hr", "finance"})
 #: one is: the two sets are not the same, and a rule that read the wrong one would
 #: hand project management to finance and to compliance.
 PROJECT_ADMIN_ROLES = frozenset({"admin", "hr"})
+
+#: The roles whose reach over somebody else's *salary* is the whole company (ticket 43).
+#:
+#: Two, and the second is the point: §4.1 gives finance 薪酬档案, so unlike the personnel
+#: record — where HR alone reaches the company and finance reaches only the overtime it
+#: exports — finance reads the salary archive outright. That is why this is a fourth set
+#: rather than a widening of `COMPANY_RECORD_ROLES`, which would have granted finance the
+#: company's attendance and leave in the same edit.
+#:
+#: **`compliance` is deliberately absent**, although §4.1 makes it a privileged reader of
+#: personnel files: its row names the *audit trail* and the RoPA, and the salary archive
+#: is neither. The database policy beside this constant is written from the same two role
+#: names rather than from `app.is_privileged`, so the backstop agrees with the rule
+#: instead of being wider than it — which is the defect ticket 36 found on documents.
+SALARY_COMPANY_ROLES: frozenset[str] = frozenset({"hr", "finance"})
+
+#: The actions that reach *somebody else's* salary record (ticket 43), and the reason
+#: they are named here rather than left to the generic path.
+#:
+#: The generic path below the kernel's branches would answer a manager's read of a
+#: colleague with the department clause — a manager and a colleague share a department —
+#: and 经理看不到下属薪资 is precisely that reading refused. So a salary record is decided
+#: by its own branch: the company-wide remit, or ownership, and nothing else. Stated as
+#: its own set so that a fourth salary action has to be put in one of the two lists
+#: deliberately rather than inheriting whichever rule happened to be nearest.
+SALARY_CROSS_ACTIONS: frozenset[Action] = frozenset(
+    {
+        Action.SALARY_READ_ALL,
+        Action.SALARY_WRITE,
+    }
+)
 
 
 def roles_may(action: Action, roles: frozenset[str]) -> bool:

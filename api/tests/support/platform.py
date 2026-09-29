@@ -83,6 +83,12 @@ CLEANUP_TABLES = (
     "overtime_entries",
     "overtime_records",
     "overtime_requests",
+    # The salary archive (ticket 43). Named for the reason the overtime ledger is: it is
+    # what the suite writes, and a reader looking for "does anything survive a wipe"
+    # should find the answer here rather than in the foreign keys. A leftover row would
+    # not merely be stale data — the exclusion constraint would refuse the *next* test's
+    # window for an employee id it reuses.
+    "salary_records",
     "personnel_changes",
     "approval_decisions",
     "approval_steps",

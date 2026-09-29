@@ -596,6 +596,30 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
             "No he podido registrar el borrador: las condiciones han cambiado desde que "
             "lo preparé. Pídeme que lo genere de nuevo para ver las cifras actuales."
         ),
+        # --- the salary archive (ticket 43) ---
+        #
+        # The disclaimer the checklist's last line asks for: 界面上明确提示该模块为档案记录，
+        # 实际发放以财务出具的工资单为准. A catalogue key rather than a column, and rather than
+        # a sentence the API composes: the client renders it in the reader's language, and
+        # the same key is what the record's `notice` object carries. The Chinese is the
+        # checklist's own wording and travels with the record (`ARCHIVE_NOTICE_TEXT`); the
+        # catalogue's two locales are the design's (§10.4).
+        "salary.archive_notice": (
+            "Este módulo es el archivo de retribuciones; el importe realmente abonado es "
+            "el que figura en la nómina emitida por Finanzas."
+        ),
+        "errors.salary_record_not_found": "No se encontró ese registro retributivo.",
+        "errors.salary_record_invalid": (
+            "Los datos del registro retributivo no son válidos: revisa el importe, la "
+            "moneda, el periodo y las fechas."
+        ),
+        "errors.salary_record_overlaps": (
+            "Ya hay un registro retributivo vigente en esas fechas. Indica una fecha de "
+            "inicio posterior o cierra el registro anterior."
+        ),
+        "errors.salary_record_initial_exists": (
+            "Esta persona ya tiene un registro inicial; lo que procede es un ajuste."
+        ),
     },
     "en": {
         "errors.validation_failed": "The submitted data is not valid.",
@@ -1095,6 +1119,23 @@ MESSAGES: Final[dict[str, dict[str, str]]] = {
         "errors.agent_draft_confirmation_refused": (
             "I could not register the draft: the conditions changed after I prepared it. "
             "Ask me to draft it again so you can see the current figures."
+        ),
+        # --- the salary archive (ticket 43). See the Spanish catalogue's entry. ---
+        "salary.archive_notice": (
+            "This module is the salary archive; the amount actually paid is the one on "
+            "the payslip issued by Finance."
+        ),
+        "errors.salary_record_not_found": "That salary record was not found.",
+        "errors.salary_record_invalid": (
+            "The salary record is not valid: check the amount, the currency, the period "
+            "and the dates."
+        ),
+        "errors.salary_record_overlaps": (
+            "A salary record is already in force over those dates. Give a later start "
+            "date, or close the record that is open."
+        ),
+        "errors.salary_record_initial_exists": (
+            "This person already has an opening record; what is needed is an adjustment."
         ),
     },
 }

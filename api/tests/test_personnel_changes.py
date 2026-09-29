@@ -740,13 +740,15 @@ async def test_a_promotion_changes_the_position_and_keeps_the_department(
 async def test_a_salary_change_is_applied_to_the_change_itself(
     platform: Platform, cast: Cast
 ) -> None:
-    """`salary` has no table yet, and this is the documented answer to that.
+    """The change keeps its own record **and** the archive now has the row (ticket 43).
 
-    Ticket 43 adds `salary_records`. Until it does, the agreed figures are stored
-    in — and applied to — this change's own record, and the audit carries the
-    before/after pair. Inventing a salary table here would put a second, unofficial
-    payroll record next to the official one that is coming, so the test also pins
-    that no such table exists.
+    Ticket 17 wrote this test when `salary_records` did not exist, and it said so in as
+    many words: the agreed figures were stored in — and applied to — the change's own
+    record, and the test pinned `to_regclass('salary_records') IS NULL` so that nobody
+    helpfully added the table there. Ticket 43 adds the table, so the second half of this
+    test now asserts the opposite and for the same reason: the change is the *approval*
+    and the archive is the *salary history*, and applying one writes both. The rows are
+    one transaction, so neither can land without the other.
     """
     change_id = await filed_and_approved(
         platform,
@@ -773,7 +775,22 @@ async def test_a_salary_change_is_applied_to_the_change_itself(
     )
     assert row[0][0]["base_salary"] == "30000.00"
     assert row[0][1]["base_salary"] == "33000.00"
-    assert await platform.scalar("SELECT to_regclass('salary_records')") is None
+
+    # ... and the archive, written from the same payload in the same transaction. The
+    # opening record for this person, because they had none: the applier asks the archive
+    # rather than the payload, so a raise does not have to know its own history.
+    archived = await platform.sql(
+        "SELECT employee_id, effective_from, effective_to, base_salary, currency, "
+        "change_reason_type FROM salary_records"
+    )
+    assert len(archived) == 1, f"one applied salary change wrote {len(archived)} records"
+    employee_id, effective_from, effective_to, base_salary, currency, reason_type = archived[0]
+    assert str(employee_id) == cast.subject
+    assert effective_from == date.today()
+    assert effective_to is None, "the record in force has no stated end"
+    assert str(base_salary) == "33000.00", "a numeric column, read back as exact decimal"
+    assert currency == "EUR"
+    assert reason_type == "initial"
 
 
 async def test_a_termination_sets_the_date_and_finishes_the_account(

@@ -128,8 +128,20 @@ FIELD_SPECS: dict[ChangeType, dict[str, FieldSpec]] = {
         "job_position_id": FieldSpec(IDENTIFIER, required=True),
         "manager_employee_id": FieldSpec(IDENTIFIER),
     },
-    # The agreed figure, not a computed one. Ticket 43 adds `salary_records` and
-    # will write the row from this payload; until then the payload is the record.
+    # The agreed figure, not a computed one. Ticket 43 added `salary_records`, and an
+    # applied change now writes an archive row from this payload
+    # (`service._apply_salary`), so these two fields are the *change*: which figure was
+    # agreed and when it takes effect.
+    #
+    # **The other half of the archive is deliberately not here.** A record also carries a
+    # pay period, a structured allowance breakdown and a reason, and those belong to the
+    # archive's own endpoint (`POST /api/v1/salary/records`) rather than to this
+    # document's field catalogue: this table is a *generic* payment of fields whose kinds
+    # are text, date, identifier, money and flag, and a JSON array of allowance lines is
+    # none of the five. Teaching it a sixth kind so a raise could restate a breakdown
+    # would widen every change type to serve one, and the archive is where a breakdown is
+    # edited. What the applier does instead is stated and tested: it writes the record
+    # with the archive's own defaults for those three and says so in the ticket file.
     ChangeType.SALARY: {
         "base_salary": FieldSpec(MONEY, required=True),
         "currency": FieldSpec(TEXT),

@@ -487,6 +487,13 @@ class ErrorCode(StrEnum):
     AGENT_DRAFT_NOT_FOUND = "ERR_AGT_001"
     AGENT_DRAFT_NOT_CONFIRMABLE = "ERR_AGT_002"
     AGENT_DRAFT_CONFIRMATION_REFUSED = "ERR_AGT_003"
+    # Salary archive (ticket 43). Three codes, and none of them is about a computation:
+    # this module has no arithmetic to fail, which is DESIGN D9's non-goal stated as an
+    # absence rather than a comment.
+    SALARY_RECORD_NOT_FOUND = "ERR_PAY_001"
+    SALARY_RECORD_INVALID = "ERR_PAY_002"
+    SALARY_RECORD_OVERLAPS = "ERR_PAY_003"
+    SALARY_RECORD_INITIAL_EXISTS = "ERR_PAY_004"
 
     # Cross-cutting.
     INTERNAL_ERROR = "ERR_INTERNAL_001"
@@ -862,6 +869,17 @@ ERRORS: Final[dict[ErrorCode, ErrorDefinition]] = {
     ),
     ErrorCode.AGENT_DRAFT_CONFIRMATION_REFUSED: ErrorDefinition(
         409, "errors.agent_draft_confirmation_refused"
+    ),
+    # Salary archive (ticket 43). A missing record is a 404 for a caller who may read the
+    # archive at all — the *record*, not the person: somebody with no salary record is an
+    # empty chain rather than a refusal, and the route says so. The two conflicts are
+    # 409s rather than 422s: the request was well-formed and the *archive* is what
+    # collided, which is the same distinction `leave.overlaps` draws for its own dates.
+    ErrorCode.SALARY_RECORD_NOT_FOUND: ErrorDefinition(404, "errors.salary_record_not_found"),
+    ErrorCode.SALARY_RECORD_INVALID: ErrorDefinition(422, "errors.salary_record_invalid"),
+    ErrorCode.SALARY_RECORD_OVERLAPS: ErrorDefinition(409, "errors.salary_record_overlaps"),
+    ErrorCode.SALARY_RECORD_INITIAL_EXISTS: ErrorDefinition(
+        409, "errors.salary_record_initial_exists"
     ),
     ErrorCode.INTERNAL_ERROR: ErrorDefinition(500, "errors.internal_error", expose_detail=False),
     ErrorCode.SERVICE_UNAVAILABLE: ErrorDefinition(

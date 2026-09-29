@@ -15,6 +15,7 @@ from app.models.leave import (
 from app.models.notification import Notification, NotificationDelivery
 from app.models.org import Department
 from app.models.overtime import OvertimeEntry, OvertimeRecord, OvertimeRequest
+from app.models.payroll import SalaryRecord
 from app.models.personnel import PersonnelChange
 from app.models.project import Project, ProjectTask
 from app.models.schedule import (
@@ -54,6 +55,7 @@ __all__ = [
     "PersonnelChange",
     "Project",
     "ProjectTask",
+    "SalaryRecord",
     "Timesheet",
     "TimesheetEntry",
     "User",

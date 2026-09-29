@@ -35,6 +35,8 @@ from app.domain.access.permissions import (
     OVERTIME_COMPANY_ROLES,
     OVERTIME_CROSS_ACTIONS,
     PROJECT_ADMIN_ROLES,
+    SALARY_COMPANY_ROLES,
+    SALARY_CROSS_ACTIONS,
     SELF_ONLY_ACTIONS,
     TIMESHEET_COMPANY_ROLES,
     TIMESHEET_CROSS_ACTIONS,
@@ -95,6 +97,15 @@ class ResourceKind(StrEnum):
     #: that carried both rules would be one branch away from granting a manager the
     #: right to edit what they may only read.
     TIMESHEET_REPORT = "timesheet_report"
+    #: A person's salary archive (ticket 43). Its own kind rather than `EMPLOYEE`, and the
+    #: reason is the rule: an `EMPLOYEE` resource is reached by department, by ownership
+    #: and by the reporting relationship, while a salary record is reached by ownership
+    #: and by a company-wide remit **and by nothing else** — a manager and a colleague
+    #: share a department, and 经理看不到下属薪资 is that clause refused. A kind that
+    #: carried both rules would be one branch away from handing every manager their
+    #: team's figures. Its own kind also makes the audit trail say "salary" rather than
+    #: guess at a person.
+    SALARY_RECORD = "salary_record"
 
 
 @dataclass(slots=True, frozen=True)
@@ -167,6 +178,13 @@ class Reason(StrEnum):
     #: the rule is a union of two reaches and a refusal has to say which one was
     #: missing: `NOT_MANAGER_OF_SUBJECT` alone would describe half of it.
     NOT_YOUR_TIMESHEET_SCOPE = "not_your_timesheet_scope"
+    #: Somebody's salary, and the caller holds neither of the two roles §4.1 gives the
+    #: payroll record (ticket 43). Its own reason rather than `NOT_MANAGER_OF_SUBJECT`,
+    #: which describes a *reporting* refusal this rule does not make: a manager is not
+    #: refused because the person is not their report, but because no managerial reach
+    #: exists over a salary at all (经理看不到下属薪资). An incident review asking "why
+    #: was this refused" gets the rule that actually fired.
+    NOT_PAYROLL_ROLE = "not_payroll_role"
 
 
 @dataclass(slots=True, frozen=True)
@@ -463,6 +481,14 @@ def _can_on_resource(principal: Principal, action: Action, resource: Resource) -
     ):
         return _can_on_record(principal, action, resource)
 
+    # Somebody else's salary (ticket 43), decided before the generic path for the reason
+    # the block above is: a manager and a colleague share a department, so the department
+    # clause would read "mine to read", and 经理看不到下属薪资 is exactly that reading
+    # refused. It is its own call because its rule is not the record rule either — a
+    # manager reaches their reports' hours and leave and reaches nothing here.
+    if action in SALARY_CROSS_ACTIONS:
+        return _can_on_salary(principal, action, resource)
+
     reasons: list[Reason] = [Reason.ROLE_PERMITS]
 
     # Ownership always grants read access to one's own material, whatever the
@@ -613,6 +639,47 @@ def _can_on_timesheet_line(
         f"{action} reaches your reports and your projects; employee="
         f"{resource.owner_employee_id or 'unset'}, project manager="
         f"{resource.manager_employee_id or 'unset'}, caller={principal.employee_id}",
+    )
+
+
+def _can_on_salary(principal: Principal, action: Action, resource: Resource) -> Decision:
+    """Somebody's salary record: a company-wide remit, or nothing (ticket 43).
+
+    **The company's is a role, and its own class of role.** §4.1 gives `hr` 员工档案全量
+    and `finance` 薪酬档案, so `SALARY_COMPANY_ROLES` names two — and the two the design
+    *denies* are absent by name rather than by accident: `manager` because
+    经理看不到下属薪资, and `admin` because §4.1 separates the duties and denies
+    administration even the payslip's contents. `compliance` is absent too: its row is
+    the audit trail, which is where "who looked at this salary" is answered, and reading
+    the audit is a different authority from reading the figures it names.
+
+    **Ownership is deliberately absent.** The caller's own figures come through
+    `salary.read_own`, which is self-only, and this branch is only reached by the action
+    that says "the company's". Folding ownership in here would make the two actions
+    interchangeable, and the day an installation took the company read away from a role
+    the change would silently leave them their own — or worse, someone else's.
+
+    **The department is deliberately absent** for the reason `_can_on_record` gives: a
+    manager and a colleague share one.
+
+    A resource naming nobody is refused, for the reason the self-only branch gives: "we
+    cannot tell whose figure this is" is a refusal, not a permission, and a decision
+    whose default on missing information is "yes" is how a filter-free query gets written.
+    """
+    if bool(principal.roles & SALARY_COMPANY_ROLES):
+        return Decision(
+            True,
+            (Reason.IS_PRIVILEGED,),
+            f"{sorted(principal.roles & SALARY_COMPANY_ROLES)} reaches the whole "
+            "salary archive",
+        )
+
+    return Decision(
+        False,
+        (Reason.NOT_PAYROLL_ROLE,),
+        f"{action} reaches the whole archive; subject="
+        f"{resource.owner_employee_id or 'unset'}, caller={principal.employee_id}, "
+        f"roles={sorted(principal.roles)}",
     )
 
 
@@ -876,6 +943,33 @@ def filter_for(principal: Principal, kind: ResourceKind) -> FilterSpec:
             include_company_kb=False,
             manager_employee_id=principal.employee_id,
             reports_employee_ids=principal.reports_employee_ids,
+        )
+
+    if kind is ResourceKind.SALARY_RECORD:
+        # The salary archive (ticket 43). Two clauses and nothing else, which is the whole
+        # of the ticket's visibility rule as data:
+        #
+        # * `allow_all` is HR's and finance's — 「人力资源、财务」 — and it is the *narrow*
+        #   kind of allow_all: it says "no per-row restriction", and the two roles it is
+        #   granted to are the two `SALARY_COMPANY_ROLES` names.
+        # * `own_employee_id` is the only other row in reach, and it is the caller's.
+        #
+        # **`department_ids` is empty on purpose.** A manager and a colleague share a
+        # department, and a store that applied this field "just in case" would hand a
+        # manager their team's figures — the escalation 经理看不到下属薪资 refuses. The
+        # field is present and empty rather than omitted, so `FilterSpec.__repr__` and the
+        # tests both show that the clause exists and says "nothing".
+        #
+        # `reports_employee_ids` and `manager_employee_id` are left unset for the same
+        # reason: there is no managerial reach over a salary, not even over a report's.
+        return FilterSpec(
+            _token=_FILTER_TOKEN,
+            kind=kind,
+            allow_all=bool(principal.roles & SALARY_COMPANY_ROLES),
+            department_ids=frozenset(),
+            clearance_levels=frozenset(CLEARANCE_RANK),
+            own_employee_id=principal.employee_id,
+            include_company_kb=False,
         )
 
     # Structure and administration are organisation-wide for anyone whose role

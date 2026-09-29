@@ -120,7 +120,23 @@ class AuditAction(StrEnum):
     #: reader of the conversation needs in order to tell "the owner deleted this" from
     #: "this was always here". No title and no text: the act, not the content.
     CONVERSATION_DELETED = "conversation.deleted"  # 37
+    #: **A read, recorded** (ticket 43). For most data the interesting question is "who
+    #: changed it"; for a salary it is "who looked", so this action is written by every
+    #: path that serves a figure — the list, the person's own chain, the "what was in
+    #: force on this day" lookup, and the question about somebody who has no records at
+    #: all. What it carries is who read whose record when, whether it was their own, and
+    #: how many rows came back: **no amounts, no currency, no reason**. This table is
+    #: append-only, kept four years and read by `compliance`; the figures live in
+    #: `salary_records` behind a narrower policy, and copying one here would move it to
+    #: the wider of the two.
     SALARY_RECORD_READ = "salary.record_read"  # 43
+    #: Entering a figure (ticket 43). Its own action rather than a shared "updated",
+    #: because the archive has no update: a correction is a new record, and the pair of
+    #: actions says exactly that. Carries the window, the reason and the kind of change —
+    #: **never the amount and never the allowance lines**, which belong in
+    #: `salary_records` behind its own row-level policy while this table is readable by
+    #: `compliance`.
+    SALARY_RECORD_WRITTEN = "salary.record_written"  # 43
     PAYSLIP_UPLOADED = "payslip.uploaded"  # 44
     PAYSLIP_DOWNLOADED = "payslip.downloaded"  # 45
     PAYSLIP_WITHDRAWN = "payslip.withdrawn"  # 46
